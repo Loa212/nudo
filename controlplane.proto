@@ -1,0 +1,640 @@
+syntax = "proto3";
+
+package controlplane.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
+
+// Who initiated a mutating call. Every mutating RPC carries one so the audit
+// log can distinguish a human clicking deploy from an agent calling an MCP
+// tool from a webhook firing on push.
+message Actor {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    HUMAN = 1;   // dashboard or CLI session
+    AGENT = 2;   // MCP tool call
+    WEBHOOK = 3; // GitHub push / PR event
+    SYSTEM = 4;  // scheduled or internal (e.g. health-check rollback)
+  }
+  Kind kind = 1;
+  string id = 2;      // user id, agent session id, webhook delivery id
+  string label = 3;   // human-readable, shown in audit UI
+}
+
+// Attached to mutating RPCs. dry_run lets an agent (or a nervous human)
+// see the plan without executing it.
+message Mutation {
+  Actor actor = 1;
+  bool dry_run = 2;
+  // Required to mutate a target with latency_critical = true. Guardrail
+  // against an agent touching the hot-path box unattended.
+  bool allow_latency_critical = 3;
+  // Optional idempotency key — retrying with the same key returns the
+  // original result instead of running twice.
+  string idempotency_key = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Targets — the machines we deploy to
+// ---------------------------------------------------------------------------
+
+message Target {
+  string id = 1;
+  string name = 2;
+  string host = 3;              // hostname or IP
+  uint32 port = 4;              // ssh port, default 22
+  string user = 5;              // ssh user
+  string ssh_key_id = 6;        // reference into the secret store, never the key itself
+
+  // Marks a box where nothing extra should run and no unattended mutation
+  // should happen — e.g. the HFT bot's machine. Enforced server-side.
+  bool latency_critical = 7;
+
+  map<string, string> labels = 8;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    UNKNOWN = 1;
+    REACHABLE = 2;
+    UNREACHABLE = 3;
+  }
+  Status status = 9;
+  google.protobuf.Timestamp last_seen_at = 10;
+  string agent_version = 11;    // empty when running agentless (pure ssh)
+
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message CreateTargetRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  string host = 3;
+  uint32 port = 4;
+  string user = 5;
+  string ssh_key_id = 6;
+  bool latency_critical = 7;
+  map<string, string> labels = 8;
+}
+
+message UpdateTargetRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  Target target = 3;            // fields present in update_mask
+  repeated string update_mask = 4;
+}
+
+message DeleteTargetRequest {
+  Mutation mutation = 1;
+  string id = 2;
+}
+
+message GetTargetRequest { string id = 1; }
+
+message ListTargetsRequest {
+  string label_selector = 1;    // e.g. "env=prod,role=indexer"
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListTargetsResponse {
+  repeated Target targets = 1;
+  string next_page_token = 2;
+}
+
+// Probes ssh reachability, sudo, systemd presence, and writable release dir.
+message CheckTargetRequest { string id = 1; }
+
+message CheckTargetResponse {
+  bool ok = 1;
+  message Check {
+    string name = 1;            // "ssh", "sudo", "systemd", "release_dir"
+    bool ok = 2;
+    string detail = 3;
+  }
+  repeated Check checks = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Services — a deployable unit on a target (one systemd unit)
+// ---------------------------------------------------------------------------
+
+message HealthCheck {
+  oneof kind {
+    string http_url = 1;        // GET, expect 2xx
+    string command = 2;         // run on target, expect exit 0
+    bool systemd_active = 3;    // just trust `systemctl is-active`
+  }
+  uint32 timeout_seconds = 4;
+  uint32 retries = 5;
+  uint32 initial_delay_seconds = 6;
+}
+
+// Where the binary comes from.
+message ArtifactSource {
+  oneof kind {
+    // Prebuilt binary at a URL (GitHub release asset, S3, etc.)
+    string url = 1;
+    // Built by the control plane from a connected git source.
+    GitSource git = 2;
+    // Pushed directly by the CLI (`ctl deploy ./target/release/bot`).
+    bool direct_upload = 3;
+  }
+}
+
+message GitSource {
+  string source_id = 1;         // -> Source (GitHub App installation)
+  string repo = 2;              // "owner/name"
+  string branch = 3;
+  string build_command = 4;     // e.g. "cargo build --release"
+  string artifact_path = 5;     // e.g. "target/release/bot"
+  bool auto_deploy_on_push = 6;
+}
+
+message SystemdUnit {
+  string unit_name = 1;         // "hft-bot.service"
+  string description = 2;
+  string exec_args = 3;         // args appended to the binary in ExecStart
+  string working_directory = 4;
+  string user = 5;
+  string group = 6;
+  string restart = 7;           // "always" | "on-failure" | "no"
+  uint32 restart_sec = 8;
+  repeated string after = 9;    // unit ordering
+  // Latency knobs — the reason this tool exists instead of Docker.
+  string cpu_affinity = 10;     // "2-5"
+  string nice = 11;
+  string io_scheduling_class = 12;
+  map<string, string> extra_directives = 13; // escape hatch, verbatim
+}
+
+message Service {
+  string id = 1;
+  string target_id = 2;
+  string name = 3;
+
+  ArtifactSource artifact = 4;
+  SystemdUnit unit = 5;
+  HealthCheck health_check = 6;
+
+  string release_root = 7;      // "/opt/<name>" — releases/ + current symlink live here
+  uint32 keep_releases = 8;     // how many old releases to retain for rollback
+
+  // Secret ids only. Values are resolved server-side and written to the
+  // target's EnvironmentFile at deploy time; they never transit this API.
+  repeated string secret_ids = 9;
+  map<string, string> env = 10; // non-secret env
+
+  string current_release_id = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message CreateServiceRequest {
+  Mutation mutation = 1;
+  Service service = 2;
+}
+
+message UpdateServiceRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  Service service = 3;
+  repeated string update_mask = 4;
+}
+
+message DeleteServiceRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  bool stop_and_disable_unit = 3;
+  bool remove_release_dir = 4;
+}
+
+message GetServiceRequest { string id = 1; }
+
+message ListServicesRequest {
+  string target_id = 1;         // optional filter
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListServicesResponse {
+  repeated Service services = 1;
+  string next_page_token = 2;
+}
+
+// Renders the systemd unit that would be written, without writing it.
+message RenderUnitRequest { string service_id = 1; }
+message RenderUnitResponse { string unit_file = 1; }
+
+// ---------------------------------------------------------------------------
+// Deployments
+// ---------------------------------------------------------------------------
+
+message Release {
+  string id = 1;
+  string service_id = 2;
+  string git_sha = 3;
+  string git_ref = 4;
+  string artifact_digest = 5;   // sha256 of the binary
+  uint64 artifact_bytes = 6;
+  string path = 7;              // <release_root>/releases/<id>
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message Deployment {
+  string id = 1;
+  string service_id = 2;
+  string release_id = 3;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    QUEUED = 1;
+    BUILDING = 2;
+    UPLOADING = 3;
+    ACTIVATING = 4;   // symlink swap + daemon-reload + restart
+    HEALTH_CHECKING = 5;
+    SUCCEEDED = 6;
+    FAILED = 7;
+    ROLLED_BACK = 8;
+    CANCELLED = 9;
+  }
+  Status status = 4;
+
+  Actor actor = 5;
+  string previous_release_id = 6;  // what we'd roll back to
+  string error = 7;
+
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp finished_at = 9;
+}
+
+message DeployRequest {
+  Mutation mutation = 1;
+  string service_id = 2;
+  // Optional overrides for this deploy only.
+  string git_ref = 3;           // branch, tag, or sha
+  string artifact_url = 4;      // when pushing a prebuilt binary
+  bool skip_health_check = 5;
+  bool auto_rollback_on_failure = 6; // default true server-side
+}
+
+message RollbackRequest {
+  Mutation mutation = 1;
+  string service_id = 2;
+  string release_id = 3;        // empty = previous release
+}
+
+message CancelDeploymentRequest {
+  Mutation mutation = 1;
+  string deployment_id = 2;
+}
+
+message GetDeploymentRequest { string id = 1; }
+
+message ListDeploymentsRequest {
+  string service_id = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+  string next_page_token = 2;
+}
+
+message ListReleasesRequest { string service_id = 1; }
+message ListReleasesResponse { repeated Release releases = 1; }
+
+// Live deployment progress: status transitions plus build/deploy output.
+message WatchDeploymentRequest { string deployment_id = 1; }
+
+message DeploymentEvent {
+  google.protobuf.Timestamp at = 1;
+  oneof event {
+    Deployment.Status status_change = 2;
+    string output_line = 3;
+    Deployment terminal_state = 4;  // final message before stream closes
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unit control — start/stop/restart without deploying
+// ---------------------------------------------------------------------------
+
+message UnitActionRequest {
+  Mutation mutation = 1;
+  string service_id = 2;
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    START = 1;
+    STOP = 2;
+    RESTART = 3;
+    RELOAD = 4;
+    ENABLE = 5;
+    DISABLE = 6;
+  }
+  Action action = 3;
+}
+
+message UnitStatus {
+  string service_id = 1;
+  string active_state = 2;      // "active", "failed", ...
+  string sub_state = 3;         // "running", "exited", ...
+  bool enabled = 4;
+  uint32 pid = 5;
+  uint64 memory_bytes = 6;
+  google.protobuf.Timestamp since = 7;
+  uint32 restart_count = 8;
+}
+
+message GetUnitStatusRequest { string service_id = 1; }
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+message LogLine {
+  google.protobuf.Timestamp at = 1;
+  string message = 2;
+  string priority = 3;          // journald priority
+  string unit = 4;
+  string cursor = 5;            // journald cursor, for resume
+}
+
+message StreamLogsRequest {
+  string service_id = 1;
+  bool follow = 2;
+  uint32 tail_lines = 3;        // backfill from the ring buffer before following
+  string since_cursor = 4;      // resume after a dropped connection
+  google.protobuf.Timestamp since = 5;
+  string grep = 6;
+}
+
+// One-shot command on a target. Deliberately separate from the interactive
+// terminal: this is the shape an agent can actually use.
+message RunCommandRequest {
+  Mutation mutation = 1;
+  string target_id = 2;
+  string command = 3;
+  repeated string args = 4;
+  uint32 timeout_seconds = 5;
+}
+
+message CommandOutput {
+  oneof chunk {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    int32 exit_code = 3;        // final message
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal — interactive PTY over ssh
+// ---------------------------------------------------------------------------
+
+// Short-lived, single-use, scoped to one target. The websocket endpoint
+// accepts only this token, never a raw host.
+message CreateTerminalSessionRequest {
+  Mutation mutation = 1;
+  string target_id = 2;
+  string initial_command = 3;   // empty = login shell
+  uint32 cols = 4;
+  uint32 rows = 5;
+}
+
+message TerminalSession {
+  string id = 1;
+  string token = 2;
+  string websocket_url = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// Also exposed as a bidi stream so the CLI can attach without a browser.
+message TerminalClientMessage {
+  oneof message {
+    TerminalSession attach = 1;   // first message: session id + token
+    bytes stdin = 2;
+    TerminalResize resize = 3;
+    bool close = 4;
+  }
+}
+
+message TerminalResize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message TerminalServerMessage {
+  oneof message {
+    bytes stdout = 1;
+    int32 exit_code = 2;
+    string error = 3;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sources — GitHub App integration
+// ---------------------------------------------------------------------------
+
+message Source {
+  string id = 1;
+  string name = 2;
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    GITHUB_APP = 1;
+    DEPLOY_KEY = 2;   // plain ssh clone, no App
+  }
+  Kind kind = 3;
+
+  // GitHub App fields. Private key and webhook secret live in the secret
+  // store and are never returned over this API.
+  int64 app_id = 4;
+  string app_slug = 5;
+  string html_url = 6;
+  int64 installation_id = 7;
+  string account_login = 8;
+
+  bool installed = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+// Step 1 of the manifest flow: we generate the manifest and hand back a URL
+// the browser POSTs to. GitHub redirects to our callback with a temporary
+// code, which we exchange for app_id + private key + webhook secret.
+message CreateGithubAppManifestRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  string organization = 3;      // empty = personal account
+  string base_url = 4;          // our public URL, for callback + webhook
+}
+
+message CreateGithubAppManifestResponse {
+  string source_id = 1;         // pending source row
+  string manifest_json = 2;
+  string post_url = 3;          // https://github.com/settings/apps/new?state=...
+  string state = 4;
+}
+
+// Step 2: called by the HTTP callback handler after GitHub redirects back.
+message ExchangeGithubManifestCodeRequest {
+  string state = 1;
+  string code = 2;
+}
+
+message ListSourcesRequest {}
+message ListSourcesResponse { repeated Source sources = 1; }
+
+message ListRepositoriesRequest {
+  string source_id = 1;
+  string query = 2;
+}
+
+message Repository {
+  string full_name = 1;
+  string default_branch = 2;
+  bool private = 3;
+  string clone_url = 4;
+}
+
+message ListRepositoriesResponse { repeated Repository repositories = 1; }
+
+message ListBranchesRequest {
+  string source_id = 1;
+  string repo = 2;
+}
+
+message ListBranchesResponse { repeated string branches = 1; }
+
+message DeleteSourceRequest {
+  Mutation mutation = 1;
+  string id = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+// Values are write-only over this API. Reads return metadata only.
+message Secret {
+  string id = 1;
+  string name = 2;
+  string scope_target_id = 3;   // optional narrowing
+  string scope_service_id = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  string digest = 6;            // sha256 of value, to detect drift
+}
+
+message PutSecretRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  string value = 3;
+  string scope_target_id = 4;
+  string scope_service_id = 5;
+}
+
+message ListSecretsRequest {
+  string target_id = 1;
+  string service_id = 2;
+}
+
+message ListSecretsResponse { repeated Secret secrets = 1; }
+
+message DeleteSecretRequest {
+  Mutation mutation = 1;
+  string id = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+message AuditEntry {
+  string id = 1;
+  google.protobuf.Timestamp at = 2;
+  Actor actor = 3;
+  string action = 4;            // rpc name
+  string subject_id = 5;        // target / service / deployment id
+  bool dry_run = 6;
+  string summary = 7;
+}
+
+message ListAuditRequest {
+  string subject_id = 1;
+  Actor.Kind actor_kind = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Services
+// ---------------------------------------------------------------------------
+
+service Targets {
+  rpc Create(CreateTargetRequest) returns (Target);
+  rpc Get(GetTargetRequest) returns (Target);
+  rpc List(ListTargetsRequest) returns (ListTargetsResponse);
+  rpc Update(UpdateTargetRequest) returns (Target);
+  rpc Delete(DeleteTargetRequest) returns (google.protobuf.Empty);
+  rpc Check(CheckTargetRequest) returns (CheckTargetResponse);
+}
+
+service ServicesApi {
+  rpc Create(CreateServiceRequest) returns (Service);
+  rpc Get(GetServiceRequest) returns (Service);
+  rpc List(ListServicesRequest) returns (ListServicesResponse);
+  rpc Update(UpdateServiceRequest) returns (Service);
+  rpc Delete(DeleteServiceRequest) returns (google.protobuf.Empty);
+  rpc RenderUnit(RenderUnitRequest) returns (RenderUnitResponse);
+
+  rpc UnitAction(UnitActionRequest) returns (UnitStatus);
+  rpc GetUnitStatus(GetUnitStatusRequest) returns (UnitStatus);
+  // Live status for the dashboard's service list — one stream, all services.
+  rpc WatchUnitStatus(ListServicesRequest) returns (stream UnitStatus);
+}
+
+service Deployments {
+  rpc Deploy(DeployRequest) returns (Deployment);
+  rpc Rollback(RollbackRequest) returns (Deployment);
+  rpc Cancel(CancelDeploymentRequest) returns (Deployment);
+  rpc Get(GetDeploymentRequest) returns (Deployment);
+  rpc List(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  rpc Watch(WatchDeploymentRequest) returns (stream DeploymentEvent);
+}
+
+service Logs {
+  rpc Stream(StreamLogsRequest) returns (stream LogLine);
+  rpc RunCommand(RunCommandRequest) returns (stream CommandOutput);
+}
+
+service Terminals {
+  rpc CreateSession(CreateTerminalSessionRequest) returns (TerminalSession);
+  rpc Attach(stream TerminalClientMessage) returns (stream TerminalServerMessage);
+}
+
+service Sources {
+  rpc CreateGithubAppManifest(CreateGithubAppManifestRequest) returns (CreateGithubAppManifestResponse);
+  rpc ExchangeGithubManifestCode(ExchangeGithubManifestCodeRequest) returns (Source);
+  rpc List(ListSourcesRequest) returns (ListSourcesResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc ListBranches(ListBranchesRequest) returns (ListBranchesResponse);
+  rpc Delete(DeleteSourceRequest) returns (google.protobuf.Empty);
+}
+
+service Secrets {
+  rpc Put(PutSecretRequest) returns (Secret);
+  rpc List(ListSecretsRequest) returns (ListSecretsResponse);
+  rpc Delete(DeleteSecretRequest) returns (google.protobuf.Empty);
+}
+
+service Audit {
+  rpc List(ListAuditRequest) returns (ListAuditResponse);
+}
