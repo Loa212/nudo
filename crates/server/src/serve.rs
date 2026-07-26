@@ -36,6 +36,7 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
     spawn_reachability_probe(context.clone(), config.probe_interval_seconds);
     spawn_terminal_sweeper(store.clone());
     spawn_log_tailers(context.clone());
+    spawn_update_check(&config, store.clone());
     reconcile_interrupted_deployments(&store).await;
 
     // Health reporting so a container orchestrator or a load balancer can tell
@@ -218,6 +219,26 @@ fn spawn_log_tailers(context: api::Context) {
 
 /// Removes consumed and expired terminal grants so the table does not grow
 /// without bound.
+/// Starts the periodic release check, if it is enabled.
+///
+/// Deliberately not fatal when disabled or when the network is unavailable: an
+/// instance that cannot reach the manifest is a working instance that does not
+/// know about new releases, which is a far smaller problem than one that will
+/// not start.
+fn spawn_update_check(config: &Config, store: crate::store::Store) {
+    let checker = crate::updates::UpdateChecker::new(
+        store,
+        config.update_manifest_url.clone(),
+        config.check_for_updates,
+    );
+    // `spawn` itself is a no-op when the check is off, so there is no second
+    // guard here.
+    crate::updates::spawn(
+        checker,
+        std::time::Duration::from_secs(config.update_interval_hours.max(1) * 3600),
+    );
+}
+
 fn spawn_terminal_sweeper(store: crate::store::Store) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));

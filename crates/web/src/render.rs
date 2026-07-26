@@ -49,7 +49,7 @@ fn ago(timestamp: Option<&nudo_proto::Timestamp>) -> String {
 }
 
 /// The same relative time for a value that is already chrono-typed.
-fn ago_at(when: chrono::DateTime<chrono::Utc>) -> String {
+pub fn ago_at(when: chrono::DateTime<chrono::Utc>) -> String {
     let seconds = chrono::Utc::now().signed_duration_since(when).num_seconds();
 
     // A negative value means the peer's clock is ahead of ours. "in 3s" would
@@ -2570,7 +2570,12 @@ pub struct TokenView {
 }
 
 /// Account settings and API tokens.
-pub fn settings_page(api_tokens: &[TokenView], user_email: &str, csrf: &str) -> Markup {
+pub fn settings_page(
+    api_tokens: &[TokenView],
+    user_email: &str,
+    prefs: &SettingsPrefs,
+    csrf: &str,
+) -> Markup {
     html! {
         (topbar("Settings", Some(user_email), html! {}))
         div .content {
@@ -2578,6 +2583,7 @@ pub fn settings_page(api_tokens: &[TokenView], user_email: &str, csrf: &str) -> 
                 (submenu(&[
                     ("Account", "/settings", true),
                     ("API tokens", "/settings#tokens", false),
+                    ("This instance", "/settings#instance", false),
                 ]))
                 div {
                     form .card method="post" action="/settings/password" {
@@ -2691,10 +2697,66 @@ pub fn settings_page(api_tokens: &[TokenView], user_email: &str, csrf: &str) -> 
                             }
                         }
                     }
+
+                    div #instance .card {
+                        h2 { "This instance" }
+                        p .card-note {
+                            "nudo sends nothing about you anywhere. There is no usage \
+                             ping, no install count and no identifier — the release \
+                             check below fetches a static file and posts nothing."
+                        }
+
+                        form method="post" action="/settings/updates" style="margin-top:12px" {
+                            (csrf_input(csrf))
+                            div .field {
+                                label .check {
+                                    input type="checkbox" name="enabled" value="on"
+                                        checked[prefs.update_check_enabled];
+                                    span {
+                                        "Check for new releases and show a banner when one \
+                                         is out. Nothing is ever installed automatically."
+                                    }
+                                }
+                            }
+                            @if !prefs.last_checked.is_empty() {
+                                p .small.muted { "Last checked " (prefs.last_checked) "." }
+                            }
+                            div .form-actions {
+                                button .btn.small type="submit" { "Save" }
+                            }
+                        }
+
+                        form method="post" action="/settings/support" style="margin-top:12px" {
+                            (csrf_input(csrf))
+                            div .field {
+                                label .check {
+                                    input type="checkbox" name="enabled" value="on"
+                                        checked[prefs.support_prompt_enabled];
+                                    span {
+                                        "Show the occasional note asking for support. At \
+                                         most once a month, and never before you have \
+                                         deployed something."
+                                    }
+                                }
+                            }
+                            div .form-actions {
+                                button .btn.small type="submit" { "Save" }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/// The instance-wide preferences shown on the settings page.
+#[derive(Debug, Clone, Default)]
+pub struct SettingsPrefs {
+    pub update_check_enabled: bool,
+    pub support_prompt_enabled: bool,
+    /// Humanised time of the last release check, empty when it has never run.
+    pub last_checked: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -3139,7 +3201,12 @@ mod tests {
             ("sources_list", s(sources_list(&[source], token))),
             (
                 "settings_page",
-                s(settings_page(&[token_view], "a@example.com", token)),
+                s(settings_page(
+                    &[token_view],
+                    "a@example.com",
+                    &SettingsPrefs::default(),
+                    token,
+                )),
             ),
             ("login_page", s(login_page(None, token))),
             ("setup_page", s(setup_page(None, token))),
@@ -3848,7 +3915,12 @@ mod tests {
             ("sources_list", s(sources_list(&[source], "t"))),
             (
                 "settings_page",
-                s(settings_page(&[token_view], "a@b.c", "t")),
+                s(settings_page(
+                    &[token_view],
+                    "a@b.c",
+                    &SettingsPrefs::default(),
+                    "t",
+                )),
             ),
         ];
 
@@ -4576,7 +4648,12 @@ mod tests {
                 created: chrono::Utc::now() - chrono::Duration::days(400),
             },
         ];
-        let rendered = s(settings_page(&tokens, "alice@example.com", "t"));
+        let rendered = s(settings_page(
+            &tokens,
+            "alice@example.com",
+            &SettingsPrefs::default(),
+            "t",
+        ));
 
         assert!(rendered.contains("alice@example.com"));
         assert!(rendered.contains("3h ago"));
@@ -4840,4 +4917,402 @@ mod tests {
             assert!(rendered.contains("class=\"table-scroll\""));
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Updates, the changelog and the support banner
+    // -----------------------------------------------------------------------
+
+    fn an_update(available: bool, breaking: bool) -> UpdateBanner {
+        UpdateBanner {
+            current: "0.1.0".to_string(),
+            latest: "0.2.0".to_string(),
+            available,
+            breaking,
+            url: "https://github.com/loa212/nudo/releases/tag/v0.2.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_current_instance_is_shown_no_update_banner_at_all() {
+        // Not a hidden element or an empty box — nothing, so the dashboard of
+        // someone who is up to date looks exactly as it did before.
+        assert_eq!(s(update_banner(&an_update(false, false))), "");
+    }
+
+    #[test]
+    fn the_update_banner_names_both_versions_and_links_to_the_notes() {
+        let rendered = s(update_banner(&an_update(true, false)));
+        assert!(rendered.contains("0.2.0"), "the new version is not named");
+        assert!(
+            rendered.contains("0.1.0"),
+            "the running version is not named"
+        );
+        assert!(rendered.contains("/changelog"));
+        assert!(rendered.contains("releases/tag/v0.2.0"));
+    }
+
+    #[test]
+    fn the_update_banner_never_offers_to_upgrade_the_host() {
+        // Coolify's equivalent runs a downloaded script as root. nudo's banner
+        // is a link; upgrading stays a deliberate act on the host, and this test
+        // is what stops that changing quietly.
+        let rendered = s(update_banner(&an_update(true, true)));
+        for forbidden in ["/update", "/upgrade", "curl", "install.sh"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "the banner offers {forbidden}, which would run code on the host"
+            );
+        }
+    }
+
+    #[test]
+    fn a_breaking_release_says_so_before_anyone_upgrades() {
+        let rendered = s(update_banner(&an_update(true, true)));
+        assert!(rendered.contains("manual steps"));
+        assert!(
+            rendered.contains("callout bad"),
+            "it is not styled as a warning"
+        );
+    }
+
+    #[test]
+    fn release_notes_from_the_manifest_cannot_inject_markup() {
+        // The manifest is fetched over the network, so its notes are untrusted.
+        let entry = ChangelogEntry {
+            version: "9.9.9".to_string(),
+            notes: "- <script>alert(1)</script>\n- <img src=x onerror=alert(1)>".to_string(),
+            ..ChangelogEntry::default()
+        };
+        let rendered = s(changelog_page(&[entry], "0.1.0"));
+        // Both are escaped, so they render as visible text rather than as
+        // elements. `onerror=` still appears in the output — as the characters
+        // of an escaped `<img ...>`, inside a `<li>`, where it is inert.
+        assert!(!rendered.contains("<script>"), "a script tag survived");
+        assert!(!rendered.contains("<img"), "an img tag survived");
+        assert!(rendered.contains("&lt;script&gt;"));
+        assert!(rendered.contains("&lt;img"));
+    }
+
+    #[test]
+    fn release_notes_render_bullets_as_a_list_and_prose_as_paragraphs() {
+        let entry = ChangelogEntry {
+            version: "0.2.0".to_string(),
+            notes: "## Fixed\n\n- One thing\n- Another thing\n\nA closing note.".to_string(),
+            ..ChangelogEntry::default()
+        };
+        let rendered = s(changelog_page(&[entry], "0.1.0"));
+        assert!(rendered.contains("<li>One thing</li>"));
+        assert!(rendered.contains("<li>Another thing</li>"));
+        assert!(rendered.contains("<p>A closing note.</p>"));
+        // The heading keeps its text but loses its hashes.
+        assert!(rendered.contains("Fixed"));
+        assert!(!rendered.contains("## Fixed"));
+    }
+
+    #[test]
+    fn the_changelog_marks_the_version_this_instance_is_running() {
+        let entries = [
+            ChangelogEntry {
+                version: "0.2.0".to_string(),
+                ..ChangelogEntry::default()
+            },
+            ChangelogEntry {
+                version: "0.1.0".to_string(),
+                current: true,
+                ..ChangelogEntry::default()
+            },
+        ];
+        let rendered = s(changelog_page(&entries, "0.1.0"));
+        assert!(rendered.contains("running"));
+    }
+
+    #[test]
+    fn an_instance_that_has_never_checked_gets_an_explanation_not_an_error() {
+        let rendered = s(changelog_page(&[], "0.1.0"));
+        assert!(rendered.contains("No release notes yet"));
+        // Nothing is wrong with the instance, and the page should say so.
+        assert!(rendered.contains("Nothing is wrong"));
+    }
+
+    fn support_test_links() -> SupportLinkView<'static> {
+        SupportLinkView {
+            sponsor: "https://github.com/sponsors/loa212",
+            repository: "https://github.com/loa212/nudo",
+            issues: "https://github.com/loa212/nudo/issues/new/choose",
+            discussions: "https://github.com/loa212/nudo/discussions",
+        }
+    }
+
+    #[test]
+    fn the_support_banner_offers_a_way_out_that_is_not_a_purchase() {
+        // Someone who cannot or will not sponsor should still find something
+        // useful to do, and a dismissal that is one click away.
+        let rendered = s(support_banner("tok", support_test_links()));
+        assert!(rendered.contains("Sponsor"));
+        assert!(rendered.contains("Star on GitHub"));
+        assert!(rendered.contains("Report a bug"));
+        assert!(rendered.contains("Maybe next time"));
+        assert!(rendered.contains("/support/dismiss"));
+    }
+
+    #[test]
+    fn dismissing_the_support_banner_is_a_csrf_protected_post() {
+        // A GET would let any page on the internet dismiss it for the user.
+        let rendered = s(support_banner("tok_abc", support_test_links()));
+        assert!(rendered.contains(r#"method="post""#));
+        assert!(rendered.contains(r#"value="tok_abc""#));
+    }
+
+    #[test]
+    fn the_settings_page_carries_both_switches_and_says_nothing_is_sent() {
+        let prefs = SettingsPrefs {
+            update_check_enabled: true,
+            support_prompt_enabled: false,
+            last_checked: "2 hours ago".to_string(),
+        };
+        let rendered = s(settings_page(&[], "a@b.c", &prefs, "t"));
+        assert!(rendered.contains("/settings/updates"));
+        assert!(rendered.contains("/settings/support"));
+        assert!(rendered.contains("2 hours ago"));
+        // The claim that matters most on that page.
+        assert!(rendered.contains("no usage"));
+    }
+
+    #[test]
+    fn an_unticked_switch_renders_unticked() {
+        // Rendering a stored `false` as a ticked box would silently turn the
+        // setting back on the next time anyone saved the form.
+        let off = SettingsPrefs::default();
+        let rendered = s(settings_page(&[], "a@b.c", &off, "t"));
+        let updates_form = rendered
+            .split(r#"action="/settings/updates""#)
+            .nth(1)
+            .expect("the updates form is on the page");
+        let form_body = updates_form.split("</form>").next().expect("a closed form");
+        assert!(
+            !form_body.contains("checked"),
+            "a disabled release check renders as ticked"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Updates and the changelog
+//
+// The banner and the "What's new" page. Both render data the control plane has
+// already fetched — this module never makes a request of its own.
+// ---------------------------------------------------------------------------
+
+/// The banner shown when a newer release exists.
+///
+/// Renders nothing when the instance is current, so the caller can place it
+/// unconditionally.
+///
+/// Deliberately not an "Update now" button. Coolify's equivalent downloads a
+/// shell script over the network and runs it as root; for a tool holding every
+/// target's SSH keys, that is a lot of trust in a URL, so upgrading here stays a
+/// deliberate act on the host.
+pub fn update_banner(status: &UpdateBanner) -> Markup {
+    if !status.available {
+        return html! {};
+    }
+
+    html! {
+        div class={ "callout " @if status.breaking { "bad" } @else { "info" } } .update-banner {
+            strong {
+                "nudo " (status.latest) " is out"
+                @if status.breaking { " — it needs manual steps" }
+            }
+            p {
+                "You are running " (status.current) ". "
+                @if status.breaking {
+                    "Read the notes before upgrading: this release changes something \
+                     that will not migrate itself."
+                } @else {
+                    "Upgrading is a manual step on the host; nudo does not update itself."
+                }
+            }
+            div .form-actions {
+                a .btn.small href="/changelog" { "What's new" }
+                @if !status.url.is_empty() {
+                    a .btn.small href=(status.url) target="_blank" rel="noreferrer noopener" {
+                        "Release notes"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the banner needs to render, flattened out of the control plane's
+/// `UpdateStatus` so this module does not depend on the server crate.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateBanner {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+    pub breaking: bool,
+    pub url: String,
+}
+
+/// One entry on the changelog page.
+#[derive(Debug, Clone, Default)]
+pub struct ChangelogEntry {
+    pub version: String,
+    pub published_at: String,
+    pub notes: String,
+    pub url: String,
+    pub breaking: bool,
+    /// Whether this is the version currently running.
+    pub current: bool,
+}
+
+/// The "What's new" page: every release the manifest knows about, newest first.
+pub fn changelog_page(entries: &[ChangelogEntry], current_version: &str) -> Markup {
+    html! {
+        (topbar("What's new", Some(&format!("running {current_version}")), html! {}))
+        div .content {
+            @if entries.is_empty() {
+                (empty_state(
+                    "No release notes yet",
+                    "The release check has not run, could not reach the manifest, or is \
+                     turned off. Nothing is wrong with this instance — it just does not \
+                     know what else has been published.",
+                    Some(("Settings", "/settings")),
+                ))
+            } @else {
+                @for entry in entries {
+                    div .card {
+                        div .card-head {
+                            h2 {
+                                (entry.version)
+                                @if entry.current {
+                                    " " (badge("running", BadgeKind::Ok))
+                                }
+                                @if entry.breaking {
+                                    " " (badge("manual steps", BadgeKind::Bad))
+                                }
+                            }
+                            @if !entry.published_at.is_empty() {
+                                span .small.muted { (entry.published_at) }
+                            }
+                        }
+                        div .card-body {
+                            @if entry.notes.is_empty() {
+                                p .muted { "No notes for this release." }
+                            } @else {
+                                (release_notes(&entry.notes))
+                            }
+                            @if !entry.url.is_empty() {
+                                p {
+                                    a href=(entry.url) target="_blank" rel="noreferrer noopener" {
+                                        "Full notes"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Renders release notes.
+///
+/// Notes come from a manifest fetched over the network, so they are untrusted
+/// input. Rather than run them through a Markdown library and then have to trust
+/// its HTML sanitiser, this handles the two things release notes actually use —
+/// bullets and paragraphs — and renders everything else as escaped text. Maud
+/// escapes each line, so no markup in the manifest can reach the page.
+fn release_notes(notes: &str) -> Markup {
+    let mut blocks: Vec<NoteBlock> = Vec::new();
+
+    for line in notes.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(item) = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("+ "))
+        {
+            match blocks.last_mut() {
+                Some(NoteBlock::List(items)) => items.push(item.to_string()),
+                _ => blocks.push(NoteBlock::List(vec![item.to_string()])),
+            }
+            continue;
+        }
+
+        // A heading keeps its text but not its level: the page already has a
+        // hierarchy and notes should not introduce a competing one.
+        let text = line.trim_start_matches('#').trim();
+        blocks.push(NoteBlock::Paragraph(text.to_string()));
+    }
+
+    html! {
+        @for block in &blocks {
+            @match block {
+                NoteBlock::Paragraph(text) => p { (text) },
+                NoteBlock::List(items) => ul {
+                    @for item in items { li { (item) } }
+                },
+            }
+        }
+    }
+}
+
+enum NoteBlock {
+    Paragraph(String),
+    List(Vec<String>),
+}
+
+// ---------------------------------------------------------------------------
+// Supporting the project
+// ---------------------------------------------------------------------------
+
+/// The "support this project" banner.
+///
+/// Shown at most once a calendar month, and only to someone who has actually
+/// deployed with it — see `support::should_prompt`. The dismiss button says
+/// "Maybe next time" because that is what it does; the permanent off-switch is
+/// in settings, where someone looking for it will find it.
+pub fn support_banner(csrf: &str, links: SupportLinkView<'_>) -> Markup {
+    html! {
+        div .callout.info.support-banner {
+            strong { "nudo is free, and built by one person" }
+            p {
+                "If it is saving you the cost of a platform, sponsoring keeps it \
+                 maintained. If money is not on the table, a star or a good bug \
+                 report genuinely helps too."
+            }
+            div .form-actions {
+                a .btn.small.primary href=(links.sponsor) target="_blank" rel="noreferrer noopener" {
+                    "Sponsor"
+                }
+                a .btn.small href=(links.repository) target="_blank" rel="noreferrer noopener" {
+                    "Star on GitHub"
+                }
+                a .btn.small href=(links.issues) target="_blank" rel="noreferrer noopener" {
+                    "Report a bug"
+                }
+                form method="post" action="/support/dismiss" style="display:inline" {
+                    (csrf_input(csrf))
+                    button .btn.small.quiet type="submit" { "Maybe next time" }
+                }
+            }
+        }
+    }
+}
+
+/// The links the support banner points at, passed in so this module does not
+/// hard-code URLs in two places.
+#[derive(Debug, Clone, Copy)]
+pub struct SupportLinkView<'a> {
+    pub sponsor: &'a str,
+    pub repository: &'a str,
+    pub issues: &'a str,
+    pub discussions: &'a str,
 }

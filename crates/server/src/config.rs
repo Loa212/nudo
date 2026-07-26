@@ -64,6 +64,27 @@ pub struct Config {
     #[arg(long, env = "NUDO_REQUIRE_API_TOKEN", default_value_t = false)]
     pub require_api_token: bool,
 
+    /// Check for new nudo releases and show a banner in the dashboard when one
+    /// is out.
+    ///
+    /// This is the only outbound request nudo makes on its own behalf. It
+    /// fetches a static JSON manifest and sends nothing about this instance —
+    /// no version, no identifier, no install count. Nothing is ever installed
+    /// automatically; the banner links to the release notes and upgrading is a
+    /// deliberate act.
+    #[arg(long, env = "NUDO_CHECK_FOR_UPDATES", default_value_t = true)]
+    pub check_for_updates: bool,
+
+    /// Where the release manifest is fetched from.
+    ///
+    /// Point this at your own copy to check against an internal mirror.
+    #[arg(long, env = "NUDO_UPDATE_MANIFEST_URL", default_value = crate::updates::DEFAULT_MANIFEST_URL)]
+    pub update_manifest_url: String,
+
+    /// Hours between update checks.
+    #[arg(long, env = "NUDO_UPDATE_INTERVAL_HOURS", default_value_t = 24)]
+    pub update_interval_hours: u64,
+
     /// Allow the first request to create the initial admin account when no
     /// user exists. Disable on a host where the dashboard is publicly exposed
     /// before you have had a chance to complete setup.
@@ -147,6 +168,9 @@ impl Default for Config {
             log_buffer_lines: 2000,
             probe_interval_seconds: 60,
             require_api_token: false,
+            check_for_updates: true,
+            update_manifest_url: crate::updates::DEFAULT_MANIFEST_URL.to_string(),
+            update_interval_hours: 24,
             allow_setup: true,
         }
     }

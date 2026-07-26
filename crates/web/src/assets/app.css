@@ -315,6 +315,26 @@ textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; min-he
 .callout.bad { border-left-color: var(--danger); background: var(--danger-soft); }
 .callout.info { border-left-color: var(--accent); background: var(--accent-soft); }
 .callout strong { display: block; margin-bottom: 2px; }
+.callout p { margin-top: 4px; color: var(--muted); }
+.callout .form-actions { margin-top: 10px; padding-top: 0; border-top: none; }
+
+/* The update and support banners sit above the page content rather than inside
+   a card, so they need the margin a card would have given them. */
+.update-banner,
+.support-banner { margin: 16px 24px 0; }
+
+/* "Maybe next time" is not the action being encouraged, so it reads as a link
+   rather than competing with the buttons beside it. */
+.btn.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+.btn.quiet:hover { color: var(--text); background: var(--surface-2); }
+
+/* Release notes come from the manifest, so they are ordinary prose. */
+.card-body ul { margin: 6px 0 6px 18px; }
+.card-body li { margin: 2px 0; }
 
 /* An empty state should carry the next action, not just say "none". */
 .empty { text-align: center; padding: 36px 20px; color: var(--muted); }

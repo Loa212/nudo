@@ -63,6 +63,22 @@ struct Args {
     /// worth setting when the API port is reachable by anything else.
     #[arg(long, env = "NUDO_REQUIRE_API_TOKEN", default_value_t = false)]
     require_api_token: bool,
+
+    /// Check for new nudo releases and show a banner when one is out.
+    ///
+    /// Fetches a static JSON manifest and sends nothing about this instance.
+    /// Nothing is ever installed automatically. Turn it off here or from the
+    /// dashboard's settings page.
+    #[arg(long, env = "NUDO_CHECK_FOR_UPDATES", default_value_t = true)]
+    check_for_updates: bool,
+
+    /// Where the release manifest is fetched from.
+    #[arg(long, env = "NUDO_UPDATE_MANIFEST_URL", default_value = nudo_server::updates::DEFAULT_MANIFEST_URL)]
+    update_manifest_url: String,
+
+    /// Hours between update checks.
+    #[arg(long, env = "NUDO_UPDATE_INTERVAL_HOURS", default_value_t = 24)]
+    update_interval_hours: u64,
 }
 
 #[tokio::main]
@@ -86,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
         log_buffer_lines: args.log_buffer_lines,
         probe_interval_seconds: args.probe_interval_seconds,
         require_api_token: args.require_api_token,
+        check_for_updates: args.check_for_updates,
+        update_manifest_url: args.update_manifest_url.clone(),
+        update_interval_hours: args.update_interval_hours,
         allow_setup: args.allow_setup,
     };
 

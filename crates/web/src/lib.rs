@@ -14,6 +14,7 @@ pub mod auth;
 pub mod client;
 pub mod render;
 pub mod routes;
+pub mod support;
 pub mod terminal;
 pub mod webhook;
 
@@ -105,6 +106,9 @@ pub struct AppState {
     pub engine: Engine,
     /// Live events, for the terminal and the commit-status writeback.
     pub bus: Bus,
+    /// Reads the last release check for the update banner and the changelog.
+    /// Never fetches — the control plane's background loop owns the network.
+    pub updates: std::sync::Arc<nudo_server::updates::UpdateChecker>,
     pub base_url: String,
     pub allow_setup: bool,
 }
@@ -142,12 +146,23 @@ impl AppState {
             config: Arc::new(server_config),
         };
 
+        // Read-only here: this instance of the checker never fetches, it only
+        // reads what the control plane's background loop recorded. Constructed
+        // with `enabled: false` so that even a future call to `check_now` from
+        // the web tier would be a no-op rather than a second poller.
+        let updates = Arc::new(nudo_server::updates::UpdateChecker::new(
+            store.clone(),
+            nudo_server::updates::DEFAULT_MANIFEST_URL.to_string(),
+            false,
+        ));
+
         Ok(Self {
             api: Api::new(config.grpc_endpoint.clone(), config.api_token.clone()),
             store,
             secret_key,
             engine,
             bus,
+            updates,
             base_url: config.base_url.clone(),
             allow_setup: config.allow_setup,
         })
@@ -216,7 +231,11 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}/delete", post(routes::source_delete))
         // ---- audit and settings ----
         .route("/audit", get(routes::audit_list))
+        .route("/changelog", get(routes::changelog))
+        .route("/support/dismiss", post(routes::support_dismiss))
         .route("/settings", get(routes::settings))
+        .route("/settings/updates", post(routes::settings_updates))
+        .route("/settings/support", post(routes::settings_support))
         .route("/settings/password", post(routes::change_password))
         .route("/settings/tokens", post(routes::token_create))
         .route("/settings/tokens/{id}/revoke", post(routes::token_revoke))
@@ -274,12 +293,17 @@ mod tests {
             store: store.clone(),
             secret_key: secret_key.clone(),
             engine: Engine {
-                store,
+                store: store.clone(),
                 bus: bus.clone(),
                 secret_key,
                 config: Arc::new(nudo_server::Config::default()),
             },
             bus,
+            updates: Arc::new(nudo_server::updates::UpdateChecker::new(
+                store,
+                nudo_server::updates::DEFAULT_MANIFEST_URL.to_string(),
+                false,
+            )),
             base_url: "http://localhost:3000".to_string(),
             allow_setup: true,
         }
@@ -328,6 +352,9 @@ mod tests {
             "/settings/password",
             "/settings/tokens",
             "/settings/tokens/tok_1/revoke",
+            "/settings/updates",
+            "/settings/support",
+            "/support/dismiss",
         ];
 
         for action in actions {
@@ -404,6 +431,9 @@ mod tests {
             "/settings/password",
             "/settings/tokens",
             "/settings/tokens/{}/revoke",
+            "/settings/updates",
+            "/settings/support",
+            "/support/dismiss",
         ];
 
         for action in &found {

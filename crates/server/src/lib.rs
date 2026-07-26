@@ -21,5 +21,6 @@ pub mod ssh;
 pub mod store;
 pub mod systemd;
 pub mod units;
+pub mod updates;
 
 pub use config::Config;

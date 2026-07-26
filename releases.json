@@ -1,0 +1,22 @@
+{
+  "$comment": [
+    "The release manifest. A running nudo fetches this to tell you when there is",
+    "a newer version, and renders `notes` as the in-app changelog.",
+    "",
+    "Publishing a release is a commit to this file — no CDN, no bespoke service.",
+    "The workflow in .github/workflows/release.yml adds an entry on tag push.",
+    "",
+    "Set `breaking` when a release needs manual steps; the dashboard shows those",
+    "differently, because the whole point of a changelog is that someone reads the",
+    "one entry that matters."
+  ],
+  "releases": [
+    {
+      "version": "0.1.0",
+      "published_at": "2026-07-26",
+      "url": "https://github.com/loa212/nudo/releases/tag/v0.1.0",
+      "breaking": false,
+      "notes": "First release.\n\n- Deploy binaries to remote hosts over SSH and systemd, with an atomic release swap and automatic rollback on a failed health check\n- Dashboard, CLI, and an MCP server for agents\n- GitHub App integration with auto-deploy on push and commit-status writeback\n- Live logs and an in-browser terminal\n- Encrypted secrets, session auth, scoped API tokens, and an audit log"
+    }
+  ]
+}
