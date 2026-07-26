@@ -2259,6 +2259,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudo-allinone"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "nudo-proto",
+ "nudo-server",
+ "nudo-web",
+ "tokio",
+ "tonic",
+ "tonic-health",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nudo-cli"
 version = "0.1.0"
 dependencies = [
