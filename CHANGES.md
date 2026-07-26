@@ -253,6 +253,15 @@ covered by regression tests:
    containing `$` reached the service with a literal `$$`. Split into two
    escapers.
 
+3. **A secret-key mismatch between the two processes failed silently until it
+   mattered.** Running the control plane with `NUDO_SECRET_KEY` set and the
+   dashboard without it started both happily — the second generated its own key
+   — and the mismatch surfaced as "wrong key or corrupt ciphertext" partway
+   through opening a terminal. The first process to open a database now seals a
+   verifier, and any later process holding a different key fails at startup with
+   a message naming the cause and the fix. Found by driving the terminal
+   websocket end to end.
+
 Three more were caught by unit tests before any real run: the `rm -rf` guard on
 service deletion sat *after* the SSH connect and so was unreachable; `Rollback`'s
 response did not carry the release it targeted; and MCP requires an object at the

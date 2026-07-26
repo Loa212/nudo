@@ -91,6 +91,60 @@ impl Store {
         &self.pool
     }
 
+    /// Confirms the secret-store key matches the one this database was written
+    /// under, sealing a verifier on first use.
+    ///
+    /// The control plane and the dashboard are separate processes sharing a
+    /// database and a key. Without this check, configuring only one of them
+    /// starts both happily — the other generates its own key — and the mismatch
+    /// surfaces later as "wrong key or corrupt ciphertext" while opening a
+    /// terminal or resolving a deploy's secrets. Checking at startup turns a
+    /// mystery into a message.
+    pub async fn verify_secret_key(&self, key: &crate::crypto::SecretKey) -> anyhow::Result<()> {
+        /// What the verifier decrypts to. Its content does not matter; that it
+        /// decrypts at all is the whole test.
+        const VERIFIER_PLAINTEXT: &str = "nudo secret-store key check v1";
+
+        let existing: Option<(String,)> =
+            sqlx::query_as("SELECT verifier FROM secret_key_check WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+
+        match existing {
+            Some((sealed,)) => {
+                let opened = key.open(&sealed).map_err(|_| {
+                    anyhow::anyhow!(
+                        "the configured secret key does not match the one this database was \
+                         written with. Every stored secret — including your targets' SSH keys \
+                         — was encrypted under the original key, so it must be supplied via \
+                         NUDO_SECRET_KEY or NUDO_SECRET_KEY_FILE. If the control plane and the \
+                         dashboard run as separate processes, both need the same key."
+                    )
+                })?;
+
+                if opened != VERIFIER_PLAINTEXT {
+                    anyhow::bail!(
+                        "the secret-store key verifier in this database is not one nudo wrote"
+                    );
+                }
+                Ok(())
+            }
+            None => {
+                // First use: record what this key seals, so a later mismatch is
+                // caught.
+                sqlx::query(
+                    "INSERT INTO secret_key_check (id, verifier, created_at) VALUES (1, ?1, ?2)
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(key.seal(VERIFIER_PLAINTEXT)?)
+                .bind(now_string())
+                .execute(&self.pool)
+                .await?;
+                Ok(())
+            }
+        }
+    }
+
     /// Records the result of an operation performed under an idempotency key.
     ///
     /// Returns the previously recorded result id when the key has been seen, so
@@ -272,6 +326,55 @@ mod tests {
         // Re-opening an already-migrated database must succeed.
         Store::open(&path).await.expect("second open");
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn the_first_process_to_open_a_database_records_its_key() {
+        let store = Store::open_in_memory().await.expect("open");
+        let key = crate::crypto::SecretKey::generate();
+
+        store
+            .verify_secret_key(&key)
+            .await
+            .expect("first use seals a verifier");
+        // And the same key still passes afterwards.
+        store
+            .verify_secret_key(&key)
+            .await
+            .expect("the same key still matches");
+    }
+
+    #[tokio::test]
+    async fn a_different_key_is_refused_with_an_actionable_message() {
+        // The footgun this exists for: running the control plane and the
+        // dashboard with different keys starts both happily and then fails as
+        // "corrupt ciphertext" while opening a terminal.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nudo.db");
+
+        let original = crate::crypto::SecretKey::generate();
+        {
+            let store = Store::open(&path).await.expect("open");
+            store.verify_secret_key(&original).await.expect("seal");
+        }
+
+        let store = Store::open(&path).await.expect("reopen");
+        let error = store
+            .verify_secret_key(&crate::crypto::SecretKey::generate())
+            .await
+            .expect_err("a different key must be refused");
+
+        let message = error.to_string();
+        assert!(message.contains("does not match"), "got: {message}");
+        // The message has to say what to do about it.
+        assert!(message.contains("NUDO_SECRET_KEY"), "got: {message}");
+        assert!(message.contains("both need the same key"), "got: {message}");
+
+        // The original key still works, so the check is not destructive.
+        store
+            .verify_secret_key(&original)
+            .await
+            .expect("the original key still matches");
     }
 
     #[tokio::test]

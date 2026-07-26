@@ -22,6 +22,9 @@ use crate::api;
 pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let secret_key = config.resolve_secret_key()?;
     let store = crate::store::Store::open(&config.database).await?;
+    // Fail here rather than mid-deploy if the key does not match what this
+    // database's ciphertexts were written under.
+    store.verify_secret_key(&secret_key).await?;
     let bus = crate::events::Bus::new(config.log_buffer_lines);
     let config = Arc::new(config);
 

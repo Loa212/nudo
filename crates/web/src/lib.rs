@@ -121,6 +121,9 @@ impl AppState {
 
         let secret_key = server_config.resolve_secret_key()?;
         let store = Store::open(&config.database).await?;
+        // The dashboard and the control plane must hold the same key; a mismatch
+        // is a startup error rather than a failure while opening a terminal.
+        store.verify_secret_key(&secret_key).await?;
         let bus = Bus::default();
         let engine = Engine {
             store: store.clone(),
