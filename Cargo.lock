@@ -2285,6 +2285,7 @@ dependencies = [
  "futures-util",
  "nudo-proto",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

@@ -80,6 +80,14 @@ enum Command {
         /// A prebuilt binary to fetch instead of building.
         #[arg(long)]
         artifact_url: Option<String>,
+        /// A locally built binary to push, e.g. `--artifact target/release/bot`.
+        ///
+        /// Served to the control plane over a short-lived loopback HTTP listener
+        /// for the duration of the deploy, so it is streamed rather than staged
+        /// anywhere. Use `--artifact-url` when the control plane is on another
+        /// host and can fetch the binary itself.
+        #[arg(long, conflicts_with = "artifact_url")]
+        artifact: Option<PathBuf>,
         /// Deploy without verifying the service came back healthy.
         #[arg(long)]
         skip_health_check: bool,
@@ -275,6 +283,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             service,
             git_ref,
             artifact_url,
+            artifact,
             skip_health_check,
             wait,
         } => {
@@ -283,6 +292,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 service,
                 git_ref.as_deref(),
                 artifact_url.as_deref(),
+                artifact.as_deref(),
                 *skip_health_check,
                 *wait,
             )
@@ -704,14 +714,38 @@ async fn unit_action(
 // deploy / rollback
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn deploy(
     cli: &Cli,
     service: &str,
     git_ref: Option<&str>,
     artifact_url: Option<&str>,
+    artifact: Option<&std::path::Path>,
     skip_health_check: bool,
     wait: bool,
 ) -> anyhow::Result<()> {
+    // A locally built binary is served over a short-lived loopback listener and
+    // handed to the control plane as a URL. That reuses the artifact-fetch path
+    // rather than adding an upload RPC, and the binary is streamed rather than
+    // staged anywhere on the way.
+    let upload = match artifact {
+        Some(path) => Some(ArtifactServer::start(path).await?),
+        None => None,
+    };
+
+    let effective_url = match (&upload, artifact_url) {
+        (Some(server), _) => server.url.clone(),
+        (None, Some(url)) => url.to_string(),
+        (None, None) => String::new(),
+    };
+
+    if let Some(server) = &upload {
+        println!(
+            "serving {} ({} bytes) to the control plane at {}",
+            server.name, server.size, server.url
+        );
+    }
+
     let mut client = deployments_client::DeploymentsClient::new(channel(cli).await?);
 
     let deployment = client
@@ -721,7 +755,7 @@ async fn deploy(
                 mutation: Some(mutation(cli)),
                 service_id: service.to_string(),
                 git_ref: git_ref.unwrap_or_default().to_string(),
-                artifact_url: artifact_url.unwrap_or_default().to_string(),
+                artifact_url: effective_url,
                 skip_health_check,
                 // Rolling back on a failed health check is the behaviour that
                 // makes this safe to run from CI unattended.
@@ -742,11 +776,125 @@ async fn deploy(
     println!("deployment {} queued", deployment.id);
 
     if wait {
+        // The listener must outlive the deploy, since the control plane fetches
+        // the artifact partway through it.
         return follow_deployment(cli, &deployment.id).await;
+    }
+
+    if upload.is_some() {
+        // Without --wait there is nobody left to serve the file once this
+        // process exits, so pushing a local binary requires waiting.
+        bail!(
+            "pushing a local binary needs --wait, because the control plane \
+             fetches it from this process while the deploy runs"
+        );
     }
 
     println!("follow it with: nudo services deployments {service}");
     Ok(())
+}
+
+/// A one-shot HTTP listener that serves a single local file.
+///
+/// Bound to loopback and closed when dropped, so the binary is reachable only
+/// for the length of the deploy and only from this machine. A random path means
+/// another local process cannot guess the URL.
+struct ArtifactServer {
+    url: String,
+    name: String,
+    size: u64,
+    _shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+impl ArtifactServer {
+    async fn start(path: &std::path::Path) -> anyhow::Result<Self> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let bytes = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("reading {}", path.display()))?;
+        if bytes.is_empty() {
+            bail!("{} is empty", path.display());
+        }
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "artifact".to_string());
+        let size = bytes.len() as u64;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("binding a local listener for the artifact")?;
+        let port = listener.local_addr()?.port();
+
+        // Unguessable, so another process on this machine cannot fetch it.
+        let token: String = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default();
+            format!("{nanos:x}{:x}", std::process::id())
+        };
+        let url = format!("http://127.0.0.1:{port}/{token}");
+
+        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let expected_path = format!("/{token}");
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    _ = &mut shutdown_rx => return,
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((mut socket, _)) = accepted else {
+                    return;
+                };
+
+                let bytes = bytes.clone();
+                let expected_path = expected_path.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncReadExt as _;
+
+                    // Enough to read the request line; the rest is not needed.
+                    let mut buffer = vec![0u8; 2048];
+                    let read = socket.read(&mut buffer).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let wanted = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or_default();
+
+                    if wanted != expected_path {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                        return;
+                    }
+
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: application/octet-stream\r\n\
+                         Content-Length: {}\r\n\
+                         Connection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    let _ = socket.write_all(header.as_bytes()).await;
+                    let _ = socket.write_all(&bytes).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+
+        Ok(Self {
+            url,
+            name,
+            size,
+            _shutdown: shutdown,
+        })
+    }
 }
 
 async fn rollback(
@@ -1787,6 +1935,78 @@ mod tests {
         }]))
         .expect("serialize");
         assert_eq!(json["targets"][0]["status"], "reachable");
+    }
+
+    #[tokio::test]
+    async fn a_local_artifact_is_served_over_loopback_at_an_unguessable_path() {
+        // This is how `--artifact` reaches the control plane: no upload RPC, and
+        // the binary is never staged anywhere on the way.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bot");
+        std::fs::write(&path, b"ELF fake binary").expect("write");
+
+        let server = ArtifactServer::start(&path).await.expect("start");
+        assert_eq!(server.size, 15);
+        assert_eq!(server.name, "bot");
+        // Loopback only, so nothing off this machine can reach it.
+        assert!(
+            server.url.starts_with("http://127.0.0.1:"),
+            "got: {}",
+            server.url
+        );
+
+        let fetched = reqwest::get(&server.url).await.expect("fetch");
+        assert!(fetched.status().is_success());
+        assert_eq!(
+            fetched.bytes().await.expect("body").as_ref(),
+            b"ELF fake binary"
+        );
+
+        // Another local process cannot guess the path.
+        let base = server.url.rsplit_once('/').expect("split").0;
+        let guessed = reqwest::get(format!("{base}/artifact"))
+            .await
+            .expect("fetch");
+        assert_eq!(guessed.status().as_u16(), 404);
+    }
+
+    #[tokio::test]
+    async fn an_empty_or_missing_artifact_is_refused_before_a_deploy_is_queued() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let empty = dir.path().join("empty");
+        std::fs::write(&empty, b"").expect("write");
+        assert!(ArtifactServer::start(&empty).await.is_err());
+
+        assert!(
+            ArtifactServer::start(&dir.path().join("nonexistent"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_two_artifact_sources_are_mutually_exclusive() {
+        // Passing both would leave which one wins ambiguous.
+        assert!(
+            Cli::try_parse_from([
+                "nudo",
+                "deploy",
+                "svc_1",
+                "--artifact",
+                "./bot",
+                "--artifact-url",
+                "https://example.com/bot",
+            ])
+            .is_err()
+        );
+
+        // Either alone parses.
+        assert!(Cli::try_parse_from(["nudo", "deploy", "svc_1", "--artifact", "./bot"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["nudo", "deploy", "svc_1", "--artifact-url", "https://x/bot"])
+                .is_ok()
+        );
     }
 
     #[test]

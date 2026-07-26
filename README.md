@@ -130,7 +130,10 @@ see exactly the file a deploy would write, before writing it.
 
 ```sh
 # push a locally built binary
-nudo deploy svc_abc123 --wait
+nudo deploy svc_abc123 --artifact ./target/release/bot --wait
+
+# fetch a prebuilt one — a release asset, an S3 object
+nudo deploy svc_abc123 --artifact-url https://example.com/bot --wait
 
 # or, for a git-backed service, build from a ref
 nudo deploy svc_abc123 --git-ref main --wait
@@ -138,6 +141,12 @@ nudo deploy svc_abc123 --git-ref main --wait
 
 `--wait` streams progress and **exits non-zero if the deploy fails**, which is
 what makes it usable as a CI step.
+
+`--artifact` serves the file to the control plane over a short-lived loopback
+listener at an unguessable path, for the length of the deploy — so the binary is
+streamed rather than staged anywhere, and it needs `--wait` because this process
+is what serves it. Use `--artifact-url` when the control plane is on another host
+and can fetch the binary itself.
 
 **5. Watch it.**
 
