@@ -86,6 +86,13 @@ test: ## Run the unit and integration tests
 
 .PHONY: test-e2e
 test-e2e: ## Run the end-to-end deployment tests (needs Docker, ~1 min)
+	@# These start their own systemd containers. With the demo also running,
+	@# Docker gets starved and the suite times out — 4½ minutes and a failure
+	@# rather than 45 seconds and a pass. Stop the demo first if it is up.
+	@if docker ps --format '{{.Names}}' | grep -q '^$(NUDO_CONTAINER)$$'; then \
+		printf '\033[1;33m!  \033[0mthe demo is running; it competes with these tests for Docker\n'; \
+		printf '   stop it with: make demo-down\n\n'; \
+	fi
 	cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1 --nocapture
 
 .PHONY: fmt
