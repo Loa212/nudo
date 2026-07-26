@@ -2104,6 +2104,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures-util",
+ "nudo-proto",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nudo-proto"
 version = "0.1.0"
 dependencies = [
