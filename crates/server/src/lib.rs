@@ -15,6 +15,7 @@ pub mod github;
 pub mod health;
 pub mod logs;
 pub mod probe;
+pub mod serve;
 pub mod ssh;
 pub mod store;
 pub mod systemd;

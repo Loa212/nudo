@@ -1,0 +1,44 @@
+# One command to run nudo:
+#
+#   NUDO_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
+#
+# Then open http://localhost:3000 and create the first account.
+
+services:
+  nudo:
+    build: .
+    image: ghcr.io/loa212/nudo:latest
+    container_name: nudo
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # The key for the secret store. Generate once with
+      # `openssl rand -hex 32` and keep it: losing it makes every stored
+      # secret — including your targets' SSH keys — unrecoverable.
+      NUDO_SECRET_KEY: "${NUDO_SECRET_KEY:?set NUDO_SECRET_KEY, e.g. NUDO_SECRET_KEY=$(openssl rand -hex 32)}"
+
+      # The URL you reach this instance on. GitHub must be able to reach it for
+      # webhooks to arrive, and it decides whether the session cookie is marked
+      # Secure — so set it to your real https:// URL behind a proxy.
+      NUDO_BASE_URL: "${NUDO_BASE_URL:-http://localhost:3000}"
+
+      NUDO_WEB_ADDR: "0.0.0.0:3000"
+      # Loopback: with one container there is no reason to expose the API.
+      NUDO_GRPC_ADDR: "127.0.0.1:50051"
+      RUST_LOG: "${RUST_LOG:-info}"
+
+    volumes:
+      # The database, the build workspaces and the generated key. Without this
+      # volume, everything is lost when the container is replaced.
+      - nudo-state:/var/lib/nudo
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  nudo-state:

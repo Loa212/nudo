@@ -1,0 +1,106 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep CI output readable and fail on warnings, so a warning cannot accumulate
+  # into noise that hides a real one.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        # The end-to-end deployment test needs Docker and is behind a feature so
+        # it does not run here; the `e2e` job below runs it.
+        run: cargo test --workspace --all-targets
+
+      - name: Build the release binaries
+        run: |
+          cargo build --release --locked \
+            --bin nudo-server --bin nudo-web --bin nudo --bin nudo-mcp \
+            --bin nudo-all-in-one
+
+  e2e:
+    # The real test of a deploy tool: ship a binary to a systemd host over SSH,
+    # confirm the unit is active, then make the health check fail and confirm the
+    # rollback puts the previous release back.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run the end-to-end deployment test
+        run: cargo test --package nudo-server --features e2e --test e2e -- --test-threads=1 --nocapture
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: nudo:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the binaries in the image run
+        run: |
+          docker run --rm nudo:ci nudo --version
+          docker run --rm nudo:ci nudo-server --help > /dev/null
+          docker run --rm nudo:ci nudo-mcp --help > /dev/null
+          docker run --rm nudo:ci nudo-all-in-one --help > /dev/null
+
+      - name: Check the image starts and serves the dashboard
+        run: |
+          docker run -d --name nudo-ci \
+            -e NUDO_SECRET_KEY="$(openssl rand -hex 32)" \
+            -p 3000:3000 nudo:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/login > /dev/null; then
+              echo "the dashboard is serving"
+              docker rm -f nudo-ci
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the dashboard did not come up"
+          docker logs nudo-ci
+          docker rm -f nudo-ci
+          exit 1

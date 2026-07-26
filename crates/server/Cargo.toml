@@ -59,5 +59,10 @@ urlencoding.workspace = true
 # lifetime of the git process.
 tempfile.workspace = true
 
+[features]
+# The end-to-end deployment test needs Docker to start a systemd-enabled
+# container, so it is opt-in rather than part of `cargo test`.
+e2e = []
+
 [dev-dependencies]
 wiremock.workspace = true

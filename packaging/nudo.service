@@ -1,0 +1,83 @@
+# Runs the nudo control plane itself as a systemd unit — the same way nudo runs
+# the services it deploys.
+#
+#   sudo useradd --system --home-dir /var/lib/nudo --create-home --shell /usr/sbin/nologin nudo
+#   sudo install nudo-all-in-one /usr/local/bin/
+#   sudo install -m 0644 nudo.service /etc/systemd/system/
+#   sudo install -d -m 0700 -o nudo -g nudo /etc/nudo
+#   openssl rand -hex 32 | sudo tee /etc/nudo/secret.key > /dev/null
+#   sudo chown nudo:nudo /etc/nudo/secret.key && sudo chmod 0600 /etc/nudo/secret.key
+#   sudo systemctl enable --now nudo
+#
+# Put a TLS-terminating reverse proxy in front of it and set NUDO_BASE_URL to the
+# https:// URL you reach it on — that is what marks the session cookie Secure and
+# what GitHub is told to send webhooks to.
+
+[Unit]
+Description=nudo control plane
+Documentation=https://github.com/loa212/nudo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nudo
+Group=nudo
+
+ExecStart=/usr/local/bin/nudo-all-in-one
+WorkingDirectory=/var/lib/nudo
+
+# The key file rather than the environment, so the key is not visible in
+# `systemctl show` or to anything that can read this unit's environment.
+Environment="NUDO_SECRET_KEY_FILE=/etc/nudo/secret.key"
+Environment="NUDO_DB=/var/lib/nudo/nudo.db"
+Environment="NUDO_DATA_DIR=/var/lib/nudo/data"
+Environment="NUDO_WEB_ADDR=127.0.0.1:3000"
+Environment="NUDO_GRPC_ADDR=127.0.0.1:50051"
+Environment="NUDO_BASE_URL=http://localhost:3000"
+Environment="RUST_LOG=info"
+
+Restart=always
+RestartSec=5
+
+# ---- hardening ----
+#
+# The control plane holds every target's SSH key, so it is worth confining. It
+# needs outbound network (SSH to targets, HTTPS to GitHub), its own state
+# directory, and nothing else.
+
+# A private /tmp, so a build workspace cannot be read by other users.
+PrivateTmp=true
+# No write access outside the state directory.
+ProtectSystem=strict
+StateDirectory=nudo
+ReadWritePaths=/var/lib/nudo
+# Other users' home directories are not this service's business.
+ProtectHome=true
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# IPv4, IPv6 and Unix sockets — enough for gRPC, SSH and HTTPS, and nothing more
+# exotic.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# A control plane managing production hosts should not be the thing that runs out
+# of file descriptors.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

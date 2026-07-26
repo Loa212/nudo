@@ -180,7 +180,11 @@ impl SshSession {
                     stderr.extend_from_slice(&data);
                 }
                 ChannelMsg::ExitStatus { exit_status } => exit_code = exit_status as i32,
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                // Not `Eof`: SSH sends EOF *before* the exit status, so breaking
+                // there would leave every command reporting failure. `Close` is
+                // the end of the channel, and `wait()` returning None covers a
+                // peer that closes without one.
+                ChannelMsg::Close => break,
                 _ => {}
             }
         }
@@ -236,7 +240,9 @@ impl SshSession {
                     }
                 }
                 ChannelMsg::ExitStatus { exit_status } => exit_code = exit_status as i32,
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                // See `exec`: EOF precedes the exit status, so only `Close` ends
+                // the loop.
+                ChannelMsg::Close => break,
                 _ => {}
             }
         }
@@ -664,6 +670,14 @@ mod tests {
         assert!(result.require_success("x").is_ok());
         assert_eq!(result.trimmed(), "active");
     }
+
+    // Note on the receive loops in `exec` and `exec_streaming`: SSH delivers
+    // `Eof` *before* `ExitStatus`, so only `Close` (or `wait()` returning None)
+    // may end the loop. Ending it on `Eof` makes every command report failure
+    // however well it ran — a real bug here, caught by the end-to-end test,
+    // which reported `systemd 252 (...)` as a *failed* systemd check. The
+    // end-to-end suite covers this against a real sshd; a unit test would need a
+    // full SSH server to be meaningful.
 
     #[test]
     fn a_command_with_no_exit_status_is_treated_as_failed() {

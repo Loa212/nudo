@@ -1,0 +1,25 @@
+[package]
+name = "nudo-allinone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The control plane and dashboard in one process"
+
+[[bin]]
+name = "nudo-all-in-one"
+path = "src/main.rs"
+
+[dependencies]
+nudo-proto.workspace = true
+nudo-server.workspace = true
+nudo-web.workspace = true
+
+tonic.workspace = true
+tonic-health.workspace = true
+axum.workspace = true
+tokio.workspace = true
+
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

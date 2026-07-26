@@ -148,7 +148,7 @@ pub fn render_unit(service: &Service) -> String {
     // Non-secret env is inlined; secrets go to the EnvironmentFile so their
     // values never appear in `systemctl cat` output or the unit on disk.
     for (key, value) in sorted(&service.env) {
-        out.push_str(&format!("Environment=\"{key}={}\"\n", escape_env(value)));
+        out.push_str(&format!("Environment=\"{key}={}\"\n", escape_unit_env(value)));
     }
     if !service.secret_ids.is_empty() {
         // The dash makes a missing file non-fatal, which matters on the very
@@ -247,17 +247,43 @@ fn sanitize_unit_stem(name: &str) -> String {
 /// Renders the `EnvironmentFile` contents for a service's resolved secrets.
 ///
 /// Values are quoted and escaped because systemd parses this file, and a secret
-/// containing a newline or quote would otherwise inject directives or truncate.
+/// containing a newline or quote would otherwise truncate the value or introduce
+/// a second assignment.
 pub fn render_env_file(entries: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     for (key, value) in entries {
-        out.push_str(&format!("{key}=\"{}\"\n", escape_env(value)));
+        out.push_str(&format!("{key}=\"{}\"\n", escape_env_file(value)));
     }
     out
 }
 
-/// Escapes a value for a double-quoted systemd environment assignment.
-fn escape_env(value: &str) -> String {
+/// Escapes a value for a double-quoted assignment in an `EnvironmentFile`.
+///
+/// Deliberately separate from [`escape_unit_env`]: systemd performs `$VAR`
+/// expansion in a unit's `Environment=` directive but **not** in an
+/// `EnvironmentFile`, so doubling `$` here would deliver a literal `$$` to the
+/// service. Sharing one escaper between the two contexts is what caused exactly
+/// that bug, found by the end-to-end test.
+fn escape_env_file(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            // Kept on one line: a raw newline would end the assignment and let
+            // the rest of the value be read as another variable.
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Escapes a value for a unit file's `Environment=` directive.
+///
+/// Here `$` *is* expanded by systemd, so a literal one has to be doubled.
+fn escape_unit_env(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {
@@ -265,8 +291,6 @@ fn escape_env(value: &str) -> String {
             '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
-            // A literal `$` would be expanded by systemd as a variable
-            // reference; `$$` is the escape.
             '$' => out.push_str("$$"),
             other => out.push(other),
         }
@@ -673,6 +697,33 @@ mod tests {
         // One key per line, so a multi-line secret cannot introduce a second
         // assignment.
         assert_eq!(rendered.lines().count(), 2);
+    }
+
+    #[test]
+    fn a_dollar_sign_reaches_the_service_literally_through_an_environment_file() {
+        // systemd expands `$VAR` in a unit's `Environment=` directive but not in
+        // an `EnvironmentFile`. Doubling the `$` in both places delivered a
+        // literal `$$` to the service — a real bug the end-to-end test caught.
+        let entries = BTreeMap::from([(
+            "APP_TOKEN".to_string(),
+            "p@ss$word".to_string(),
+        )]);
+        let rendered = render_env_file(&entries);
+        assert_eq!(rendered, "APP_TOKEN=\"p@ss$word\"\n");
+        assert!(!rendered.contains("$$"), "an EnvironmentFile must not double $");
+    }
+
+    #[test]
+    fn a_dollar_sign_is_doubled_in_a_unit_directive_where_systemd_expands_it() {
+        // The other half of the same distinction: here it must be escaped, or
+        // systemd substitutes an empty value.
+        let mut svc = service();
+        svc.env = std::collections::HashMap::from([(
+            "PROMPT".to_string(),
+            "$HOME/bin".to_string(),
+        )]);
+        let rendered = render_unit(&svc);
+        assert!(rendered.contains("Environment=\"PROMPT=$$HOME/bin\""), "got: {rendered}");
     }
 
     // ---- retention ----

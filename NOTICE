@@ -1,0 +1,91 @@
+nudo
+Copyright 2026 the nudo authors
+
+This product includes software ported from Coolify.
+
+    Coolify
+    Copyright (c) Andras Bacsai and the Coolify contributors
+    https://github.com/coollabsio/coolify
+    Licensed under the Apache License, Version 2.0
+
+Coolify is licensed under the Apache License, Version 2.0 (the "License"); you
+may not use those portions except in compliance with the License. You may obtain
+a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+What was ported
+--------------------------------------------------------------------------------
+
+No Coolify source is reproduced here — nudo is written in Rust and Coolify in
+PHP. What was taken is design: the sequence of steps, the exact protocol details,
+and the security checks, studied from Coolify's implementation and reimplemented.
+
+GitHub App integration — `crates/server/src/github.rs`,
+`crates/server/src/store/sources.rs`, `crates/web/src/webhook.rs`
+
+  * The two-phase manifest creation flow: a source row is created before GitHub
+    knows about the App, so the callback has something to attach credentials to.
+  * The `state` handling: a random value stored only as its SHA-256 digest,
+    consumed exactly once, and scoped to the action that minted it. Ported from
+    Coolify's `github-app-setup-state:` cache entries.
+  * The anti-rebinding check on manifest conversion: refusing to attach
+    credentials to a source that already has them, so a replayed or forged
+    callback cannot repoint a configured source at another App.
+  * The distinct manifest POST paths for personal accounts, organizations and
+    GitHub Enterprise, and the derivation of an API URL from an HTML URL.
+  * Webhook handling: the header names, verification of the HMAC-SHA256
+    signature over the raw request body with a timing-safe comparison, answering
+    `ping` before anything else, extracting the branch only from a
+    `refs/heads/` ref, and returning 200 for authentic-but-not-actionable
+    deliveries so GitHub does not retry and eventually disable the hook.
+  * The `[skip ci]` convention, including that *every* commit in a push must ask
+    to skip before the push is skipped.
+  * The installation-token flow: an RS256 App JWT with a back-dated `iat`,
+    exchanged at `POST /app/installations/{id}/access_tokens`.
+  * Embedding the token in a clone via `git -c url.<authed>.insteadOf=<plain>`
+    so submodules on the same host authenticate without the credential being
+    written to `.git/config`, and redacting it from any output.
+
+Terminal over websocket — `crates/web/src/terminal.rs`,
+`crates/web/src/assets/terminal.js`
+
+  * The overall shape: a browser websocket in front of a server-side PTY, with
+    xterm.js and the fit addon on the client, resize forwarded as a
+    window-change request, and client-driven backpressure that pauses the PTY
+    when the browser falls behind on writes.
+
+  Two things were deliberately *not* ported. Coolify's client sends a full `ssh`
+  command line and the server validates only the target host, leaving
+  `-o ProxyCommand=` under client control; here the client sends an opaque
+  single-use token and the server constructs the connection from its own
+  database. Coolify's server-to-client protocol is raw bytes with bare sentinel
+  strings, so program output equal to a control word is misread as one; here both
+  directions are tagged JSON.
+
+Dashboard information architecture — `crates/web/src/render.rs`,
+`crates/web/src/assets/app.css`
+
+  * The screen inventory and what belongs on each; the status badge as the single
+    primitive everything else composes from; page tabs plus a vertical sub-menu
+    for configuration sections; destructive actions behind a confirmation that
+    names the consequence; empty states that carry the next action; the log
+    viewer's control set; and treating a write-only secret as absent from the
+    page rather than masked.
+
+--------------------------------------------------------------------------------
+Vendored front-end assets
+--------------------------------------------------------------------------------
+
+Third-party JavaScript and CSS are committed under
+`crates/web/src/assets/` and embedded in the `nudo-web` binary. See
+`crates/web/src/assets/README.md` for versions and provenance.
+
+    htmx and its SSE extension     0BSD      https://htmx.org
+    xterm.js and its fit addon     MIT       https://xtermjs.org

@@ -1,0 +1,171 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# The release job needs to create a release and attach assets; the image job
+# needs to push to GHCR.
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            # The gnu build links against the host's glibc, so it needs a
+            # reasonably old one to be broadly usable. Ubuntu's default is fine
+            # for current distributions.
+            musl: false
+          - target: x86_64-unknown-linux-musl
+            # Fully static: runs on anything, including a distroless or Alpine
+            # host, which is the point of shipping it.
+            musl: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y protobuf-compiler
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            sudo apt-get install --no-install-recommends -y musl-tools
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} \
+            --bin nudo-server --bin nudo-web --bin nudo --bin nudo-mcp \
+            --bin nudo-all-in-one
+
+      - name: Confirm the musl build is actually static
+        if: matrix.musl == true
+        run: |
+          # A dynamically linked "static" binary would fail on the hosts people
+          # reach for musl to support, so this is checked rather than assumed.
+          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one; do
+            path="target/${{ matrix.target }}/release/$binary"
+            if ldd "$path" 2>&1 | grep -qv "not a dynamic executable"; then
+              echo "$binary is not statically linked:"
+              ldd "$path" || true
+              exit 1
+            fi
+          done
+          echo "all binaries are statically linked"
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          name="nudo-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+
+          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one; do
+            cp "target/${{ matrix.target }}/release/$binary" "dist/${name}/"
+          done
+          cp README.md CHANGES.md NOTICE LICENSE "dist/${name}/" 2>/dev/null || true
+          cp packaging/nudo.service "dist/${name}/" 2>/dev/null || true
+
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          # Checksums so an operator can verify what they downloaded.
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nudo-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  image:
+    name: ghcr image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive the tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: publish the release
+    needs: [binaries, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach the assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Binaries** — download the archive for your platform below, verify
+            it against its `.sha256`, and unpack it. `x86_64-unknown-linux-musl`
+            is fully static and runs anywhere.
+
+            ```sh
+            tar -xzf nudo-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+            sudo install nudo-*/nudo* /usr/local/bin/
+            ```
+
+            **Docker**
+
+            ```sh
+            docker run -d --name nudo -p 3000:3000 \
+              -e NUDO_SECRET_KEY="$(openssl rand -hex 32)" \
+              -v nudo-state:/var/lib/nudo \
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+
+            Then open <http://localhost:3000> and create the first account.
+            See the README for the quickstart to a first deploy.
