@@ -1,0 +1,54 @@
+[package]
+name = "nudo-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dashboard for the nudo control plane (a gRPC client)"
+
+[[bin]]
+name = "nudo-web"
+path = "src/main.rs"
+
+[lib]
+name = "nudo_web"
+path = "src/lib.rs"
+
+[dependencies]
+nudo-proto.workspace = true
+# The web tier is a gRPC client of the control plane, but it shares the auth
+# store, the secret key and the webhook verifier with it — the dashboard's
+# session cookies and GitHub's deliveries are not part of the gRPC surface.
+nudo-server.workspace = true
+
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+
+axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+maud.workspace = true
+http.workspace = true
+
+tokio.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+
+clap.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+urlencoding.workspace = true
+
+[dev-dependencies]
+# The webhook tests build a real HMAC signature to prove verification covers the
+# raw body rather than a re-serialized payload.
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile.workspace = true
