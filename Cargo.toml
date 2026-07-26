@@ -42,6 +42,8 @@ async-stream = "0.3"
 # Web
 axum = { version = "0.8", features = ["tokio", "http1", "ws", "multipart", "macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
+# Named directly for its `time::Duration`, which axum-extra does not re-export.
+cookie = "0.18"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "limit"] }
 maud = { version = "0.27", features = ["axum"] }

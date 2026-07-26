@@ -537,7 +537,7 @@ mod tests {
         let raw = br#"{"zebra":1,  "alpha":2}"#;
 
         let signature = {
-            use hmac::Mac as _;
+            use hmac::{KeyInit as _, Mac as _};
             let mut mac =
                 hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("key");
             mac.update(raw);

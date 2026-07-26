@@ -25,7 +25,10 @@ tonic-prost.workspace = true
 prost.workspace = true
 
 axum.workspace = true
+# The terminal websocket drives a russh PTY channel directly.
+russh.workspace = true
 axum-extra.workspace = true
+cookie.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 maud.workspace = true

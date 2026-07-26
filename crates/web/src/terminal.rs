@@ -240,7 +240,7 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     // disconnected browser from leaving a shell running on the target.
     let _ = channel.eof().await;
     let _ = session.close().await;
-    let _ = socket.close().await;
+    let _ = futures_util::SinkExt::close(&mut socket).await;
 
     tracing::info!(target = %target.name, session = %grant.id, "terminal session closed");
 }

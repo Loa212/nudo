@@ -15,6 +15,9 @@ use nudo_server::store::{Session, Store};
 /// The session cookie's name.
 pub const COOKIE_NAME: &str = "nudo_session";
 
+/// How long a session cookie is offered for.
+const SESSION_COOKIE_DAYS: i64 = 30;
+
 /// Builds the session cookie.
 ///
 /// `HttpOnly` so JavaScript cannot read it, `SameSite=Lax` so it is not sent on
@@ -27,14 +30,14 @@ pub fn session_cookie(value: String, secure: bool) -> Cookie<'static> {
     cookie.set_same_site(SameSite::Lax);
     cookie.set_secure(secure);
     cookie.set_path("/");
-    cookie.set_max_age(Some(axum_extra::extract::cookie::time::Duration::days(30)));
+    cookie.set_max_age(Some(cookie::time::Duration::days(SESSION_COOKIE_DAYS)));
     cookie
 }
 
 /// Builds the cookie that clears a session on logout.
 pub fn clear_cookie(secure: bool) -> Cookie<'static> {
     let mut cookie = session_cookie(String::new(), secure);
-    cookie.set_max_age(Some(axum_extra::extract::cookie::time::Duration::seconds(0)));
+    cookie.set_max_age(Some(cookie::time::Duration::seconds(0)));
     cookie
 }
 
@@ -193,10 +196,7 @@ mod tests {
         let cookie = clear_cookie(true);
         assert_eq!(cookie.name(), COOKIE_NAME);
         assert!(cookie.value().is_empty());
-        assert_eq!(
-            cookie.max_age(),
-            Some(axum_extra::extract::cookie::time::Duration::seconds(0))
-        );
+        assert_eq!(cookie.max_age(), Some(cookie::time::Duration::seconds(0)));
     }
 
     #[test]
