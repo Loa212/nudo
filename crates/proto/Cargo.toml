@@ -1,0 +1,16 @@
+[package]
+name = "nudo-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generated gRPC bindings for the nudo control plane API"
+
+[dependencies]
+chrono.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
