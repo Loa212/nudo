@@ -336,6 +336,42 @@ textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; min-he
 .card-body ul { margin: 6px 0 6px 18px; }
 .card-body li { margin: 2px 0; }
 
+/* ---- the first-run checklist ---- */
+
+.steps { list-style: none; display: flex; flex-direction: column; gap: 14px; }
+.steps li { display: flex; gap: 12px; align-items: flex-start; }
+.steps p { margin: 2px 0 8px; max-width: 62ch; }
+
+/* The number, or a tick once the step is done. */
+.step-mark {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+.steps li.done .step-mark {
+  background: var(--success-soft);
+  border-color: var(--success);
+  color: var(--success);
+}
+.steps li.current .step-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* A finished step stays readable but stops competing for attention with the
+   one actually being asked for. */
+.steps li.done strong { color: var(--muted); font-weight: 500; }
+.steps li.done p { display: none; }
+.steps li.current strong { color: var(--text); }
+
 /* An empty state should carry the next action, not just say "none". */
 .empty { text-align: center; padding: 36px 20px; color: var(--muted); }
 .empty h3 { color: var(--text); margin-bottom: 6px; }

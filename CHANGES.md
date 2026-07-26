@@ -333,6 +333,15 @@ response did not carry the release it targeted; and MCP requires an object at th
 root of a tool's output schema, so the listing tools' bare arrays were a spec
 violation.
 
+6. **The login and setup pages rendered the navigation rail.** Both build their
+   own document via `auth_shell` — and `login_page`'s doc comment says so —
+   but all four call sites wrapped them in `page()` as well, which adds the
+   rail. So a signed-out visitor got the full navigation beside the login form,
+   every item of which redirects straight back to login. Two nested documents,
+   two `<!DOCTYPE>`s. Found by looking at the page. There is now a test that
+   asserts the login and setup pages carry no rail and exactly one document,
+   verified to fail against the old code.
+
 One was in the demo rather than the product: `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key

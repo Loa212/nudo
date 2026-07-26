@@ -112,20 +112,13 @@ pub async fn login_page(State(state): State<AppState>) -> Response {
     // change state, plus the same-site cookie on everything after.
     let csrf = crate::PRE_AUTH_CSRF;
 
+    // Neither of these is wrapped by `page`: they render their own document,
+    // and there is no navigation to show to someone who is not signed in.
     if !has_users && state.allow_setup {
-        return Html(
-            render::page(
-                "Set up nudo",
-                Nav::Dashboard,
-                render::setup_page(None, csrf),
-            )
-            .into_string(),
-        )
-        .into_response();
+        return Html(render::setup_page(None, csrf).into_string()).into_response();
     }
 
-    Html(render::page("Sign in", Nav::Dashboard, render::login_page(None, csrf)).into_string())
-        .into_response()
+    Html(render::login_page(None, csrf).into_string()).into_response()
 }
 
 /// Handles a login.
@@ -144,13 +137,9 @@ pub async fn login(
             // One message for both a missing account and a wrong password, so
             // the response cannot be used to enumerate users.
             return Html(
-                render::page(
-                    "Sign in",
-                    Nav::Dashboard,
-                    render::login_page(
-                        Some("That email and password do not match an account."),
-                        crate::PRE_AUTH_CSRF,
-                    ),
+                render::login_page(
+                    Some("That email and password do not match an account."),
+                    crate::PRE_AUTH_CSRF,
                 )
                 .into_string(),
             )
@@ -211,12 +200,7 @@ pub async fn setup(
         Ok(user) => user,
         Err(error) => {
             return Html(
-                render::page(
-                    "Set up nudo",
-                    Nav::Dashboard,
-                    render::setup_page(Some(&format!("{error:#}")), crate::PRE_AUTH_CSRF),
-                )
-                .into_string(),
+                render::setup_page(Some(&format!("{error:#}")), crate::PRE_AUTH_CSRF).into_string(),
             )
             .into_response();
         }

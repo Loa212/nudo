@@ -825,4 +825,84 @@ mod tests {
         // cannot be used to enumerate users.
         assert!(text.contains("do not match"), "got: {text}");
     }
+    /// Fetches a page's HTML through the real router.
+    async fn get(state: AppState, path: &str) -> String {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router responds");
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a readable body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8")
+    }
+
+    #[tokio::test]
+    async fn a_signed_out_visitor_is_shown_no_navigation() {
+        // The bug this pins: both auth pages render their own document, and the
+        // handler wrapped them in `page()` as well — so someone who was not
+        // signed in got the full navigation rail beside the login form, every
+        // item of which redirects straight back to login.
+        let state = state().await;
+        let store = state.store.clone();
+        store
+            .create_user("someone@example.com", "correct horse battery", "Someone")
+            .await
+            .expect("a user, so /login is the login page rather than setup");
+
+        let html = get(state, "/login").await;
+
+        assert!(html.contains("Sign in"), "this is not the login page");
+        assert!(
+            !html.contains(r#"class="rail""#),
+            "the login page renders the navigation rail"
+        );
+        // One document, not two nested ones.
+        assert_eq!(html.matches("<!DOCTYPE html>").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_instance_offers_to_create_the_first_account() {
+        // With no users, /login is the setup page instead — that is the whole
+        // first-run experience, and nothing else prompts for it.
+        let state = state().await;
+
+        let html = get(state, "/login").await;
+
+        assert!(
+            html.contains("Set up nudo"),
+            "no setup form on a fresh instance"
+        );
+        assert!(html.contains(r#"action="/setup""#));
+        assert!(
+            !html.contains(r#"class="rail""#),
+            "the setup page renders the navigation rail"
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_closes_once_an_account_exists() {
+        // Otherwise anyone reaching the instance could add themselves as a
+        // second admin without authenticating.
+        let state = state().await;
+        state
+            .store
+            .create_user("first@example.com", "correct horse battery", "First")
+            .await
+            .expect("user");
+
+        let html = get(state, "/login").await;
+        assert!(!html.contains("Set up nudo"));
+        assert!(html.contains("Sign in"));
+    }
 }

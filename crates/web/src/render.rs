@@ -278,6 +278,77 @@ pub fn page(title: &str, nav: Nav, body: Markup) -> Markup {
     }
 }
 
+/// The first-run checklist, shown until something has been deployed.
+///
+/// Three steps, each either done or the next thing to do. Steps already
+/// completed stay visible rather than disappearing: seeing what you have
+/// already done is what makes the remaining step feel like the last one rather
+/// than one of an unknown number.
+///
+/// It stops appearing the moment a deployment exists — a checklist that
+/// outlives its usefulness becomes furniture.
+fn first_run_checklist(has_target: bool, has_service: bool) -> Markup {
+    // The first incomplete step is the one being asked for; the rest are shown
+    // but not offered, so there is exactly one thing to click.
+    let steps = [
+        (
+            has_target,
+            "Add a target",
+            "A machine reachable over SSH. nudo checks SSH, sudo, systemd and the \
+             release directory before you trust it with anything.",
+            "/targets/new",
+            "Add a target",
+        ),
+        (
+            has_service,
+            "Define a service",
+            "What to run, where its binary comes from, and how to tell whether it \
+             came up. This is the unit file nudo will write.",
+            "/services/new",
+            "Define a service",
+        ),
+        (
+            false,
+            "Deploy it",
+            "From the service page, or `nudo deploy <service>`. The release is \
+             staged, swapped atomically, health-checked, and rolled back if that \
+             check fails.",
+            "/services",
+            "Go to services",
+        ),
+    ];
+
+    // The step being asked for: the first one not yet done.
+    let current = steps.iter().position(|(done, ..)| !done);
+    let completed = steps.iter().filter(|(done, ..)| *done).count();
+
+    html! {
+        div .card.checklist {
+            div .card-head {
+                h2 { "Getting to a first deploy" }
+                span .small.muted { (completed) " of " (steps.len()) " done" }
+            }
+            div .card-body {
+                ol .steps {
+                    @for (index, (done, title, detail, href, action)) in steps.iter().enumerate() {
+                        @let is_current = current == Some(index);
+                        li .done[*done] .current[is_current] {
+                            span .step-mark { @if *done { "✓" } @else { (index + 1) } }
+                            div .step-body {
+                                strong { (title) }
+                                p .small.muted { (detail) }
+                                @if is_current {
+                                    a .btn.small.primary href=(href) { (action) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The left navigation rail.
 fn rail(nav: Nav) -> Markup {
     html! {
@@ -528,7 +599,19 @@ pub fn dashboard(
                 (stat("Failed", &failed.to_string(), failed > 0))
             }
 
-            @if targets.is_empty() {
+            // Until something has been deployed, the four zeroes above say
+            // nothing about what to do next. The checklist does: it names the
+            // whole sequence, so the order (a target before a service, a
+            // service before a deploy) is visible rather than inferred.
+            @if recent.is_empty() {
+                (first_run_checklist(!targets.is_empty(), !services.is_empty()))
+            }
+
+            // The checklist already asks for a target in its first step, so
+            // this card would be the same request twice on a new instance. It
+            // is still the right thing to show once someone has deployed and
+            // later removed every target.
+            @if targets.is_empty() && !recent.is_empty() {
                 div .card {
                     (empty_state(
                         "No targets yet",
@@ -536,7 +619,7 @@ pub fn dashboard(
                         Some(("Add your first target", "/targets/new")),
                     ))
                 }
-            } @else {
+            } @else if !targets.is_empty() {
                 div .grid {
                     @for target in targets {
                         (target_tile(target, services, statuses))
@@ -3503,13 +3586,16 @@ mod tests {
             ),
         ];
         for (what, rendered, href) in cases {
+            // What matters is that an empty page offers the next action, not
+            // which component carries it — the dashboard's comes from the
+            // first-run checklist rather than an `.empty` card.
             assert!(
-                rendered.contains("class=\"empty\""),
-                "{what} has no empty state"
+                rendered.contains("class=\"empty\"") || rendered.contains("class=\"steps\""),
+                "{what} says it is empty without offering a way to fill it"
             );
             assert!(
                 rendered.contains(&format!("href=\"{href}\"")),
-                "{what} empty state does not link to {href}"
+                "{what} does not link to {href}"
             );
         }
     }
@@ -4468,6 +4554,78 @@ mod tests {
         }];
         let rendered = s(deployments_list(&deployments, &[]));
         assert!(rendered.contains("svc_gone"));
+    }
+
+    // -- the first-run checklist ------------------------------------------
+
+    fn a_finished_deployment() -> Deployment {
+        Deployment {
+            id: "dep_1".to_string(),
+            service_id: "svc_1".to_string(),
+            status: deployment::Status::Succeeded as i32,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_brand_new_instance_is_told_what_the_first_step_is() {
+        // Four zeroes and an empty table say nothing about what to do. The
+        // checklist names the sequence, so the order is visible rather than
+        // inferred.
+        let rendered = s(dashboard(&[], &[], &HashMap::new(), &[]));
+        assert!(rendered.contains("Getting to a first deploy"));
+        assert!(rendered.contains("0 of 3 done"));
+        // Exactly one thing to click: the step being asked for.
+        assert!(rendered.contains(r#"href="/targets/new""#));
+    }
+
+    #[test]
+    fn the_checklist_advances_as_each_step_is_finished() {
+        let with_target = s(dashboard(&[a_target()], &[], &HashMap::new(), &[]));
+        assert!(with_target.contains("1 of 3 done"));
+        assert!(
+            with_target.contains(r#"href="/services/new""#),
+            "having a target, the next ask is a service"
+        );
+
+        let with_both = s(dashboard(
+            &[a_target()],
+            &[a_service()],
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(with_both.contains("2 of 3 done"));
+    }
+
+    #[test]
+    fn the_checklist_stops_appearing_once_something_has_been_deployed() {
+        // A checklist that outlives its usefulness becomes furniture.
+        let rendered = s(dashboard(
+            &[a_target()],
+            &[a_service()],
+            &HashMap::new(),
+            &[a_finished_deployment()],
+        ));
+        assert!(!rendered.contains("Getting to a first deploy"));
+    }
+
+    #[test]
+    fn only_the_current_step_offers_a_button() {
+        // Three buttons at once is three decisions; the point of the list is
+        // that there is one thing to do next.
+        let rendered = s(dashboard(&[], &[], &HashMap::new(), &[]));
+        let checklist = rendered
+            .split("Getting to a first deploy")
+            .nth(1)
+            .expect("the checklist is rendered")
+            .split("</div></div>")
+            .next()
+            .unwrap_or_default();
+        assert_eq!(
+            checklist.matches("btn small primary").count(),
+            1,
+            "more than one step is asking to be clicked"
+        );
     }
 
     // -- sources, audit, settings, auth -----------------------------------
