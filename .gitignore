@@ -4,3 +4,6 @@ tmp/
 *.db-shm
 *.db-wal
 .env
+
+# Demo state: the throwaway account cookies, target SSH key and staged artifacts.
+.nudo-demo/

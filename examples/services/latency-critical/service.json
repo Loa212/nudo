@@ -1,0 +1,33 @@
+{
+  "$comment": [
+    "The example that shows why this tool exists instead of Docker.",
+    "",
+    "Every latency knob is set, and the service logs what systemd actually applied",
+    "— so the log viewer proves the settings reached the host rather than merely",
+    "being written into a unit file.",
+    "",
+    "Deploy it with `make example-deploy EXAMPLE=latency-critical`, then read the",
+    "logs. Compare against `make example-unit EXAMPLE=latency-critical`, which",
+    "prints the unit file nudo would write."
+  ],
+
+  "name": "latency-critical",
+  "description": "A latency-sensitive worker, pinned and prioritised",
+  "unit_name": "latency-critical.service",
+
+  "restart": "always",
+  "restart_sec": "1",
+
+  "cpu_affinity": "0-1",
+  "nice": "-10",
+  "io_scheduling_class": "realtime",
+
+  "extra_directives": "LimitNOFILE=1048576\nLimitMEMLOCK=infinity\nOOMScoreAdjust=-900",
+
+  "health_kind": "command",
+  "health_command": "test -s /run/latency-critical-ready",
+  "health_retries": "6",
+  "health_initial_delay_seconds": "2",
+
+  "keep_releases": "5"
+}

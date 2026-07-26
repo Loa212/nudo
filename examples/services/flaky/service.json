@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "The rollback demonstration.",
+    "",
+    "`make example-deploy EXAMPLE=flaky` ships a healthy release (HEALTHY=1).",
+    "`make example-break` then ships the same script without it, so the process",
+    "starts, systemd reports the unit active, and the health check never passes —",
+    "at which point nudo puts the previous release back.",
+    "",
+    "Retries are low so the failure arrives quickly."
+  ],
+
+  "name": "flaky",
+  "description": "Starts fine, never becomes ready — for watching a rollback",
+  "unit_name": "flaky.service",
+
+  "restart": "always",
+  "restart_sec": "2",
+
+  "health_kind": "command",
+  "health_command": "test -s /run/flaky-ready",
+  "health_timeout_seconds": "3",
+  "health_retries": "3",
+  "health_initial_delay_seconds": "2",
+
+  "env": "HEALTHY=1\nAPP_VERSION=v1",
+
+  "keep_releases": "5"
+}

@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "A service definition for `make example-deploy EXAMPLE=hello-http`.",
+    "",
+    "These files are read by examples/scripts/deploy-example.sh, which turns them",
+    "into a service over the API. The field names match the dashboard's form, so",
+    "anything here can also be typed into the UI.",
+    "",
+    "This one exercises the HTTP health check: the deploy is not finished until",
+    "the service answers on its port, which is the case a tool that only asks",
+    "systemd gets wrong."
+  ],
+
+  "name": "hello-http",
+  "description": "A tiny HTTP service, health-checked over HTTP",
+  "unit_name": "hello-http.service",
+
+  "restart": "always",
+  "restart_sec": "3",
+
+  "health_kind": "http",
+  "health_http_url": "http://127.0.0.1:9000/",
+  "health_timeout_seconds": "5",
+  "health_retries": "8",
+  "health_initial_delay_seconds": "2",
+
+  "env": "APP_VERSION=v1\nPORT=9000",
+
+  "keep_releases": "5"
+}
