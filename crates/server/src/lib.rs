@@ -6,6 +6,11 @@
 //! deployed binary and nothing else.
 
 pub mod config;
+pub mod deploy;
+pub mod events;
+pub mod git;
+pub mod github;
+pub mod health;
 pub mod crypto;
 pub mod ssh;
 pub mod store;

@@ -54,7 +54,10 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 shell-escape.workspace = true
+urlencoding.workspace = true
+# Not dev-only: the deploy-key clone path writes the key to a temp file for the
+# lifetime of the git process.
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 wiremock.workspace = true

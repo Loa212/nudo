@@ -65,7 +65,12 @@ russh = "0.62"
 
 # GitHub
 octocrab = "0.54"
-jsonwebtoken = "11"
+# rust_crypto rather than aws_lc_rs: pure Rust keeps the musl static-binary
+# build free of a C toolchain dependency.
+jsonwebtoken = { version = "11", default-features = false, features = [
+    "use_pem",
+    "rust_crypto",
+] }
 
 # Crypto
 aes-gcm = "0.11"
