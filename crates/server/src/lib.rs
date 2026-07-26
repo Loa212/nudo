@@ -8,6 +8,7 @@
 pub mod config;
 pub mod crypto;
 pub mod ssh;
+pub mod store;
 pub mod systemd;
 
 pub use config::Config;
