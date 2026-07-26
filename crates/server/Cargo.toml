@@ -1,0 +1,60 @@
+[package]
+name = "nudo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Control plane: gRPC API, deploy engine, SSH executor and state"
+
+[[bin]]
+name = "nudo-server"
+path = "src/main.rs"
+
+[lib]
+name = "nudo_server"
+path = "src/lib.rs"
+
+[dependencies]
+nudo-proto.workspace = true
+
+tonic.workspace = true
+tonic-prost.workspace = true
+tonic-health.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+
+sqlx.workspace = true
+russh.workspace = true
+
+octocrab.workspace = true
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+
+aes-gcm.workspace = true
+argon2.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+base64.workspace = true
+rand.workspace = true
+hex.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+shell-escape.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
