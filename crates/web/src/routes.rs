@@ -958,6 +958,75 @@ async fn single_status(state: &AppState, service_id: &str) -> UnitStatus {
     }
 }
 
+/// Live unit status for the services list.
+///
+/// Holds the `WatchUnitStatus` stream server-side and pushes the rendered table
+/// on the same fold-fast/render-slow tick as the other live views — so a status
+/// change appears without a reload, and a target with many services cannot make
+/// the browser repaint per service.
+pub async fn services_stream(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = async_stream::stream! {
+        let Ok(mut client) = state.api.services().await else {
+            return;
+        };
+        let Ok(response) = client
+            .watch_unit_status(ListServicesRequest {
+                page_size: 200,
+                ..Default::default()
+            })
+            .await
+        else {
+            return;
+        };
+        let mut upstream = response.into_inner();
+
+        // The upstream sends one message per service per tick, so they are folded
+        // into a snapshot and the table is rendered once per interval rather than
+        // once per service.
+        let mut statuses: std::collections::HashMap<String, UnitStatus> =
+            std::collections::HashMap::new();
+        let mut dirty = false;
+        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = ticker.tick() => {
+                    if !dirty {
+                        continue;
+                    }
+                    dirty = false;
+
+                    // Re-read the definitions so a service added or removed since
+                    // the page loaded is reflected too.
+                    let services = state.api.list_services("").await;
+                    let targets = state.api.list_targets().await;
+                    let html = render::services_rows(&services, &targets, &statuses, true)
+                        .into_string();
+                    yield Ok(Event::default().event("rows").data(html));
+                }
+
+                frame = upstream.next() => {
+                    match frame {
+                        Some(Ok(status)) => {
+                            statuses.insert(status.service_id.clone(), status);
+                            dirty = true;
+                        }
+                        // The stream ended; htmx reconnects on its own.
+                        _ => break,
+                    }
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 // ---------------------------------------------------------------------------
 // Deployments
 // ---------------------------------------------------------------------------

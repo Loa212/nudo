@@ -155,6 +155,29 @@ impl Logs for LogsService {
             )
             .await?;
 
+        // Running a command is not idempotent, so a retry under the same key must
+        // not run it again. There is no stored output to replay, so the replay is
+        // reported rather than re-executed — which is the honest answer.
+        if let Some(previous) = authorized
+            .replayed(&self.context.store, "RunCommand")
+            .await?
+        {
+            let note = format!(
+                "this command has already been run under idempotency key {:?} \
+                 (as `{previous}`); it was not run again\n",
+                authorized.idempotency_key
+            );
+            let stream = async_stream::try_stream! {
+                yield CommandOutput {
+                    chunk: Some(command_output::Chunk::Stdout(note.into_bytes())),
+                };
+                yield CommandOutput {
+                    chunk: Some(command_output::Chunk::ExitCode(0)),
+                };
+            };
+            return Ok(Response::new(Box::pin(stream)));
+        }
+
         let timeout = std::time::Duration::from_secs(match request.timeout_seconds {
             0 => 60,
             n => n.min(MAX_COMMAND_TIMEOUT_SECONDS),
@@ -178,6 +201,13 @@ impl Logs for LogsService {
         }
 
         let session = self.context.connect(&target).await?;
+
+        // Recorded before the command runs: a crash between running it and
+        // recording would let a retry run it twice, which is the failure this
+        // guards against.
+        authorized
+            .record(&self.context.store, "RunCommand", &full_command)
+            .await;
 
         let stream = async_stream::try_stream! {
             let (tx, mut rx) = tokio::sync::mpsc::channel(256);
@@ -519,6 +549,51 @@ mod tests {
             text.contains("'; rm -rf /'"),
             "argument was not quoted: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_retried_command_under_the_same_key_is_not_run_again() {
+        // A CI job whose connection dropped will retry, and running a command
+        // twice is a real effect — unlike a read, there is nothing idempotent
+        // about `systemctl restart`.
+        let (service, target_id, _) = fixture().await;
+        let request = || RunCommandRequest {
+            mutation: Some(Mutation {
+                actor: Some(Actor::human("u", "alice")),
+                idempotency_key: "ci-run-9".to_string(),
+                ..Default::default()
+            }),
+            target_id: target_id.clone(),
+            command: "systemctl".to_string(),
+            args: vec!["restart".to_string(), "bot.service".to_string()],
+            timeout_seconds: 30,
+        };
+
+        // The key is recorded only once the command actually reaches the target,
+        // so a first attempt that could not connect leaves a retry free to try
+        // again — which is what you want. Simulate a command that did run.
+        service
+            .context
+            .store
+            .record_idempotency("ci-run-9", "RunCommand", "systemctl restart bot.service")
+            .await
+            .expect("record");
+
+        let mut stream = service
+            .run_command(Request::new(request()))
+            .await
+            .expect("the retry is answered")
+            .into_inner();
+
+        let first = stream.next().await.expect("chunk").expect("ok");
+        let text = match first.chunk {
+            Some(command_output::Chunk::Stdout(bytes)) => {
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+            other => panic!("expected stdout, got {other:?}"),
+        };
+        assert!(text.contains("already been run"), "got: {text}");
+        assert!(text.contains("ci-run-9"), "got: {text}");
     }
 
     #[tokio::test]

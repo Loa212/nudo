@@ -262,6 +262,15 @@ covered by regression tests:
    a message naming the cause and the fix. Found by driving the terminal
    websocket end to end.
 
+4. **Five rendered form actions pointed at routes that did not exist.** Service
+   start/stop/restart, GitHub App creation and password change all posted to
+   paths the router never registered, so those buttons 404'd. Nothing caught it:
+   the renderer compiled, the router compiled, and both test suites passed. There
+   is now a test that scans the renderer for every form action and asserts each
+   resolves to a registered POST route — verified to fail when the bug is
+   reintroduced. Two field-name mismatches in the same class (token scope, log
+   line count) were silently discarding input.
+
 Three more were caught by unit tests before any real run: the `rm -rf` guard on
 service deletion sat *after* the SSH connect and so was unreachable; `Rollback`'s
 response did not carry the release it targeted; and MCP requires an object at the
@@ -322,6 +331,20 @@ complete — the key is sealed, written to a `0600` temporary file for the clone
 lifetime, and used through `GIT_SSH_COMMAND`. Registering the public half with
 GitHub via `POST /repos/{owner}/{repo}/keys` is not automated; the operator pastes
 it, exactly as in Coolify.
+
+**A dedicated `Sources` RPC for creating a deploy-key source.** The clone path is
+complete and the store seals the key, but the proto's `Sources` service has only
+the manifest RPCs plus List and Delete — so a deploy-key source has no creation
+surface short of writing the row directly. Adding one means extending the proto,
+which is permitted but was not worth doing without a matching UI and CLI verb.
+
+**`nudo services create` / `update`.** Services are created in the dashboard or
+over the API; the CLI reads and acts on them but does not define them. A pure-CI
+workflow that provisions a service from scratch therefore needs the API directly.
+
+**Commit statuses for deploys not triggered by a push.** A webhook deploy reports
+its outcome back to the commit; one started from the dashboard or the CLI against
+a git-backed service does not, even though the SHA is known.
 
 **Metrics and alerting.** No Prometheus endpoint, no notification channels. The
 audit log and deployment history cover "what happened"; "tell me when it

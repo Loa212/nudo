@@ -152,10 +152,8 @@ impl Secrets for SecretsService {
             )
             .await?;
 
-        if authorized.dry_run {
-            return Ok(Response::new(()));
-        }
-
+        // Checked before the dry-run return, so a dry run reports the refusal it
+        // would actually hit rather than a false success.
         if !referencing.is_empty() {
             return Err(Status::failed_precondition(format!(
                 "{} service(s) still reference this secret; \
@@ -165,7 +163,8 @@ impl Secrets for SecretsService {
         }
 
         // A target's SSH key is also a secret; removing it would leave the host
-        // unreachable with no obvious cause.
+        // unreachable with no obvious cause. Checked before the dry-run return so
+        // a dry run surfaces it.
         let targets = self
             .context
             .store
@@ -178,6 +177,10 @@ impl Secrets for SecretsService {
                  point it at another key first",
                 target.name
             )));
+        }
+
+        if authorized.dry_run {
+            return Ok(Response::new(()));
         }
 
         self.context
@@ -585,6 +588,84 @@ mod tests {
             .await
             .expect_err("must be refused");
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("SSH key"));
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_delete_reports_a_refusal_rather_than_a_false_success() {
+        // A dry run exists to tell the caller what would happen. Returning Ok for
+        // something that would be rejected is worse than not offering a dry run.
+        let (service, target_id, _) = fixture().await;
+        let secret = service
+            .put(Request::new(put("IN_USE", "v")))
+            .await
+            .expect("put")
+            .into_inner();
+
+        service
+            .context
+            .store
+            .create_service(&Service {
+                target_id,
+                name: "consumer".to_string(),
+                secret_ids: vec![secret.id.clone()],
+                ..Default::default()
+            })
+            .await
+            .expect("service");
+
+        let status = service
+            .delete(Request::new(DeleteSecretRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::agent("s", "claude")),
+                    dry_run: true,
+                    ..Default::default()
+                }),
+                id: secret.id,
+            }))
+            .await
+            .expect_err("a dry run must report the refusal");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("still reference"));
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_delete_of_a_targets_ssh_key_also_reports_the_refusal() {
+        let (service, target_id, _) = fixture().await;
+        let key = service
+            .put(Request::new(put(
+                "SSH_KEY",
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+            )))
+            .await
+            .expect("put")
+            .into_inner();
+
+        service
+            .context
+            .store
+            .update_target(
+                &target_id,
+                &Target {
+                    ssh_key_id: key.id.clone(),
+                    ..Default::default()
+                },
+                &["ssh_key_id".to_string()],
+            )
+            .await
+            .expect("update");
+
+        let status = service
+            .delete(Request::new(DeleteSecretRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::agent("s", "claude")),
+                    dry_run: true,
+                    ..Default::default()
+                }),
+                id: key.id,
+            }))
+            .await
+            .expect_err("a dry run must report the refusal");
         assert!(status.message().contains("SSH key"));
     }
 

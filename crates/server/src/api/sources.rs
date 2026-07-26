@@ -272,15 +272,18 @@ impl Sources for SourcesService {
             )
             .await?;
 
-        if authorized.dry_run {
-            return Ok(Response::new(()));
-        }
-
+        // The refusal is checked before the dry-run return: a dry run exists to
+        // tell the caller what would happen, and reporting success for something
+        // that would be rejected is the opposite of that.
         if dependent > 0 {
             return Err(Status::failed_precondition(format!(
                 "{dependent} service(s) still build from this source; \
                  point them elsewhere first"
             )));
+        }
+
+        if authorized.dry_run {
+            return Ok(Response::new(()));
         }
 
         self.context
@@ -575,6 +578,58 @@ mod tests {
             .expect("list")
             .into_inner();
         assert_eq!(listed.sources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_delete_reports_a_refusal_rather_than_a_false_success() {
+        let service = service().await;
+        let response = service
+            .create_github_app_manifest(Request::new(manifest("nudo", "")))
+            .await
+            .expect("manifest")
+            .into_inner();
+
+        let target = service
+            .context
+            .store
+            .create_target(&TargetInput {
+                name: "box".to_string(),
+                host: "10.0.0.1".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("target");
+        service
+            .context
+            .store
+            .create_service(&Service {
+                target_id: target.id,
+                name: "bot".to_string(),
+                artifact: Some(ArtifactSource {
+                    kind: Some(artifact_source::Kind::Git(GitSource {
+                        source_id: response.source_id.clone(),
+                        repo: "owner/bot".to_string(),
+                        ..Default::default()
+                    })),
+                }),
+                ..Default::default()
+            })
+            .await
+            .expect("service");
+
+        let status = service
+            .delete(Request::new(DeleteSourceRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::agent("s", "claude")),
+                    dry_run: true,
+                    ..Default::default()
+                }),
+                id: response.source_id,
+            }))
+            .await
+            .expect_err("a dry run must report the refusal");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("still build"));
     }
 
     #[tokio::test]

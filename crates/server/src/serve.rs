@@ -35,6 +35,7 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
 
     spawn_reachability_probe(context.clone(), config.probe_interval_seconds);
     spawn_terminal_sweeper(store.clone());
+    spawn_log_tailers(context.clone());
     reconcile_interrupted_deployments(&store).await;
 
     // Health reporting so a container orchestrator or a load balancer can tell
@@ -152,6 +153,64 @@ fn spawn_reachability_probe(context: api::Context, interval_seconds: u64) {
                 if let Err(error) = context.store.set_target_status(&target.id, status).await {
                     tracing::warn!(%error, target = %target.name, "recording status failed");
                 }
+            }
+        }
+    });
+}
+
+/// Keeps each service's log ring buffer warm, so a freshly opened log view shows
+/// history immediately rather than waiting for the next line.
+///
+/// A tail is started only while something is watching, and stops when the last
+/// viewer goes away — an idle control plane holds no SSH connection to a
+/// latency-critical box just to buffer logs it nobody is reading.
+fn spawn_log_tailers(context: api::Context) {
+    tokio::spawn(async move {
+        // Which services already have a tail running, so a tick does not start a
+        // second one.
+        let mut running: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+
+        loop {
+            ticker.tick().await;
+
+            let services = match context.store.list_services("", 500, 0).await {
+                Ok(services) => services,
+                Err(error) => {
+                    tracing::warn!(%error, "listing services for the log tailers failed");
+                    continue;
+                }
+            };
+
+            // Drop finished tails so a service whose viewer returns is tailed
+            // again.
+            running.retain(|id| context.bus.has_log_watchers(id));
+
+            for service in services {
+                if running.contains(&service.id) || !context.bus.has_log_watchers(&service.id) {
+                    continue;
+                }
+
+                let Ok(target) = context.require_target(&service.target_id).await else {
+                    continue;
+                };
+                let Ok(session) = context.connect(&target).await else {
+                    continue;
+                };
+
+                running.insert(service.id.clone());
+                let unit_name = crate::systemd::unit_file_name(&service);
+                let bus = context.bus.clone();
+                let service_id = service.id.clone();
+
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        crate::logs::tail_into_buffer(&session, &bus, &service_id, &unit_name).await
+                    {
+                        tracing::debug!(%error, service = %service_id, "the log tail ended");
+                    }
+                    let _ = session.close().await;
+                });
             }
         }
     });

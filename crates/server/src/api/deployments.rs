@@ -55,14 +55,7 @@ impl Deployments for DeploymentsService {
             .await?;
 
         // A retry after a dropped connection must not deploy twice.
-        if !authorized.idempotency_key.is_empty()
-            && let Some(existing) = self
-                .context
-                .store
-                .check_idempotency(&authorized.idempotency_key, "Deploy")
-                .await
-                .map_err(internal)?
-        {
+        if let Some(existing) = authorized.replayed(&self.context.store, "Deploy").await? {
             let deployment = self
                 .context
                 .store
@@ -97,7 +90,7 @@ impl Deployments for DeploymentsService {
             .engine
             .start_deploy(
                 &request.service_id,
-                authorized.actor,
+                authorized.actor.clone(),
                 DeployOptions {
                     git_ref: request.git_ref,
                     artifact_url: request.artifact_url,
@@ -109,13 +102,9 @@ impl Deployments for DeploymentsService {
             .await
             .map_err(super::invalid)?;
 
-        if !authorized.idempotency_key.is_empty() {
-            let _ = self
-                .context
-                .store
-                .record_idempotency(&authorized.idempotency_key, "Deploy", &deployment.id)
-                .await;
-        }
+        authorized
+            .record(&self.context.store, "Deploy", &deployment.id)
+            .await;
 
         Ok(Response::new(deployment))
     }

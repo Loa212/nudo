@@ -960,7 +960,15 @@ pub fn services_list(
                         Some(("Add service", "/services/new")),
                     ))
                 } @else {
-                    (services_rows(services, targets, statuses, true))
+                    // Live unit status: the web tier holds the WatchUnitStatus
+                    // stream and pushes the rendered table, so a service that
+                    // failed since the page loaded shows it without a reload.
+                    // The whole table is replaced because each frame is a full
+                    // snapshot, not a delta.
+                    div #service-table hx-ext="sse" sse-connect="/services/stream"
+                        sse-swap="rows" hx-swap="innerHTML" {
+                        (services_rows(services, targets, statuses, true))
+                    }
                 }
             }
         }
@@ -969,7 +977,7 @@ pub fn services_list(
 
 /// The shared service table. `with_target` adds the target column, which is
 /// noise on a target's own detail page.
-fn services_rows(
+pub fn services_rows(
     services: &[Service],
     targets: &[Target],
     statuses: &HashMap<String, UnitStatus>,

@@ -177,6 +177,7 @@ pub fn router(state: AppState) -> Router {
         // ---- services ----
         .route("/services", get(routes::services_list))
         .route("/services/new", get(routes::service_new))
+        .route("/services/stream", get(routes::services_stream))
         .route("/services", post(routes::service_create))
         .route("/services/{id}", get(routes::service_detail))
         .route("/services/{id}/edit", get(routes::service_edit))
@@ -459,6 +460,35 @@ mod tests {
                 "{path} redirected somewhere other than the login page"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_live_status_stream_resolves_rather_than_matching_the_id_route() {
+        // `/services/stream` sits alongside `/services/{id}`; a static segment has
+        // to win, or the stream would be treated as a service called "stream".
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        let response = router(state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/services/stream")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        // Anonymous, so it redirects — which still proves the path is registered.
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/login")
+        );
     }
 
     #[tokio::test]

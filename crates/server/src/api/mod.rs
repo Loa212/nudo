@@ -175,6 +175,47 @@ pub struct Authorized {
     pub idempotency_key: String,
 }
 
+impl Authorized {
+    /// Whether this call has already been performed under its idempotency key.
+    ///
+    /// A CI job whose connection dropped will retry, and for an operation that is
+    /// not naturally idempotent — running a command, opening a terminal — doing
+    /// it twice is a real effect. Returns the recorded result id when the key has
+    /// been seen, so the caller can return the original outcome instead of acting
+    /// again.
+    pub async fn replayed(&self, store: &Store, action: &str) -> Result<Option<String>, Status> {
+        if self.idempotency_key.is_empty() {
+            return Ok(None);
+        }
+        store
+            .check_idempotency(&self.idempotency_key, action)
+            .await
+            .map_err(internal)
+    }
+
+    /// Records that this call was performed, against its idempotency key.
+    ///
+    /// Failures are logged rather than propagated: the operation has already
+    /// happened, and failing the response would make a caller retry something
+    /// that succeeded.
+    pub async fn record(&self, store: &Store, action: &str, result_id: &str) {
+        if self.idempotency_key.is_empty() {
+            return;
+        }
+        if let Err(error) = store
+            .record_idempotency(&self.idempotency_key, action, result_id)
+            .await
+        {
+            tracing::error!(
+                %error,
+                key = %self.idempotency_key,
+                %action,
+                "recording an idempotency key failed; a retry may act twice"
+            );
+        }
+    }
+}
+
 /// Wraps an internal failure as a gRPC status.
 ///
 /// The message is included because this is an operator-facing tool: hiding why a
