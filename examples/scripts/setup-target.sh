@@ -15,12 +15,6 @@ source examples/scripts/lib.sh
 wait_for_nudo
 ensure_signed_in
 
-existing="$(target_id)"
-if [ -n "${existing}" ]; then
-    say "target already registered (${existing})"
-    exit 0
-fi
-
 mkdir -p "${STATE_DIR}"
 key_path="${STATE_DIR}/target-key"
 
@@ -29,11 +23,22 @@ if [ ! -f "${key_path}" ]; then
     ssh-keygen -t ed25519 -N '' -f "${key_path}" -q
 fi
 
+# Always installed, even when the target is already registered. `make
+# demo-restart` recreates the target container but keeps nudo's database, so the
+# registration survives while the container's authorized_keys does not — which
+# showed up as every deploy failing public-key authentication until the key was
+# put back by hand.
 say "installing the public key into ${TARGET_CONTAINER}"
 docker exec "${TARGET_CONTAINER}" mkdir -p /root/.ssh
 docker exec "${TARGET_CONTAINER}" bash -c \
     "printf '%s' '$(cat "${key_path}.pub")' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
 docker exec "${TARGET_CONTAINER}" systemctl enable --now ssh > /dev/null 2>&1 || true
+
+existing="$(target_id)"
+if [ -n "${existing}" ]; then
+    say "target already registered (${existing}); its key has been reinstalled"
+    exit 0
+fi
 
 say "storing the key in nudo's secret store"
 csrf="$(csrf_from /secrets)"

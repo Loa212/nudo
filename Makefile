@@ -58,7 +58,7 @@ help: ## Show this help
 	@printf '  make demo-open     print the URL and the demo credentials\n'
 	@printf '  make demo-down     tear it all down\n\n'
 	@printf '\033[1mAll commands\033[0m\n'
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@printf '\n\033[1mExamples\033[0m (make example-deploy EXAMPLE=<name>)\n'
@@ -97,8 +97,12 @@ lint: ## Check formatting and run clippy, as CI does
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 
+.PHONY: test-scripts
+test-scripts: ## Test the release-publishing script
+	python3 scripts/add_release_test.py
+
 .PHONY: check
-check: lint test ## Everything CI runs, short of the e2e suite
+check: lint test test-scripts ## Everything CI runs, short of the e2e suite
 	@printf '\033[1;32m✓\033[0m fmt, clippy and tests all pass\n'
 
 .PHONY: image
@@ -233,7 +237,49 @@ demo-open: ## Print the dashboard URL and the demo credentials
 	@printf '  the unit file a deploy writes    make example-unit EXAMPLE=latency-critical\n'
 	@printf '  a rollback, live                 make example-break\n'
 	@printf '  logs streaming over SSE          make example-logs EXAMPLE=latency-critical\n'
-	@printf '  a shell on the target            make demo-shell\n\n'
+	@printf '  a shell on the target            make demo-shell\n'
+	@printf '  the update banner and changelog  make demo-changelog\n\n'
+
+.PHONY: demo-changelog
+demo-changelog: ## Pretend a newer release exists, to see the update banner
+	@# The dashboard reads whatever the release check last recorded, so seeding
+	@# that one row shows the banner and the changelog without publishing
+	@# anything or reaching the network.
+	@#
+	@# sqlite3 is deliberately not in nudo's image — it is a deploy tool, not a
+	@# database shell — so the write goes through a throwaway container on the
+	@# same volume, running as the uid that owns the database.
+	@mkdir -p $(STATE_DIR)
+	@printf 'A pretend release, so the banner has something to show.\n\n- Something added\n- Something fixed\n\nNothing here was really published.\n' \
+		> $(STATE_DIR)/fake-notes.md
+	@python3 scripts/add-release.py --version 99.0.0 \
+		--url 'https://github.com/loa212/nudo/releases/tag/v99.0.0' \
+		--notes-file $(STATE_DIR)/fake-notes.md \
+		--manifest $(STATE_DIR)/fake-manifest.json \
+		--published-at 2030-01-01 > /dev/null
+	@# Root installs sqlite, then drops to nudo's uid for the write itself, so
+	@# the WAL files it creates stay owned by the user the server runs as.
+	@docker run --rm \
+		-v $(DEMO_VOLUME):/var/lib/nudo \
+		-v "$$PWD/$(STATE_DIR)":/seed:ro \
+		alpine:3.20 sh -c 'apk add --no-cache sqlite su-exec > /dev/null 2>&1 && \
+			su-exec 10001:10001 \
+			sqlite3 /var/lib/nudo/nudo.db \
+			"INSERT INTO release_check (id, latest_version, manifest, checked_at, enabled) \
+			 VALUES (1, '"'"'99.0.0'"'"', CAST(readfile('"'"'/seed/fake-manifest.json'"'"') AS TEXT), datetime('"'"'now'"'"'), 1) \
+			 ON CONFLICT (id) DO UPDATE SET latest_version = '"'"'99.0.0'"'"', \
+			 manifest = CAST(readfile('"'"'/seed/fake-manifest.json'"'"') AS TEXT), checked_at = datetime('"'"'now'"'"');"'
+	@printf '\033[1;32m✓\033[0m seeded — the banner is on \033[36m%s\033[0m, the notes at \033[36m%s/changelog\033[0m\n' \
+		'$(NUDO_URL)' '$(NUDO_URL)'
+	@printf '  undo it with: make demo-unchangelog\n'
+
+.PHONY: demo-unchangelog
+demo-unchangelog: ## Clear the pretend release seeded by demo-changelog
+	@docker run --rm -v $(DEMO_VOLUME):/var/lib/nudo \
+		alpine:3.20 sh -c 'apk add --no-cache sqlite su-exec > /dev/null 2>&1 && \
+			su-exec 10001:10001 \
+			sqlite3 /var/lib/nudo/nudo.db "DELETE FROM release_check;"'
+	@printf '\033[1;32m✓\033[0m cleared\n'
 
 .PHONY: demo-status
 demo-status: ## Show the demo's targets and services
@@ -282,6 +328,10 @@ demo-clean: demo-down ## Tear the demo down and delete its data
 
 .PHONY: demo-restart
 demo-restart: demo-down demo-up ## Restart the demo, keeping its data
+	@# The target container is recreated from scratch while nudo's database
+	@# survives, so the registration outlives the authorized_keys it depends on.
+	@# Reinstalling the key here is what keeps a restarted demo deployable.
+	@$(MAKE) --no-print-directory demo-target
 
 # ---------------------------------------------------------------------------
 # Internal helpers

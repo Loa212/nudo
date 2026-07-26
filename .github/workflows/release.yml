@@ -132,7 +132,12 @@ jobs:
     needs: [binaries, image]
     runs-on: ubuntu-latest
     steps:
+      # The manifest commit needs the full history for git-cliff, and a token
+      # that can push back to the default branch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
 
       - uses: actions/download-artifact@v4
         with:
@@ -169,3 +174,53 @@ jobs:
 
             Then open <http://localhost:3000> and create the first account.
             See the README for the quickstart to a first deploy.
+
+      # Everything below publishes the changelog. Running instances read
+      # releases.json to tell their operator a new version exists and to render
+      # the notes in the dashboard, so a release that skips this ships silently.
+
+      - name: Generate CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --verbose
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Add this release to releases.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+
+          # The notes come from the release body GitHub generated, so the
+          # dashboard shows the same text as the release page rather than a
+          # second, drifting copy.
+          gh release view "${GITHUB_REF_NAME}" --json body --jq .body > notes.md
+
+          python3 scripts/add-release.py \
+            --version "${version}" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --manifest releases.json
+          rm -f notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit the manifest and the changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add releases.json CHANGELOG.md
+
+          # A tag that changed neither is not an error: re-running the workflow
+          # for an already-published release should be a no-op, not a failure.
+          if git diff --cached --quiet; then
+            echo "nothing to commit — the manifest already has ${GITHUB_REF_NAME}"
+            exit 0
+          fi
+
+          git commit -m "Publish ${GITHUB_REF_NAME}
+
+          Adds the release to releases.json, which running instances fetch to
+          tell their operator a new version is out, and regenerates CHANGELOG.md.
+          Made by the release workflow."
+          git push origin HEAD:main

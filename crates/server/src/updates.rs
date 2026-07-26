@@ -267,6 +267,14 @@ impl UpdateChecker {
     /// boolean, so an instance that has since been upgraded stops showing a
     /// banner without needing another check to clear it.
     pub async fn cached_status(&self) -> UpdateStatus {
+        // Someone who turns the check off wants the banner gone, not frozen at
+        // whatever the last check happened to find. The recorded row is left
+        // alone so turning it back on restores what was known without waiting
+        // for the next tick.
+        if !self.store.release_check_enabled().await.unwrap_or(true) {
+            return UpdateStatus::unknown();
+        }
+
         let running = current_version();
         let recorded = self
             .store
@@ -303,6 +311,10 @@ impl UpdateChecker {
 
     /// The changelog, newest first.
     pub async fn changelog(&self) -> Vec<Release> {
+        if !self.store.release_check_enabled().await.unwrap_or(true) {
+            return Vec::new();
+        }
+
         let manifest: Manifest = self
             .store
             .recorded_manifest()
@@ -572,5 +584,89 @@ mod tests {
         let status = checker.cached_status().await;
         assert!(!status.available);
         assert!(checker.changelog().await.is_empty());
+    }
+    #[test]
+    fn the_manifest_committed_to_this_repository_parses() {
+        // releases.json is what every running instance fetches. A typo in it
+        // would leave every dashboard silently showing no releases, and nothing
+        // else in this repository would notice.
+        let raw = include_str!("../../../releases.json");
+        let manifest: Manifest = serde_json::from_str(raw).expect("releases.json is valid");
+
+        assert!(
+            !manifest.releases.is_empty(),
+            "the manifest lists no releases"
+        );
+
+        for release in &manifest.releases {
+            assert!(
+                compare_versions(&release.version, "0.0.0").is_some(),
+                "{} is not a version this can sort, so the banner would never \
+                 fire for it",
+                release.version
+            );
+            assert!(
+                release.url.starts_with("https://"),
+                "{} has no https url",
+                release.version
+            );
+        }
+    }
+
+    #[test]
+    fn the_manifest_lists_the_version_this_binary_reports() {
+        // If Cargo.toml is bumped without adding a manifest entry, the release
+        // check would tell everyone the newest release is older than what they
+        // are running. `best_known_version` already refuses to go backwards, but
+        // the real fix is to notice at build time.
+        let raw = include_str!("../../../releases.json");
+        let manifest: Manifest = serde_json::from_str(raw).expect("releases.json is valid");
+
+        let running = current_version();
+        assert!(
+            manifest
+                .releases
+                .iter()
+                .any(|release| release.version.trim_start_matches('v') == running),
+            "this binary reports {running}, which releases.json does not list — \
+             add an entry (scripts/add-release.py) or the release check will \
+             report a version older than the one running"
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_the_check_off_clears_the_banner_rather_than_freezing_it() {
+        // The bug this pins: the switch stopped future checks but left the last
+        // result on the dashboard, so unticking the box appeared to do nothing.
+        let store = crate::store::Store::open_in_memory().await.expect("store");
+        store
+            .record_latest_version("99.0.0", r#"{"releases":[{"version":"99.0.0"}]}"#)
+            .await
+            .expect("record");
+
+        let checker = UpdateChecker::new(store.clone(), String::new(), true);
+        assert!(
+            checker.cached_status().await.available,
+            "the banner is shown"
+        );
+
+        store
+            .set_release_check_enabled(false)
+            .await
+            .expect("turn it off");
+        assert!(
+            !checker.cached_status().await.available,
+            "the banner survived the switch being turned off"
+        );
+        assert!(
+            checker.changelog().await.is_empty(),
+            "the changelog survived the switch being turned off"
+        );
+
+        // Turning it back on restores what was known, without waiting for a
+        // check to run again.
+        store.set_release_check_enabled(true).await.expect("on");
+        assert!(checker.cached_status().await.available);
+        assert_eq!(checker.changelog().await.len(), 1);
     }
 }

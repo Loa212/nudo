@@ -255,6 +255,9 @@ Every setting is a flag or an environment variable. The flags are
 | `NUDO_LOG_BUFFER` | `2000` | Log lines retained per service, so a freshly opened log view is not empty. |
 | `NUDO_PROBE_INTERVAL` | `60` | Seconds between target reachability probes. `0` disables. |
 | `NUDO_ALLOW_SETUP` | `true` | Whether first-run setup may create the initial admin. Closes automatically once an account exists. |
+| `NUDO_CHECK_FOR_UPDATES` | `true` | Fetch the release manifest and show a banner when a newer version exists. The only request nudo makes on its own behalf, and it sends nothing about your instance. Can also be turned off from **Settings → This instance**. |
+| `NUDO_UPDATE_MANIFEST_URL` | the repo's `releases.json` | Where the manifest is fetched from. Point it at your own copy to check against an internal mirror. |
+| `NUDO_UPDATE_INTERVAL_HOURS` | `24` | Hours between checks. |
 | `RUST_LOG` | `info` | Log filter. |
 
 ### Per-service configuration
@@ -291,13 +294,66 @@ sessions and the webhook receiver.
 
 ---
 
+## Updates and telemetry
+
+nudo checks for new releases by fetching a static JSON file
+(`releases.json` in this repository) and comparing versions. It sends **nothing**
+— not your version, not an identifier, not an install count. There is no
+telemetry in this codebase and no setting to disable it, because there is nothing
+to disable. A test asserts that the module has no network client, so that stays
+true.
+
+Nothing is ever installed automatically. The banner links to the notes; upgrading
+is a deliberate act on the host. This is the one place nudo deliberately does
+less than the tools it borrowed from: an updater that downloads a script and runs
+it as root is a large amount of trust to place in a URL, for a tool that holds
+every target's SSH keys.
+
+Release notes are rendered in-app under **What's new**, from the manifest the last
+check recorded — so an instance that has lost network access still shows the
+notes for the release it knows about. Both the check and the occasional
+"support this project" note can be turned off in **Settings → This instance**.
+
+---
+
 ## Development
 
 ```sh
-cargo test --workspace          # 691 unit and integration tests
+make help                       # every command, with what it does
+make check                      # fmt, clippy, and the full test suite
+make demo                       # nudo + a systemd target + three services
+```
+
+Or directly:
+
+```sh
+cargo test --workspace          # 734 unit and integration tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+### The demo
+
+`make demo` starts two containers — nudo, and a Debian host running systemd as
+PID 1 — registers the second as a target over SSH, and deploys the example
+services in `examples/services/`. That second container is the point: without a
+real systemd host you can look at the dashboard but not actually deploy anything.
+
+```sh
+make demo                       # the whole thing, from nothing
+make demo-open                  # the URL and the demo credentials
+make example-break              # ship a broken release and watch it roll back
+make example-unit EXAMPLE=latency-critical   # the unit file a deploy writes
+make demo-units                 # what systemd actually applied on the target
+make demo-changelog             # seed a pretend release, to see the update banner
+make demo-down                  # stop it; demo-clean also deletes the data
+```
+
+Each example under `examples/services/` is a `run.sh` and a `service.json`, and
+exercises something specific: `hello-http` an HTTP health check,
+`latency-critical` every scheduling knob, and `flaky` a service that starts but
+never becomes ready — which is what makes the rollback demo real rather than
+simulated.
 
 The end-to-end deployment tests need Docker. They start a systemd-enabled
 container, install an SSH key into it, and deploy a real artifact through the real
@@ -319,6 +375,11 @@ crates/cli/               nudo — a gRPC client, no duplicated logic
 crates/mcp/               MCP server for agents
 crates/allinone/          server + dashboard in one process
 packaging/nudo.service    run the control plane itself under systemd
+examples/services/        demo services, one directory each
+examples/scripts/         what `make demo` runs
+releases.json             the release manifest a running instance fetches
+scripts/add-release.py    adds an entry to it; run by the release workflow
+cliff.toml                changelog generation from the commit log
 ```
 
 `CHANGES.md` records the design decisions, the bugs testing found, and what is

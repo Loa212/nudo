@@ -235,12 +235,59 @@ bot` works; the same flag after the target is part of the remote command. This i
 pinned by a test rather than left to be discovered against a production host, and
 noted in `--help`.
 
+### What was taken from Coolify's update system, and what was not
+
+The release check, the in-app changelog and the "support this project" prompt are
+ported from Coolify. Three things were kept and three deliberately were not.
+
+**Kept: the anti-rollback ladder.** Coolify compares the version it fetched, the
+version it last recorded, and the version actually running, and takes the newest
+of the three. Without that, a manifest that momentarily serves an older entry
+tells everyone to downgrade. `best_known_version` does the same.
+
+**Kept: monthly recurrence on the support prompt.** The button says "Maybe next
+time", not "Never", and the prompt returns the following calendar month. A
+permanent dismissal on first sight means it is never seen again by the people
+most likely to have come to depend on the tool later.
+
+**Kept: one instance-wide off switch.** Someone who genuinely does not want to be
+asked should be able to say so once, and have it stick.
+
+**Not kept: the self-updater.** Coolify's update path downloads a shell script
+from a CDN and executes it as root on the host. For a tool that holds every
+target's SSH keys, that is a large amount of trust to place in a URL. nudo's
+banner is a link to the notes; upgrading is a deliberate act on the host. A test
+asserts the banner offers no `curl`, no `install.sh` and no `/upgrade` route, so
+this cannot be reintroduced without someone noticing.
+
+**Not kept: the telemetry.** A Coolify instance pings `undead.coolify.io` on
+every boot, on by default. nudo sends nothing, ever. There is no setting to
+disable it because there is nothing to disable, and a test scans the support
+module for a network client so that stays true.
+
+**Not kept: localStorage dismissal.** Coolify stores the sponsorship dismissal in
+the browser, so it resets on every new browser and cannot be honoured across
+devices. nudo stores it against the user.
+
+**Added: a gate before anyone is asked.** Coolify's popup can appear on a
+completely empty instance. nudo's waits until five deployments have succeeded.
+Asking for support before someone has deployed anything is asking a stranger for
+money.
+
+**Adapted rather than copied: the changelog generator.** Coolify's `cliff.toml`
+keys off conventional-commit prefixes and drops anything that does not match.
+This repository writes commit subjects as sentences, so that configuration would
+put every commit in "Other" and filtering would produce an empty changelog. The
+parsers here group by what the subject says and discard nothing: a generated
+changelog that silently omits a commit is worse than a noisy one, because the
+omission is invisible to someone reading it to decide whether to upgrade.
+
 ---
 
 ## Bugs found by testing
 
-Two bugs that only running against a real host would have caught, both now
-covered by regression tests:
+Bugs that only running the thing would have caught, all now covered by regression
+tests:
 
 1. **SSH sends EOF before the exit status.** The receive loop ended on
    `ChannelMsg::Eof`, so every remote command reported failure however well it
@@ -271,11 +318,26 @@ covered by regression tests:
    reintroduced. Two field-name mismatches in the same class (token scope, log
    line count) were silently discarding input.
 
+5. **Turning the release check off froze the banner instead of clearing it.**
+   The switch stopped future checks, but the dashboard kept rendering whatever
+   the last check had found — so unticking the box appeared to do nothing, which
+   is the worst possible outcome for a switch whose whole purpose is to stop
+   something being shown. Found by clicking it in a running instance. Both the
+   banner and the changelog now consult the switch on read; the recorded row is
+   left alone, so turning it back on restores what was known without waiting for
+   the next check.
+
 Three more were caught by unit tests before any real run: the `rm -rf` guard on
 service deletion sat *after* the SSH connect and so was unreachable; `Rollback`'s
 response did not carry the release it targeted; and MCP requires an object at the
 root of a tool's output schema, so the listing tools' bare arrays were a spec
 violation.
+
+One was in the demo rather than the product: `make demo-restart` recreates the
+target container while keeping nudo's database, so the registered target outlived
+the `authorized_keys` it depended on and every subsequent deploy failed public-key
+authentication. The setup script now reinstalls the key even when the target is
+already registered, and `demo-restart` runs it.
 
 ---
 
