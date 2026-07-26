@@ -55,6 +55,15 @@ pub struct Config {
     #[arg(long, env = "NUDO_PROBE_INTERVAL", default_value_t = 60)]
     pub probe_interval_seconds: u64,
 
+    /// Require a valid API token on every gRPC call.
+    ///
+    /// Off by default: the intended deployment binds the API to loopback with
+    /// the dashboard in front of it, and turning this on for an existing
+    /// instance without warning would lock its operator out. Turn it on when the
+    /// API is reachable by anything but the dashboard.
+    #[arg(long, env = "NUDO_REQUIRE_API_TOKEN", default_value_t = false)]
+    pub require_api_token: bool,
+
     /// Allow the first request to create the initial admin account when no
     /// user exists. Disable on a host where the dashboard is publicly exposed
     /// before you have had a chance to complete setup.
@@ -137,6 +146,7 @@ impl Default for Config {
             base_url: "http://localhost:3000".to_string(),
             log_buffer_lines: 2000,
             probe_interval_seconds: 60,
+            require_api_token: false,
             allow_setup: true,
         }
     }

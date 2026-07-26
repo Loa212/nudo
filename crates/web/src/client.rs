@@ -7,17 +7,74 @@
 use nudo_proto::*;
 use tonic::transport::Channel;
 
+/// Attaches the dashboard's API token to every outbound call.
+#[derive(Clone)]
+pub struct BearerToken {
+    token: Option<String>,
+}
+
+impl tonic::service::Interceptor for BearerToken {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(token) = &self.token
+            && let Ok(value) = format!("Bearer {token}").parse()
+        {
+            request.metadata_mut().insert("authorization", value);
+        }
+        Ok(request)
+    }
+}
+
+// The generated clients are typed over their interceptor, so each gets an alias
+// rather than repeating the full type at every call site.
+type TargetsClient = targets_client::TargetsClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type ServicesApiClient = services_api_client::ServicesApiClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type DeploymentsClient = deployments_client::DeploymentsClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type LogsClient =
+    logs_client::LogsClient<tonic::service::interceptor::InterceptedService<Channel, BearerToken>>;
+type TerminalsClient = terminals_client::TerminalsClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type SourcesClient = sources_client::SourcesClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type SecretsClient = secrets_client::SecretsClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+type AuditClient = audit_client::AuditClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
+
 /// A handle to the control plane.
 #[derive(Clone)]
 pub struct Api {
     endpoint: String,
+    /// Presented as a bearer token when the control plane requires one.
+    token: Option<String>,
 }
 
 impl Api {
-    pub fn new(endpoint: impl Into<String>) -> Self {
+    pub fn new(endpoint: impl Into<String>, token: Option<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            token: token.filter(|value| !value.trim().is_empty()),
         }
+    }
+
+    /// The bearer token to present, if one is configured.
+    ///
+    /// Exposed so callers building a client by hand attach the same credential;
+    /// the typed accessors below do it for their own clients.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
     }
 
     async fn channel(&self) -> Result<Channel, tonic::Status> {
@@ -33,48 +90,70 @@ impl Api {
             })
     }
 
-    pub async fn targets(&self) -> Result<targets_client::TargetsClient<Channel>, tonic::Status> {
-        Ok(targets_client::TargetsClient::new(self.channel().await?))
+    /// An interceptor attaching the bearer token, when one is configured.
+    ///
+    /// The generated clients are typed over their interceptor, so this is the one
+    /// place the credential is applied — a new accessor cannot forget it.
+    fn interceptor(&self) -> BearerToken {
+        BearerToken {
+            token: self.token.clone(),
+        }
     }
 
-    pub async fn services(
-        &self,
-    ) -> Result<services_api_client::ServicesApiClient<Channel>, tonic::Status> {
-        Ok(services_api_client::ServicesApiClient::new(
+    pub async fn targets(&self) -> Result<TargetsClient, tonic::Status> {
+        Ok(targets_client::TargetsClient::with_interceptor(
             self.channel().await?,
+            self.interceptor(),
         ))
     }
 
-    pub async fn deployments(
-        &self,
-    ) -> Result<deployments_client::DeploymentsClient<Channel>, tonic::Status> {
-        Ok(deployments_client::DeploymentsClient::new(
+    pub async fn services(&self) -> Result<ServicesApiClient, tonic::Status> {
+        Ok(services_api_client::ServicesApiClient::with_interceptor(
             self.channel().await?,
+            self.interceptor(),
         ))
     }
 
-    pub async fn logs(&self) -> Result<logs_client::LogsClient<Channel>, tonic::Status> {
-        Ok(logs_client::LogsClient::new(self.channel().await?))
-    }
-
-    pub async fn terminals(
-        &self,
-    ) -> Result<terminals_client::TerminalsClient<Channel>, tonic::Status> {
-        Ok(terminals_client::TerminalsClient::new(
+    pub async fn deployments(&self) -> Result<DeploymentsClient, tonic::Status> {
+        Ok(deployments_client::DeploymentsClient::with_interceptor(
             self.channel().await?,
+            self.interceptor(),
         ))
     }
 
-    pub async fn sources(&self) -> Result<sources_client::SourcesClient<Channel>, tonic::Status> {
-        Ok(sources_client::SourcesClient::new(self.channel().await?))
+    pub async fn logs(&self) -> Result<LogsClient, tonic::Status> {
+        Ok(logs_client::LogsClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
     }
 
-    pub async fn secrets(&self) -> Result<secrets_client::SecretsClient<Channel>, tonic::Status> {
-        Ok(secrets_client::SecretsClient::new(self.channel().await?))
+    pub async fn terminals(&self) -> Result<TerminalsClient, tonic::Status> {
+        Ok(terminals_client::TerminalsClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
     }
 
-    pub async fn audit(&self) -> Result<audit_client::AuditClient<Channel>, tonic::Status> {
-        Ok(audit_client::AuditClient::new(self.channel().await?))
+    pub async fn sources(&self) -> Result<SourcesClient, tonic::Status> {
+        Ok(sources_client::SourcesClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
+    }
+
+    pub async fn secrets(&self) -> Result<SecretsClient, tonic::Status> {
+        Ok(secrets_client::SecretsClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
+    }
+
+    pub async fn audit(&self) -> Result<AuditClient, tonic::Status> {
+        Ok(audit_client::AuditClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
     }
 
     // ---- convenience reads ----
@@ -202,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bad_endpoint_is_reported_rather_than_panicking() {
-        let api = Api::new("not a url");
+        let api = Api::new("not a url", None);
         assert!(api.targets().await.is_err());
     }
 
@@ -210,7 +289,7 @@ mod tests {
     async fn an_unreachable_control_plane_degrades_reads_to_empty_lists() {
         // The dashboard has to render something when the server is down; a
         // banner plus an empty table beats a 500 page.
-        let api = Api::new("http://127.0.0.1:1");
+        let api = Api::new("http://127.0.0.1:1", None);
 
         assert!(api.list_targets().await.is_empty());
         assert!(api.list_services("").await.is_empty());
@@ -225,7 +304,7 @@ mod tests {
     async fn an_unreachable_control_plane_still_surfaces_an_error_to_callers_that_want_one() {
         // A page that needs to distinguish "none" from "unreachable" uses the
         // typed client, which returns a status.
-        let api = Api::new("http://127.0.0.1:1");
+        let api = Api::new("http://127.0.0.1:1", None);
         let error = api.targets().await.expect_err("must fail");
         assert_eq!(error.code(), tonic::Code::Unavailable);
         assert!(error.message().contains("not reachable"));

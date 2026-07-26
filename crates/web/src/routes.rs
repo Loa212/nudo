@@ -962,8 +962,22 @@ async fn single_status(state: &AppState, service_id: &str) -> UnitStatus {
 // Deployments
 // ---------------------------------------------------------------------------
 
-pub async fn deployments_list(State(state): State<AppState>, _user: CurrentUser) -> Response {
-    let deployments = state.api.list_deployments("", 50).await;
+/// Which deployments to list.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DeploymentsQuery {
+    /// Only this service's deployments. A service detail page links here with it
+    /// set, so the filter has to be honoured rather than ignored.
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+pub async fn deployments_list(
+    State(state): State<AppState>,
+    Query(query): Query<DeploymentsQuery>,
+    _user: CurrentUser,
+) -> Response {
+    let service_filter = query.service.unwrap_or_default();
+    let deployments = state.api.list_deployments(&service_filter, 50).await;
     let services = state.api.list_services("").await;
     page(
         "Deployments",
@@ -1888,6 +1902,58 @@ pub async fn token_revoke(
                 })
                 .await;
             Redirect::to("/settings").into_response()
+        }
+        Err(error) => grpc_error(tonic::Status::invalid_argument(format!("{error:#}"))),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PasswordForm {
+    pub current_password: String,
+    pub new_password: String,
+    pub csrf: String,
+}
+
+/// Changes the signed-in user's password.
+///
+/// Requires the current one, and the store invalidates every other session on
+/// success — a password change is how someone responds to a suspected
+/// compromise, so it has to end the sessions they are worried about.
+pub async fn change_password(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    user: CurrentUser,
+    Form(form): Form<PasswordForm>,
+) -> Response {
+    if let Err(rejection) = check_csrf(&user, &form.csrf) {
+        return rejection.into_response();
+    }
+
+    match state
+        .store
+        .change_password(&user.id, &form.current_password, &form.new_password)
+        .await
+    {
+        Ok(()) => {
+            state
+                .store
+                .audit(nudo_server::store::NewAuditEntry {
+                    actor: Actor::human(user.id.clone(), user.email.clone()),
+                    action: "Settings.ChangePassword".to_string(),
+                    subject_id: user.id.clone(),
+                    dry_run: false,
+                    // The password itself is obviously never recorded.
+                    summary: "changed their password; all other sessions ended".to_string(),
+                })
+                .await;
+
+            // This session was invalidated along with the others, so the cookie
+            // is cleared and the user signs in again rather than silently
+            // hitting a redirect loop.
+            let jar = jar.add(crate::auth::clear_cookie(crate::auth::is_https(
+                &state.base_url,
+            )));
+            (jar, Redirect::to("/login")).into_response()
         }
         Err(error) => grpc_error(tonic::Status::invalid_argument(format!("{error:#}"))),
     }

@@ -55,6 +55,14 @@ struct Args {
 
     #[arg(long, env = "NUDO_ALLOW_SETUP", default_value_t = true)]
     allow_setup: bool,
+
+    /// Require an API token on every gRPC call.
+    ///
+    /// The dashboard is given one automatically, since it and the API are the
+    /// same process here — so turning this on does not lock anyone out. It is
+    /// worth setting when the API port is reachable by anything else.
+    #[arg(long, env = "NUDO_REQUIRE_API_TOKEN", default_value_t = false)]
+    require_api_token: bool,
 }
 
 #[tokio::main]
@@ -77,12 +85,24 @@ async fn main() -> anyhow::Result<()> {
         base_url: args.base_url.clone(),
         log_buffer_lines: args.log_buffer_lines,
         probe_interval_seconds: args.probe_interval_seconds,
+        require_api_token: args.require_api_token,
         allow_setup: args.allow_setup,
     };
 
     // Resolved once, before either half starts, so a bad key is a startup error
     // rather than a failure on the first secret read.
-    let _ = server_config.resolve_secret_key()?;
+    let secret_key = server_config.resolve_secret_key()?;
+
+    // With enforcement on, the dashboard needs a credential of its own or it
+    // cannot reach the API — including the page that mints tokens, which would be
+    // a lockout. Since both halves are this process, one is provisioned here.
+    let dashboard_token = if args.require_api_token {
+        let store = nudo_server::store::Store::open(&args.database).await?;
+        store.verify_secret_key(&secret_key).await?;
+        Some(provision_dashboard_token(&store).await?)
+    } else {
+        None
+    };
 
     let web_config = nudo_web::WebConfig {
         addr: args.web_addr,
@@ -93,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         secret_key_file: args.secret_key_file,
         base_url: args.base_url,
         allow_setup: args.allow_setup,
+        api_token: dashboard_token,
     };
 
     // The gRPC server first, so the dashboard's first request has something to
@@ -136,6 +157,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Mints the token the dashboard presents to the API.
+///
+/// A fresh one per boot, because only the digest is stored and the plaintext
+/// cannot be recovered — so reuse is impossible. The previous one is revoked as
+/// it is replaced, which keeps the settings list from filling with dead tokens
+/// and means a restart invalidates whatever the last process held.
+async fn provision_dashboard_token(store: &nudo_server::store::Store) -> anyhow::Result<String> {
+    const NAME: &str = "dashboard (all-in-one)";
+
+    // Revoke any earlier one: its plaintext is unrecoverable, so it can never be
+    // used again and would otherwise linger in the settings list.
+    for token in store.list_api_tokens().await? {
+        if token.name == NAME && !token.revoked() {
+            let _ = store.revoke_api_token(&token.id).await;
+        }
+    }
+
+    let (_, plaintext) = store
+        .create_api_token(NAME, &["write".to_string()], "system")
+        .await?;
+    tracing::info!("provisioned an API token for the dashboard");
+    Ok(plaintext)
 }
 
 /// Waits briefly for an address to accept connections.

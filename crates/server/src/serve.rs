@@ -44,9 +44,26 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
         .set_serving::<TargetsServer<api::TargetsService>>()
         .await;
 
+    if config.require_api_token {
+        tracing::info!("every gRPC call requires an API token");
+    } else {
+        tracing::warn!(
+            "the gRPC API accepts unauthenticated calls. That is fine while it is \
+             bound to loopback with only the dashboard in front of it; set \
+             --require-api-token (NUDO_REQUIRE_API_TOKEN=true) if anything else \
+             can reach it."
+        );
+    }
+
     tracing::info!(%addr, database = %config.database.display(), "nudo control plane listening");
 
-    tonic::transport::Server::builder()
+    let mut builder = tonic::transport::Server::builder().layer(tower::util::option_layer(
+        config
+            .require_api_token
+            .then(|| crate::auth::RequireApiToken::new(store.clone())),
+    ));
+
+    builder
         .add_service(health_service)
         .add_service(TargetsServer::new(api::TargetsService::new(
             context.clone(),

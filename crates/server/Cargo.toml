@@ -19,6 +19,9 @@ nudo-proto.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 tonic-health.workspace = true
+# The API-token layer is a tower middleware over the HTTP request.
+tower = { workspace = true, features = ["util"] }
+http.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 

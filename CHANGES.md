@@ -297,13 +297,19 @@ to gate.
 specifies session auth plus scoped API tokens, which is what is implemented;
 role separation across many operators is a different product shape.
 
-**API-token authentication on the gRPC surface.** Tokens are minted, scoped,
-listed, revoked, verified and audited, and the CLI sends one as
-`authorization: Bearer`. The gRPC server does not yet *require* one — the
-intended deployment binds the API to loopback with the dashboard in front of it,
-which is what the shipped compose file and systemd unit do. Enforcing it means an
-interceptor plus a decision about how the dashboard authenticates to its own API,
-and getting that wrong would lock an operator out of their own control plane.
+**Requiring API tokens is opt-in, not the default.** Tokens are minted, scoped
+(`read`/`write`), listed, revoked, audited, and — with `--require-api-token` —
+verified on every gRPC call by a tower layer, with read RPCs on an explicit
+allowlist so a newly added RPC needs `write` by default. It is off unless asked
+for, because the intended deployment binds the API to loopback with the dashboard
+in front of it, and switching an existing instance to required tokens on upgrade
+would lock its operator out. When it is off the server logs a warning at startup
+naming the exposure.
+
+The dashboard needs a credential of its own once enforcement is on, or it cannot
+reach the API — including the page that mints tokens, which would be exactly that
+lockout. The all-in-one provisions one for itself at boot and revokes the previous
+one; a split deployment sets `NUDO_TOKEN` on the web tier.
 
 **GitHub Enterprise Server end-to-end verification.** URL derivation for
 github.com, Enterprise Cloud (`*.ghe.com`) and Enterprise Server is implemented

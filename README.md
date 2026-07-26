@@ -250,7 +250,8 @@ Every setting is a flag or an environment variable. The flags are
 | `NUDO_WEB_ADDR` | `127.0.0.1:3000` | Where the dashboard listens. |
 | `NUDO_GRPC_ADDR` | `127.0.0.1:50051` | Where the gRPC API listens. Loopback by default. |
 | `NUDO_ENDPOINT` | `http://127.0.0.1:50051` | Where clients (CLI, MCP, dashboard) find the API. |
-| `NUDO_TOKEN` | — | An API token, for the CLI in CI. |
+| `NUDO_TOKEN` | — | An API token. Used by the CLI, and by the dashboard when the API requires one. |
+| `NUDO_REQUIRE_API_TOKEN` | `false` | Require a valid API token on every gRPC call. Off by default because the API binds to loopback with the dashboard in front of it; turn it on when anything else can reach it. The all-in-one provisions a token for its own dashboard, so enabling it cannot lock you out. |
 | `NUDO_LOG_BUFFER` | `2000` | Log lines retained per service, so a freshly opened log view is not empty. |
 | `NUDO_PROBE_INTERVAL` | `60` | Seconds between target reachability probes. `0` disables. |
 | `NUDO_ALLOW_SETUP` | `true` | Whether first-run setup may create the initial admin. Closes automatically once an account exists. |
@@ -293,7 +294,7 @@ sessions and the webhook receiver.
 ## Development
 
 ```sh
-cargo test --workspace          # 668 unit and integration tests
+cargo test --workspace          # unit and integration tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```

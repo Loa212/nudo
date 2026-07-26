@@ -1069,8 +1069,12 @@ pub fn service_detail(
                 button .btn.primary type="submit"
                     onclick=(deploy_confirm(hot)) { "Deploy" }
             }
-            form method="post" action=(format!("/services/{}/restart", service.id)) {
+            // One endpoint takes every unit action, with the verb in a hidden
+            // field — so start, stop, restart, reload, enable and disable all go
+            // through the same handler and the same guardrail.
+            form method="post" action=(format!("/services/{}/action", service.id)) {
                 (csrf_input(csrf))
+                input type="hidden" name="action" value="restart";
                 // Restarting drops in-flight work, so it confirms even though
                 // the end state is the same as the current one.
                 button .btn type="submit"
@@ -1079,16 +1083,18 @@ pub fn service_detail(
                 }
             }
             @if running {
-                form method="post" action=(format!("/services/{}/stop", service.id)) {
+                form method="post" action=(format!("/services/{}/action", service.id)) {
                     (csrf_input(csrf))
+                    input type="hidden" name="action" value="stop";
                     button .btn.danger type="submit"
                         onclick=(format!("return confirm('Stop {}? The service will be down until it is started again.')", js_text(&unit.unit_name))) {
                         "Stop"
                     }
                 }
             } @else {
-                form method="post" action=(format!("/services/{}/start", service.id)) {
+                form method="post" action=(format!("/services/{}/action", service.id)) {
                     (csrf_input(csrf))
+                    input type="hidden" name="action" value="start";
                     button .btn type="submit" { "Start" }
                 }
             }
@@ -1922,7 +1928,11 @@ pub fn deployment_detail(
                         // The wrapper carries the subscription so the swapped
                         // fragment stays plain `.line` divs.
                         div hx-ext="sse" sse-connect=(format!("/deployments/{}/stream", deployment.id)) {
-                            div #deploy-log .logs sse-swap="log" hx-swap="beforeend" {
+                            // The stream sends the whole pane each tick, not a delta — that is what
+                            // lets a reconnect resynchronise instead of interleaving.
+                            // So the swap replaces rather than appends; appending would
+                            // re-add every line already shown, on every tick.
+                            div #deploy-log .logs sse-swap="log" hx-swap="innerHTML" {
                                 (deployment_log_lines(lines))
                             }
                         }
@@ -1997,8 +2007,8 @@ pub fn logs_view(service: &Service, lines: &[LogLine], grep: &str, follow: bool)
                 // GET, so no CSRF token: this form only reads.
                 form .row method="get" action=(base) {
                     div .field {
-                        label for="tail" { "Lines" }
-                        select id="tail" name="tail" {
+                        label for="lines" { "Lines" }
+                        select id="lines" name="lines" {
                             @for option in ["100", "500", "2000"] {
                                 option value=(option) { (option) }
                             }
@@ -2030,7 +2040,8 @@ pub fn logs_view(service: &Service, lines: &[LogLine], grep: &str, follow: bool)
 
             @if follow {
                 div hx-ext="sse" sse-connect=(format!("/services/{}/logs/stream?grep={}", service.id, urlencode(grep))) {
-                    div #log-pane .logs.tall sse-swap="log" hx-swap="beforeend" {
+                    // As above: each tick carries the full window, so it replaces.
+                    div #log-pane .logs.tall sse-swap="log" hx-swap="innerHTML" {
                         (log_lines(lines))
                     }
                 }
@@ -2289,7 +2300,7 @@ pub fn sources_list(sources: &[Source], csrf: &str) -> Markup {
                 }
             }
 
-            form #create-app .card method="post" action="/sources/github/manifest" {
+            form #create-app .card method="post" action="/sources/github" {
                 (csrf_input(csrf))
                 h2 { "Create a GitHub App" }
                 // Deliberately no field for App credentials: nudo publishes a
@@ -2596,11 +2607,18 @@ pub fn settings_page(api_tokens: &[TokenView], user_email: &str, csrf: &str) -> 
                                     placeholder="laptop-cli";
                             }
                             div .field {
-                                label for="scopes" { "Scopes" }
-                                select id="scopes" name="scopes" {
-                                    option value="read" { "read — list and inspect" }
-                                    option value="deploy" { "deploy — read, plus deploy and unit actions" }
-                                    option value="admin" { "admin — everything, including secrets" }
+                                label { "Scope" }
+                                // The store knows two scopes. Read is always
+                                // granted; write is the box, because a token
+                                // that can deploy is the one worth thinking
+                                // about before minting.
+                                label .check {
+                                    input type="checkbox" name="write" value="on";
+                                    span {
+                                        "Allow writes — deploy, roll back, unit "
+                                        "actions and secrets. Leave unticked for a "
+                                        "read-only token."
+                                    }
                                 }
                             }
                         }
@@ -4380,7 +4398,7 @@ mod tests {
         assert!(rendered.contains("Create a GitHub App"));
         assert!(rendered.contains("name=\"name\""));
         assert!(rendered.contains("name=\"organization\""));
-        assert!(rendered.contains("action=\"/sources/github/manifest\""));
+        assert!(rendered.contains("action=\"/sources/github\""));
         assert!(rendered.contains("Already have an App?"));
         // No place to paste a private key: GitHub hands the credentials back.
         assert!(!rendered.to_lowercase().contains("private key"));
