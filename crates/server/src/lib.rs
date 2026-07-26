@@ -5,15 +5,19 @@
 //! opened from here, so a latency-critical host runs the OS, systemd and the
 //! deployed binary and nothing else.
 
+pub mod api;
 pub mod config;
+pub mod crypto;
 pub mod deploy;
 pub mod events;
 pub mod git;
 pub mod github;
 pub mod health;
-pub mod crypto;
+pub mod logs;
+pub mod probe;
 pub mod ssh;
 pub mod store;
 pub mod systemd;
+pub mod units;
 
 pub use config::Config;
