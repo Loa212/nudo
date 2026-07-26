@@ -42,7 +42,8 @@ pub const PRE_AUTH_CSRF: &str = "nudo-pre-auth";
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "nudo-web",
-    about = "nudo dashboard (a gRPC client of the control plane)"
+    about = "nudo dashboard (a gRPC client of the control plane)",
+    version
 )]
 pub struct WebConfig {
     /// Address to serve the dashboard on.

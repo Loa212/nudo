@@ -20,6 +20,9 @@ COPY crates/web/Cargo.toml       crates/web/
 COPY crates/cli/Cargo.toml       crates/cli/
 COPY crates/mcp/Cargo.toml       crates/mcp/
 COPY crates/allinone/Cargo.toml  crates/allinone/
+COPY controlplane.proto ./
+COPY crates/proto/include crates/proto/include
+COPY crates/proto/build.rs crates/proto/
 RUN mkdir -p crates/proto/src crates/server/src crates/web/src crates/cli/src \
              crates/mcp/src crates/allinone/src \
     && echo 'fn main() {}' | tee crates/server/src/main.rs \
@@ -29,7 +32,8 @@ RUN mkdir -p crates/proto/src crates/server/src crates/web/src crates/cli/src \
              crates/web/src/lib.rs crates/mcp/src/lib.rs \
     && cargo fetch --locked
 
-# The real sources.
+# The real sources. The proto and the vendored well-known types the build
+# script needs come first.
 COPY controlplane.proto ./
 COPY crates crates
 

@@ -14,7 +14,8 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "nudo-server",
-    about = "nudo control plane (gRPC API + deploy engine)"
+    about = "nudo control plane (gRPC API + deploy engine)",
+    version
 )]
 pub struct Config {
     /// Address the gRPC API listens on.
