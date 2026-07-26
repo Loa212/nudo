@@ -156,7 +156,13 @@ mod tests {
     async fn listing_paginates() {
         let service = service().await;
         for i in 0..5 {
-            record(&service, &format!("A{i}"), "svc_1", Actor::human("u", "alice")).await;
+            record(
+                &service,
+                &format!("A{i}"),
+                "svc_1",
+                Actor::human("u", "alice"),
+            )
+            .await;
         }
 
         let first = service
@@ -202,7 +208,13 @@ mod tests {
     #[tokio::test]
     async fn each_entry_carries_its_actor() {
         let service = service().await;
-        record(&service, "Deploy", "svc_1", Actor::agent("sess_1", "claude")).await;
+        record(
+            &service,
+            "Deploy",
+            "svc_1",
+            Actor::agent("sess_1", "claude"),
+        )
+        .await;
 
         let listed = service
             .list(Request::new(ListAuditRequest::default()))

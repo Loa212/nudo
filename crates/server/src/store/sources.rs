@@ -123,12 +123,11 @@ impl Store {
         // Refusing to overwrite existing credentials is what stops a replayed
         // or forged callback from rebinding a configured source to an attacker's
         // App. Ported from Coolify, which checks the same thing.
-        let existing: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT app_id, private_key_enc FROM sources WHERE id = ?1",
-        )
-        .bind(source_id)
-        .fetch_optional(self.pool())
-        .await?;
+        let existing: Option<(Option<i64>, Option<String>)> =
+            sqlx::query_as("SELECT app_id, private_key_enc FROM sources WHERE id = ?1")
+                .bind(source_id)
+                .fetch_optional(self.pool())
+                .await?;
 
         let Some((app_id, private_key)) = existing else {
             bail!("no such source: {source_id}");
@@ -211,9 +210,11 @@ impl Store {
     }
 
     pub async fn list_sources(&self) -> anyhow::Result<Vec<Source>> {
-        let rows = sqlx::query(AssertSqlSafe(format!("{SOURCE_SELECT} ORDER BY created_at DESC")))
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{SOURCE_SELECT} ORDER BY created_at DESC"
+        )))
+        .fetch_all(self.pool())
+        .await?;
         Ok(rows.iter().map(row_to_source).collect())
     }
 
@@ -406,12 +407,12 @@ fn row_to_source(row: &SqliteRow) -> Source {
         app_id: row.get::<Option<i64>, _>("app_id").unwrap_or_default(),
         app_slug: row.get("app_slug"),
         html_url: row.get("html_url"),
-        installation_id: row.get::<Option<i64>, _>("installation_id").unwrap_or_default(),
+        installation_id: row
+            .get::<Option<i64>, _>("installation_id")
+            .unwrap_or_default(),
         account_login: row.get("account_login"),
         installed: row.get::<i64, _>("installed") != 0,
-        created_at: nudo_proto::to_timestamp_opt(from_db_time(
-            &row.get::<String, _>("created_at"),
-        )),
+        created_at: nudo_proto::to_timestamp_opt(from_db_time(&row.get::<String, _>("created_at"))),
     }
 }
 
@@ -425,12 +426,11 @@ pub struct SourceUrls {
 
 impl Store {
     pub async fn source_urls(&self, source_id: &str) -> anyhow::Result<Option<SourceUrls>> {
-        let row: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT api_url, html_url, organization FROM sources WHERE id = ?1",
-        )
-        .bind(source_id)
-        .fetch_optional(self.pool())
-        .await?;
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT api_url, html_url, organization FROM sources WHERE id = ?1")
+                .bind(source_id)
+                .fetch_optional(self.pool())
+                .await?;
 
         Ok(row.map(|(api_url, html_url, organization)| SourceUrls {
             api_url,
@@ -477,7 +477,12 @@ mod tests {
     async fn a_pending_source_starts_uninstalled_with_no_credentials() {
         let (store, _) = fixture().await;
         let source = store
-            .create_pending_github_source("pending", "", "https://api.github.com", "https://github.com")
+            .create_pending_github_source(
+                "pending",
+                "",
+                "https://api.github.com",
+                "https://github.com",
+            )
             .await
             .expect("create");
 
@@ -491,7 +496,12 @@ mod tests {
     async fn attaching_credentials_seals_them_and_never_returns_them() {
         let (store, key) = fixture().await;
         let pending = store
-            .create_pending_github_source("pending", "", "https://api.github.com", "https://github.com")
+            .create_pending_github_source(
+                "pending",
+                "",
+                "https://api.github.com",
+                "https://github.com",
+            )
             .await
             .expect("create");
 
@@ -510,23 +520,28 @@ mod tests {
         assert!(!rendered.contains("BEGIN RSA PRIVATE KEY"));
 
         // The stored columns are ciphertext.
-        let (pk, wh): (String, String) = sqlx::query_as(
-            "SELECT private_key_enc, webhook_secret_enc FROM sources WHERE id = ?1",
-        )
-        .bind(&pending.id)
-        .fetch_one(store.pool())
-        .await
-        .expect("query");
+        let (pk, wh): (String, String) =
+            sqlx::query_as("SELECT private_key_enc, webhook_secret_enc FROM sources WHERE id = ?1")
+                .bind(&pending.id)
+                .fetch_one(store.pool())
+                .await
+                .expect("query");
         assert!(!pk.contains("BEGIN RSA"));
         assert!(!wh.contains("webhook-secret-value"));
 
         // But the server can still read them when it needs to.
         assert_eq!(
-            store.source_private_key(&key, &pending.id).await.expect("read"),
+            store
+                .source_private_key(&key, &pending.id)
+                .await
+                .expect("read"),
             Some(credentials().private_key)
         );
         assert_eq!(
-            store.source_webhook_secret(&key, &pending.id).await.expect("read"),
+            store
+                .source_webhook_secret(&key, &pending.id)
+                .await
+                .expect("read"),
             Some("webhook-secret-value".to_string())
         );
     }
@@ -559,7 +574,11 @@ mod tests {
         assert!(error.to_string().contains("already has"), "got: {error}");
 
         // The original credentials survive.
-        let unchanged = store.get_source(&pending.id).await.expect("get").expect("some");
+        let unchanged = store
+            .get_source(&pending.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(unchanged.app_id, 123456);
     }
 
@@ -586,7 +605,11 @@ mod tests {
             .await
             .expect("attach");
 
-        let found = store.source_by_app_id(123456).await.expect("lookup").expect("some");
+        let found = store
+            .source_by_app_id(123456)
+            .await
+            .expect("lookup")
+            .expect("some");
         assert_eq!(found.id, pending.id);
         assert!(store.source_by_app_id(999).await.expect("lookup").is_none());
     }
@@ -604,7 +627,11 @@ mod tests {
             .await
             .expect("install");
 
-        let installed = store.get_source(&pending.id).await.expect("get").expect("some");
+        let installed = store
+            .get_source(&pending.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(installed.installation_id, 42);
         assert_eq!(installed.account_login, "acme-corp");
         assert!(installed.installed);
@@ -628,7 +655,10 @@ mod tests {
         assert!(source.installed);
 
         assert_eq!(
-            store.source_deploy_key(&key, &source.id).await.expect("read"),
+            store
+                .source_deploy_key(&key, &source.id)
+                .await
+                .expect("read"),
             Some("-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n".to_string())
         );
     }
@@ -641,7 +671,10 @@ mod tests {
             .await
             .expect("create");
 
-        let state = store.create_setup_state(&source.id, "manifest").await.expect("state");
+        let state = store
+            .create_setup_state(&source.id, "manifest")
+            .await
+            .expect("state");
 
         let consumed = store
             .consume_setup_state(&state, "manifest")
@@ -652,7 +685,11 @@ mod tests {
 
         // A replay finds nothing.
         assert!(
-            store.consume_setup_state(&state, "manifest").await.expect("consume").is_none(),
+            store
+                .consume_setup_state(&state, "manifest")
+                .await
+                .expect("consume")
+                .is_none(),
             "a state must not be usable twice"
         );
     }
@@ -664,7 +701,10 @@ mod tests {
             .create_pending_github_source("p", "", "https://api.github.com", "https://github.com")
             .await
             .expect("create");
-        let state = store.create_setup_state(&source.id, "manifest").await.expect("state");
+        let state = store
+            .create_setup_state(&source.id, "manifest")
+            .await
+            .expect("state");
 
         let (stored,): (String,) = sqlx::query_as("SELECT state_hash FROM github_setup_states")
             .fetch_one(store.pool())
@@ -681,10 +721,17 @@ mod tests {
             .create_pending_github_source("p", "", "https://api.github.com", "https://github.com")
             .await
             .expect("create");
-        let state = store.create_setup_state(&source.id, "install").await.expect("state");
+        let state = store
+            .create_setup_state(&source.id, "install")
+            .await
+            .expect("state");
 
         assert!(
-            store.consume_setup_state(&state, "manifest").await.expect("consume").is_none(),
+            store
+                .consume_setup_state(&state, "manifest")
+                .await
+                .expect("consume")
+                .is_none(),
             "the action must match the endpoint consuming it"
         );
     }
@@ -692,8 +739,20 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_or_empty_state_is_rejected() {
         let (store, _) = fixture().await;
-        assert!(store.consume_setup_state("guessed", "manifest").await.expect("c").is_none());
-        assert!(store.consume_setup_state("", "manifest").await.expect("c").is_none());
+        assert!(
+            store
+                .consume_setup_state("guessed", "manifest")
+                .await
+                .expect("c")
+                .is_none()
+        );
+        assert!(
+            store
+                .consume_setup_state("", "manifest")
+                .await
+                .expect("c")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -703,15 +762,26 @@ mod tests {
             .create_pending_github_source("p", "", "https://api.github.com", "https://github.com")
             .await
             .expect("create");
-        let state = store.create_setup_state(&source.id, "manifest").await.expect("state");
+        let state = store
+            .create_setup_state(&source.id, "manifest")
+            .await
+            .expect("state");
 
         sqlx::query("UPDATE github_setup_states SET expires_at = ?1")
-            .bind(to_db_time(chrono::Utc::now() - chrono::Duration::minutes(1)))
+            .bind(to_db_time(
+                chrono::Utc::now() - chrono::Duration::minutes(1),
+            ))
             .execute(store.pool())
             .await
             .expect("expire");
 
-        assert!(store.consume_setup_state(&state, "manifest").await.expect("c").is_none());
+        assert!(
+            store
+                .consume_setup_state(&state, "manifest")
+                .await
+                .expect("c")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -733,7 +803,10 @@ mod tests {
             .await
             .expect("cache");
         assert_eq!(
-            store.cached_installation_token(&key, &source.id).await.expect("read"),
+            store
+                .cached_installation_token(&key, &source.id)
+                .await
+                .expect("read"),
             Some("ghs_token".to_string())
         );
 
@@ -766,11 +839,20 @@ mod tests {
             .expect("create");
 
         let later = chrono::Utc::now() + chrono::Duration::minutes(60);
-        store.cache_installation_token(&key, &source.id, "first", later).await.expect("a");
-        store.cache_installation_token(&key, &source.id, "second", later).await.expect("b");
+        store
+            .cache_installation_token(&key, &source.id, "first", later)
+            .await
+            .expect("a");
+        store
+            .cache_installation_token(&key, &source.id, "second", later)
+            .await
+            .expect("b");
 
         assert_eq!(
-            store.cached_installation_token(&key, &source.id).await.expect("read"),
+            store
+                .cached_installation_token(&key, &source.id)
+                .await
+                .expect("read"),
             Some("second".to_string())
         );
     }
@@ -807,7 +889,10 @@ mod tests {
             .create_pending_github_source("p", "", "https://api.github.com", "https://github.com")
             .await
             .expect("create");
-        let state = store.create_setup_state(&source.id, "manifest").await.expect("state");
+        let state = store
+            .create_setup_state(&source.id, "manifest")
+            .await
+            .expect("state");
         store
             .cache_installation_token(
                 &key,
@@ -820,7 +905,13 @@ mod tests {
 
         store.delete_source(&source.id).await.expect("delete");
 
-        assert!(store.consume_setup_state(&state, "manifest").await.expect("c").is_none());
+        assert!(
+            store
+                .consume_setup_state(&state, "manifest")
+                .await
+                .expect("c")
+                .is_none()
+        );
         assert!(
             store
                 .cached_installation_token(&key, &source.id)
@@ -844,7 +935,11 @@ mod tests {
             .await
             .expect("create");
 
-        let urls = store.source_urls(&source.id).await.expect("urls").expect("some");
+        let urls = store
+            .source_urls(&source.id)
+            .await
+            .expect("urls")
+            .expect("some");
         assert_eq!(urls.api_url, "https://api.octocorp.ghe.com");
         assert_eq!(urls.html_url, "https://octocorp.ghe.com");
         assert_eq!(urls.organization, "acme-corp");
@@ -854,12 +949,22 @@ mod tests {
     async fn sources_list_newest_first() {
         let (store, _) = fixture().await;
         store
-            .create_pending_github_source("first", "", "https://api.github.com", "https://github.com")
+            .create_pending_github_source(
+                "first",
+                "",
+                "https://api.github.com",
+                "https://github.com",
+            )
             .await
             .expect("a");
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         store
-            .create_pending_github_source("second", "", "https://api.github.com", "https://github.com")
+            .create_pending_github_source(
+                "second",
+                "",
+                "https://api.github.com",
+                "https://github.com",
+            )
             .await
             .expect("b");
 

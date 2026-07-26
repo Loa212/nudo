@@ -155,12 +155,10 @@ impl Logs for LogsService {
             )
             .await?;
 
-        let timeout = std::time::Duration::from_secs(
-            match request.timeout_seconds {
-                0 => 60,
-                n => n.min(MAX_COMMAND_TIMEOUT_SECONDS),
-            } as u64,
-        );
+        let timeout = std::time::Duration::from_secs(match request.timeout_seconds {
+            0 => 60,
+            n => n.min(MAX_COMMAND_TIMEOUT_SECONDS),
+        } as u64);
 
         if authorized.dry_run {
             // Report what would run and stop, without connecting.
@@ -290,7 +288,7 @@ mod tests {
         let status = expect_status(
             service
                 .stream(Request::new(StreamLogsRequest {
-                service_id: "svc_nope".to_string(),
+                    service_id: "svc_nope".to_string(),
                     ..Default::default()
                 }))
                 .await,
@@ -304,10 +302,10 @@ mod tests {
         // This is what stops a fresh page load from showing an empty pane.
         let (service, _, service_id) = fixture().await;
         for i in 0..3 {
-            service
-                .context
-                .bus
-                .publish_log(&service_id, log_event(&format!("line-{i}"), &format!("c{i}")));
+            service.context.bus.publish_log(
+                &service_id,
+                log_event(&format!("line-{i}"), &format!("c{i}")),
+            );
         }
 
         let mut stream = service
@@ -335,8 +333,14 @@ mod tests {
     #[tokio::test]
     async fn a_grep_filters_the_backfill_too() {
         let (service, _, service_id) = fixture().await;
-        service.context.bus.publish_log(&service_id, log_event("all good", "c1"));
-        service.context.bus.publish_log(&service_id, log_event("ERROR: boom", "c2"));
+        service
+            .context
+            .bus
+            .publish_log(&service_id, log_event("all good", "c1"));
+        service
+            .context
+            .bus
+            .publish_log(&service_id, log_event("ERROR: boom", "c2"));
 
         let mut stream = service
             .stream(Request::new(StreamLogsRequest {
@@ -358,10 +362,10 @@ mod tests {
     async fn a_cursor_resumes_after_what_the_client_already_has() {
         let (service, _, service_id) = fixture().await;
         for i in 0..4 {
-            service
-                .context
-                .bus
-                .publish_log(&service_id, log_event(&format!("line-{i}"), &format!("c{i}")));
+            service.context.bus.publish_log(
+                &service_id,
+                log_event(&format!("line-{i}"), &format!("c{i}")),
+            );
         }
 
         let mut stream = service
@@ -390,9 +394,9 @@ mod tests {
         let status = expect_status(
             service
                 .run_command(Request::new(RunCommandRequest {
-                mutation: Some(Mutation::by(Actor::human("u", "alice"))),
-                target_id,
-                command: "   ".to_string(),
+                    mutation: Some(Mutation::by(Actor::human("u", "alice"))),
+                    target_id,
+                    command: "   ".to_string(),
                     ..Default::default()
                 }))
                 .await,
@@ -407,9 +411,9 @@ mod tests {
         let status = expect_status(
             service
                 .run_command(Request::new(RunCommandRequest {
-                mutation: Some(Mutation::by(Actor::human("u", "alice"))),
-                target_id: "tgt_nope".to_string(),
-                command: "uptime".to_string(),
+                    mutation: Some(Mutation::by(Actor::human("u", "alice"))),
+                    target_id: "tgt_nope".to_string(),
+                    command: "uptime".to_string(),
                     ..Default::default()
                 }))
                 .await,
@@ -436,10 +440,10 @@ mod tests {
         let status = expect_status(
             service
                 .run_command(Request::new(RunCommandRequest {
-                mutation: Some(Mutation::by(Actor::agent("s", "claude"))),
-                target_id: hot.id,
-                command: "systemctl".to_string(),
-                args: vec!["restart".to_string(), "hft".to_string()],
+                    mutation: Some(Mutation::by(Actor::agent("s", "claude"))),
+                    target_id: hot.id,
+                    command: "systemctl".to_string(),
+                    args: vec!["restart".to_string(), "hft".to_string()],
                     ..Default::default()
                 }))
                 .await,
@@ -469,7 +473,9 @@ mod tests {
 
         let first = stream.next().await.expect("chunk").expect("ok");
         let text = match first.chunk {
-            Some(command_output::Chunk::Stdout(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Some(command_output::Chunk::Stdout(bytes)) => {
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
             other => panic!("expected stdout, got {other:?}"),
         };
         assert!(text.contains("dry run"));
@@ -477,7 +483,10 @@ mod tests {
 
         // The exit code still terminates the stream, as the proto requires.
         let last = stream.next().await.expect("chunk").expect("ok");
-        assert!(matches!(last.chunk, Some(command_output::Chunk::ExitCode(0))));
+        assert!(matches!(
+            last.chunk,
+            Some(command_output::Chunk::ExitCode(0))
+        ));
     }
 
     #[tokio::test]
@@ -501,10 +510,15 @@ mod tests {
 
         let first = stream.next().await.expect("chunk").expect("ok");
         let text = match first.chunk {
-            Some(command_output::Chunk::Stdout(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Some(command_output::Chunk::Stdout(bytes)) => {
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
             other => panic!("expected stdout, got {other:?}"),
         };
-        assert!(text.contains("'; rm -rf /'"), "argument was not quoted: {text}");
+        assert!(
+            text.contains("'; rm -rf /'"),
+            "argument was not quoted: {text}"
+        );
     }
 
     #[tokio::test]
@@ -535,5 +549,4 @@ mod tests {
             .expect("entry");
         assert!(entry.summary.contains("uptime"));
     }
-
 }

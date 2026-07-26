@@ -200,7 +200,10 @@ fn target_name<'a>(id: &'a str, targets: &'a [Target]) -> &'a str {
 }
 
 fn service_name<'a>(id: &'a str, services: &'a [Service]) -> &'a str {
-    name_of(id, services.iter().map(|s| (s.id.as_str(), s.name.as_str())))
+    name_of(
+        id,
+        services.iter().map(|s| (s.id.as_str(), s.name.as_str())),
+    )
 }
 
 /// Whether a service has any latency knob set. When it does, the knobs are
@@ -453,9 +456,9 @@ pub fn deployment_badge(status: i32) -> Markup {
         Ok(S::Failed) => badge("failed", BadgeKind::Bad),
         Ok(S::RolledBack) => badge("rolled back", BadgeKind::Warn),
         Ok(S::Cancelled) => badge("cancelled", BadgeKind::Neutral),
-        Ok(state @ (S::Queued | S::Building | S::Uploading | S::Activating | S::HealthChecking)) => {
-            badge(state.as_str(), BadgeKind::Info)
-        }
+        Ok(
+            state @ (S::Queued | S::Building | S::Uploading | S::Activating | S::HealthChecking),
+        ) => badge(state.as_str(), BadgeKind::Info),
         _ => badge("unspecified", BadgeKind::Neutral),
     }
 }
@@ -757,7 +760,9 @@ pub fn target_detail(
                         Some(("Add service", &format!("/services/new?target={}", target.id))),
                     ))
                 } @else {
-                    (services_rows(&owned, &[target.clone()], statuses, false))
+                    // A one-element slice; clippy's needless-borrow suggestion here is
+                    // wrong, since the parameter is a slice rather than a reference.
+                    (services_rows(&owned, std::slice::from_ref(target), statuses, false))
                 }
             }
         }
@@ -1375,11 +1380,11 @@ pub fn service_form(
         Some(s) => format!("/services/{}", s.id),
         None => "/services".to_string(),
     };
-    let unit = existing
-        .and_then(|s| s.unit.clone())
-        .unwrap_or_else(nudo_proto::SystemdUnit::default);
+    let unit = existing.and_then(|s| s.unit.clone()).unwrap_or_default();
     let check = existing.and_then(|s| s.health_check.clone());
-    let artifact = existing.and_then(|s| s.artifact.as_ref()).and_then(|a| a.kind.as_ref());
+    let artifact = existing
+        .and_then(|s| s.artifact.as_ref())
+        .and_then(|a| a.kind.as_ref());
     let git = match artifact {
         Some(ArtifactKind::Git(git)) => Some(git.clone()),
         _ => None,
@@ -1842,8 +1847,8 @@ pub fn deployment_detail(
     live: bool,
     csrf: &str,
 ) -> Markup {
-    let status = deployment::Status::try_from(deployment.status)
-        .unwrap_or(deployment::Status::Unspecified);
+    let status =
+        deployment::Status::try_from(deployment.status).unwrap_or(deployment::Status::Unspecified);
     let running = !status.is_terminal();
 
     html! {
@@ -2331,29 +2336,32 @@ pub fn sources_list(sources: &[Source], csrf: &str) -> Markup {
 /// The manifest is a JSON document nudo generated. It is placed in a textarea, so
 /// maud's escaping is what keeps it inert text rather than markup.
 pub fn github_handoff(post_url: &str, manifest_json: &str) -> Markup {
-    auth_shell("Continue on GitHub", html! {
-        div .card {
-            h2 { "Continue on GitHub" }
-            p .card-note {
-                "GitHub creates the App and sends its credentials straight back to \
-                 this control plane. Nothing sensitive passes through your clipboard."
-            }
-            // GitHub's endpoint, so no CSRF token of ours applies. The manifest
-            // itself is the payload and it carries its own state parameter.
-            form #handoff method="post" action=(post_url) {
-                textarea name="manifest" hidden { (manifest_json) }
-                div .form-actions {
-                    button .btn.primary type="submit" { "Create the App on GitHub" }
-                    a .btn href="/sources" { "Cancel" }
+    auth_shell(
+        "Continue on GitHub",
+        html! {
+            div .card {
+                h2 { "Continue on GitHub" }
+                p .card-note {
+                    "GitHub creates the App and sends its credentials straight back to \
+                     this control plane. Nothing sensitive passes through your clipboard."
+                }
+                // GitHub's endpoint, so no CSRF token of ours applies. The manifest
+                // itself is the payload and it carries its own state parameter.
+                form #handoff method="post" action=(post_url) {
+                    textarea name="manifest" hidden { (manifest_json) }
+                    div .form-actions {
+                        button .btn.primary type="submit" { "Create the App on GitHub" }
+                        a .btn href="/sources" { "Cancel" }
+                    }
+                }
+                p .small.faint {
+                    "If nothing happens, use the button above — the form submits itself \
+                     only when JavaScript is enabled."
                 }
             }
-            p .small.faint {
-                "If nothing happens, use the button above — the form submits itself \
-                 only when JavaScript is enabled."
-            }
-        }
-        script { (PreEscaped("document.getElementById('handoff').submit();")) }
-    })
+            script { (PreEscaped("document.getElementById('handoff').submit();")) }
+        },
+    )
 }
 
 /// The one and only time an API token's plaintext is shown.
@@ -2670,69 +2678,75 @@ pub fn settings_page(api_tokens: &[TokenView], user_email: &str, csrf: &str) -> 
 /// The sign-in page. Not wrapped by [`page`]: there is no rail to show to
 /// someone who is not signed in.
 pub fn login_page(error: Option<&str>, csrf: &str) -> Markup {
-    auth_shell("Sign in", html! {
-        form .card method="post" action="/login" {
-            (csrf_input(csrf))
-            h2 { "Sign in" }
-            @if let Some(error) = error {
-                (callout("bad", "Could not sign in", html! { (error) }))
-            }
-            div .field style="margin-top:12px" {
-                label for="email" { "Email" }
-                input type="email" id="email" name="email" required
-                    autocomplete="username" autofocus;
-            }
-            div .field style="margin-top:12px" {
-                label for="password" { "Password" }
-                input type="password" id="password" name="password" required
-                    autocomplete="current-password";
-            }
-            div .form-actions {
-                button .btn.primary type="submit" style="width:100%;justify-content:center" {
-                    "Sign in"
+    auth_shell(
+        "Sign in",
+        html! {
+            form .card method="post" action="/login" {
+                (csrf_input(csrf))
+                h2 { "Sign in" }
+                @if let Some(error) = error {
+                    (callout("bad", "Could not sign in", html! { (error) }))
+                }
+                div .field style="margin-top:12px" {
+                    label for="email" { "Email" }
+                    input type="email" id="email" name="email" required
+                        autocomplete="username" autofocus;
+                }
+                div .field style="margin-top:12px" {
+                    label for="password" { "Password" }
+                    input type="password" id="password" name="password" required
+                        autocomplete="current-password";
+                }
+                div .form-actions {
+                    button .btn.primary type="submit" style="width:100%;justify-content:center" {
+                        "Sign in"
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
 
 /// First-run setup: creates the only account that can create others.
 pub fn setup_page(error: Option<&str>, csrf: &str) -> Markup {
-    auth_shell("Set up nudo", html! {
-        form .card method="post" action="/setup" {
-            (csrf_input(csrf))
-            h2 { "Create the first account" }
-            p .card-note {
-                "This control plane has no users yet. Whoever completes this form \
-                 controls every target it manages, so do it now rather than leaving \
-                 the page reachable."
-            }
-            @if let Some(error) = error {
-                (callout("bad", "Could not create the account", html! { (error) }))
-            }
-            div .field style="margin-top:12px" {
-                label for="email" { "Email" }
-                input type="email" id="email" name="email" required
-                    autocomplete="username" autofocus;
-            }
-            div .field style="margin-top:12px" {
-                label for="password" { "Password" }
-                input type="password" id="password" name="password" required
-                    autocomplete="new-password" minlength="12";
-                span .hint { "At least 12 characters." }
-            }
-            div .field style="margin-top:12px" {
-                label for="password_confirm" { "Confirm password" }
-                input type="password" id="password_confirm" name="password_confirm" required
-                    autocomplete="new-password" minlength="12";
-            }
-            div .form-actions {
-                button .btn.primary type="submit" style="width:100%;justify-content:center" {
-                    "Create account"
+    auth_shell(
+        "Set up nudo",
+        html! {
+            form .card method="post" action="/setup" {
+                (csrf_input(csrf))
+                h2 { "Create the first account" }
+                p .card-note {
+                    "This control plane has no users yet. Whoever completes this form \
+                     controls every target it manages, so do it now rather than leaving \
+                     the page reachable."
+                }
+                @if let Some(error) = error {
+                    (callout("bad", "Could not create the account", html! { (error) }))
+                }
+                div .field style="margin-top:12px" {
+                    label for="email" { "Email" }
+                    input type="email" id="email" name="email" required
+                        autocomplete="username" autofocus;
+                }
+                div .field style="margin-top:12px" {
+                    label for="password" { "Password" }
+                    input type="password" id="password" name="password" required
+                        autocomplete="new-password" minlength="12";
+                    span .hint { "At least 12 characters." }
+                }
+                div .field style="margin-top:12px" {
+                    label for="password_confirm" { "Confirm password" }
+                    input type="password" id="password_confirm" name="password_confirm" required
+                        autocomplete="new-password" minlength="12";
+                }
+                div .form-actions {
+                    button .btn.primary type="submit" style="width:100%;justify-content:center" {
+                        "Create account"
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
 
 /// The centred single-card document the auth pages share.
@@ -2764,15 +2778,18 @@ fn auth_shell(title: &str, body: Markup) -> Markup {
 /// An error page. Deliberately says nothing about internals — an error message
 /// is a place where a host name or a stack frame leaks by accident.
 pub fn error_page(code: u16, message: &str) -> Markup {
-    auth_shell(&format!("{code}"), html! {
-        div .card {
-            h2 { (code) }
-            p .muted style="margin-top:6px" { (message) }
-            div .form-actions {
-                a .btn href="/" { "Back to overview" }
+    auth_shell(
+        &format!("{code}"),
+        html! {
+            div .card {
+                h2 { (code) }
+                p .muted style="margin-top:6px" { (message) }
+                div .form-actions {
+                    a .btn href="/" { "Back to overview" }
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2832,7 +2849,9 @@ mod tests {
                 ..Default::default()
             }),
             health_check: Some(HealthCheck {
-                kind: Some(health_check::Kind::HttpUrl("http://127.0.0.1:9/z".to_string())),
+                kind: Some(health_check::Kind::HttpUrl(
+                    "http://127.0.0.1:9/z".to_string(),
+                )),
                 timeout_seconds: 5,
                 retries: 3,
                 initial_delay_seconds: 2,
@@ -2870,10 +2889,18 @@ mod tests {
             updated_at: Some(nudo_proto::to_timestamp(chrono::Utc::now())),
             ..Default::default()
         };
-        let rendered = s(secrets_list(&[secret], &[a_target()], &[a_service()], "tok"));
+        let rendered = s(secrets_list(
+            &[secret],
+            &[a_target()],
+            &[a_service()],
+            "tok",
+        ));
 
         assert!(rendered.contains("EXCHANGE_API_KEY"), "the name is shown");
-        assert!(rendered.contains("9f86d081884c"), "a digest prefix is shown");
+        assert!(
+            rendered.contains("9f86d081884c"),
+            "a digest prefix is shown"
+        );
         // Not the whole digest either — a prefix is all that drift detection needs.
         assert!(!rendered.contains("9f86d081884c7d659a2feaa0c55ad015"));
         assert!(rendered.contains("global"), "the scope is shown");
@@ -2895,7 +2922,10 @@ mod tests {
             !field.contains("value="),
             "the write-only field must have no value attribute: {field}"
         );
-        assert!(field.contains("type=\"password\"") || rendered.contains("type=\"password\" id=\"value\""));
+        assert!(
+            field.contains("type=\"password\"")
+                || rendered.contains("type=\"password\" id=\"value\"")
+        );
     }
 
     #[test]
@@ -2968,7 +2998,12 @@ mod tests {
         let forms: Vec<&str> = rendered.split("<form").skip(1).collect();
         let posts: Vec<&&str> = forms
             .iter()
-            .filter(|f| f.split("</form>").next().unwrap_or(f).contains("method=\"post\""))
+            .filter(|f| {
+                f.split("</form>")
+                    .next()
+                    .unwrap_or(f)
+                    .contains("method=\"post\"")
+            })
             .collect();
         assert!(!posts.is_empty(), "{what} renders no POST form to check");
         for form in posts {
@@ -3019,22 +3054,35 @@ mod tests {
         };
 
         let screens: Vec<(&str, String)> = vec![
-            ("target_form(new)", s(target_form(None, &[secret.clone()], token))),
+            (
+                "target_form(new)",
+                s(target_form(None, std::slice::from_ref(&secret), token)),
+            ),
             (
                 "target_form(edit)",
-                s(target_form(Some(&target), &[secret.clone()], token)),
+                s(target_form(
+                    Some(&target),
+                    std::slice::from_ref(&secret),
+                    token,
+                )),
             ),
             (
                 "service_form(new)",
-                s(service_form(None, &[target.clone()], &[source.clone()], &[secret.clone()], token)),
+                s(service_form(
+                    None,
+                    std::slice::from_ref(&target),
+                    std::slice::from_ref(&source),
+                    std::slice::from_ref(&secret),
+                    token,
+                )),
             ),
             (
                 "service_form(edit)",
                 s(service_form(
                     Some(&service),
-                    &[target.clone()],
-                    &[source.clone()],
-                    &[secret.clone()],
+                    std::slice::from_ref(&target),
+                    std::slice::from_ref(&source),
+                    std::slice::from_ref(&secret),
                     token,
                 )),
             ),
@@ -3045,7 +3093,7 @@ mod tests {
                     &target,
                     &running(),
                     &[release],
-                    &[deployment.clone()],
+                    std::slice::from_ref(&deployment),
                     token,
                 )),
             ),
@@ -3055,7 +3103,12 @@ mod tests {
             ),
             (
                 "secrets_list",
-                s(secrets_list(&[secret], &[target.clone()], &[service.clone()], token)),
+                s(secrets_list(
+                    &[secret],
+                    std::slice::from_ref(&target),
+                    std::slice::from_ref(&service),
+                    token,
+                )),
             ),
             ("sources_list", s(sources_list(&[source], token))),
             (
@@ -3124,13 +3177,16 @@ mod tests {
 
         let detail = s(target_detail(&hot, &[], &HashMap::new(), None));
         assert!(detail.contains("badge hot"));
-        assert!(detail.contains("Latency-critical host"), "and an explanation");
+        assert!(
+            detail.contains("Latency-critical host"),
+            "and an explanation"
+        );
 
         let overview = s(dashboard(&[hot.clone()], &[], &HashMap::new(), &[]));
         assert!(overview.contains("badge hot"));
 
         // And absent for an ordinary host, on every one of those screens.
-        assert!(!s(targets_list(&[cold.clone()])).contains("badge hot"));
+        assert!(!s(targets_list(std::slice::from_ref(&cold))).contains("badge hot"));
         assert!(!s(target_detail(&cold, &[], &HashMap::new(), None)).contains("badge hot"));
         assert!(!s(dashboard(&[cold], &[], &HashMap::new(), &[])).contains("badge hot"));
     }
@@ -3147,7 +3203,10 @@ mod tests {
             &[],
             "tok",
         ));
-        assert!(rendered.contains("LATENCY-CRITICAL"), "the confirm names it");
+        assert!(
+            rendered.contains("LATENCY-CRITICAL"),
+            "the confirm names it"
+        );
 
         let ordinary = s(service_detail(
             &a_service(),
@@ -3171,13 +3230,27 @@ mod tests {
             ..Default::default()
         });
 
-        let rendered = s(service_detail(&pinned, &a_target(), &running(), &[], &[], "t"));
+        let rendered = s(service_detail(
+            &pinned,
+            &a_target(),
+            &running(),
+            &[],
+            &[],
+            "t",
+        ));
         assert!(rendered.contains("Latency configuration"));
         assert!(rendered.contains("CPUAffinity"));
         assert!(rendered.contains("2-5"));
         assert!(rendered.contains("IOSchedulingClass"));
 
-        let plain = s(service_detail(&a_service(), &a_target(), &running(), &[], &[], "t"));
+        let plain = s(service_detail(
+            &a_service(),
+            &a_target(),
+            &running(),
+            &[],
+            &[],
+            "t",
+        ));
         assert!(!plain.contains("Latency configuration"));
     }
 
@@ -3262,7 +3335,10 @@ mod tests {
             9_999,
         ] {
             let rendered = s(target_badge(status));
-            assert!(rendered.contains("class=\"badge\""), "{status} should be neutral");
+            assert!(
+                rendered.contains("class=\"badge\""),
+                "{status} should be neutral"
+            );
             assert!(rendered.contains("unknown"));
         }
     }
@@ -3285,7 +3361,10 @@ mod tests {
 
         for (status, class, label) in cases {
             let rendered = s(deployment_badge(status as i32));
-            assert!(rendered.contains(class), "{label} wanted {class}: {rendered}");
+            assert!(
+                rendered.contains(class),
+                "{label} wanted {class}: {rendered}"
+            );
             assert!(rendered.contains(label), "{label} missing: {rendered}");
         }
 
@@ -3298,7 +3377,11 @@ mod tests {
 
     #[test]
     fn an_empty_state_carries_its_next_action() {
-        let rendered = s(empty_state("Nothing", "Add one.", Some(("Add target", "/targets/new"))));
+        let rendered = s(empty_state(
+            "Nothing",
+            "Add one.",
+            Some(("Add target", "/targets/new")),
+        ));
         assert!(rendered.contains("class=\"empty\""));
         assert!(rendered.contains("href=\"/targets/new\""));
         assert!(rendered.contains("Add target"));
@@ -3314,12 +3397,23 @@ mod tests {
     fn every_empty_listing_offers_the_action_that_fills_it() {
         let cases = [
             ("targets", s(targets_list(&[])), "/targets/new"),
-            ("services", s(services_list(&[], &[], &HashMap::new())), "/services/new"),
+            (
+                "services",
+                s(services_list(&[], &[], &HashMap::new())),
+                "/services/new",
+            ),
             ("deployments", s(deployments_list(&[], &[])), "/services"),
-            ("dashboard", s(dashboard(&[], &[], &HashMap::new(), &[])), "/targets/new"),
+            (
+                "dashboard",
+                s(dashboard(&[], &[], &HashMap::new(), &[])),
+                "/targets/new",
+            ),
         ];
         for (what, rendered, href) in cases {
-            assert!(rendered.contains("class=\"empty\""), "{what} has no empty state");
+            assert!(
+                rendered.contains("class=\"empty\""),
+                "{what} has no empty state"
+            );
             assert!(
                 rendered.contains(&format!("href=\"{href}\"")),
                 "{what} empty state does not link to {href}"
@@ -3340,7 +3434,11 @@ mod tests {
         // Appended into #deploy-log on every event: a wrapper would nest a new
         // log box each time.
         let now = chrono::Utc::now();
-        let rendered = s(deployment_log_lines(&[(now, false, "compiling".to_string())]));
+        let rendered = s(deployment_log_lines(&[(
+            now,
+            false,
+            "compiling".to_string(),
+        )]));
         assert!(rendered.starts_with("<div class=\"line\">"), "{rendered}");
         assert!(!rendered.contains("class=\"logs"));
         assert!(!rendered.contains("id=\"deploy-log\""));
@@ -3424,7 +3522,13 @@ mod tests {
             error: "health check failed after 3 retries\nlast body: 503".to_string(),
             ..Default::default()
         };
-        let rendered = s(deployment_detail(&deployment, &a_service(), &[], false, "t"));
+        let rendered = s(deployment_detail(
+            &deployment,
+            &a_service(),
+            &[],
+            false,
+            "t",
+        ));
         assert!(rendered.contains("health check failed after 3 retries"));
         assert!(rendered.contains("last body: 503"), "not truncated here");
     }
@@ -3534,7 +3638,10 @@ mod tests {
         let target = a_target();
         let rendered = s(terminal_page(&target, "sess_1", "tok_secret"));
 
-        assert!(rendered.contains(r#"window.nudoTerminal = {"sessionId":"sess_1","token":"tok_secret"};"#));
+        assert!(
+            rendered
+                .contains(r#"window.nudoTerminal = {"sessionId":"sess_1","token":"tok_secret"};"#)
+        );
         assert!(!rendered.contains("10.0.0.4"), "no host");
         assert!(!rendered.contains(":22"), "no port");
         assert!(!rendered.contains("deploy@"), "no ssh user@host");
@@ -3557,7 +3664,11 @@ mod tests {
     fn a_token_containing_script_syntax_cannot_break_out_of_the_script_element() {
         // An HTML parser ends a script element at the first literal `</`, which
         // serde_json does not escape, so `terminal_page` rewrites the sequence.
-        let rendered = s(terminal_page(&a_target(), "s", "</script><script>alert(1)</script>"));
+        let rendered = s(terminal_page(
+            &a_target(),
+            "s",
+            "</script><script>alert(1)</script>",
+        ));
 
         assert!(!rendered.contains("</script><script>alert(1)"));
         assert!(rendered.contains(r"<\/script><script>alert(1)<\/script>"));
@@ -3626,7 +3737,10 @@ mod tests {
     #[test]
     fn tabs_and_submenus_mark_the_active_item() {
         let rendered = s(tabs(&[("One", "/one", false), ("Two", "/two", true)]));
-        assert!(rendered.contains("class=\"\" href=\"/one\">One</a>"), "{rendered}");
+        assert!(
+            rendered.contains("class=\"\" href=\"/one\">One</a>"),
+            "{rendered}"
+        );
         assert!(rendered.contains("class=\"active\" href=\"/two\""));
 
         let rendered = s(submenu(&[("A", "/a", true), ("B", "/b", false)]));
@@ -3675,28 +3789,57 @@ mod tests {
         };
 
         let screens = [
-            ("target_form(edit)", s(target_form(Some(&target), &[secret.clone()], "t"))),
+            (
+                "target_form(edit)",
+                s(target_form(
+                    Some(&target),
+                    std::slice::from_ref(&secret),
+                    "t",
+                )),
+            ),
             (
                 "service_form(edit)",
-                s(service_form(Some(&service), &[target.clone()], &[], &[], "t")),
+                s(service_form(
+                    Some(&service),
+                    std::slice::from_ref(&target),
+                    &[],
+                    &[],
+                    "t",
+                )),
             ),
             (
                 "service_detail",
-                s(service_detail(&service, &target, &running(), &[release], &[], "t")),
+                s(service_detail(
+                    &service,
+                    &target,
+                    &running(),
+                    &[release],
+                    &[],
+                    "t",
+                )),
             ),
             ("secrets_list", s(secrets_list(&[secret], &[], &[], "t"))),
             ("sources_list", s(sources_list(&[source], "t"))),
-            ("settings_page", s(settings_page(&[token_view], "a@b.c", "t"))),
+            (
+                "settings_page",
+                s(settings_page(&[token_view], "a@b.c", "t")),
+            ),
         ];
 
         for (what, rendered) in screens {
             for chunk in rendered.split("btn small danger").skip(1) {
                 let tag = chunk.split('>').next().unwrap_or(chunk);
-                assert!(tag.contains("onclick"), "{what}: danger button without confirm");
+                assert!(
+                    tag.contains("onclick"),
+                    "{what}: danger button without confirm"
+                );
             }
             for chunk in rendered.split("class=\"btn danger\"").skip(1) {
                 let tag = chunk.split('>').next().unwrap_or(chunk);
-                assert!(tag.contains("onclick"), "{what}: danger button without confirm");
+                assert!(
+                    tag.contains("onclick"),
+                    "{what}: danger button without confirm"
+                );
             }
             assert!(
                 rendered.contains("return confirm("),
@@ -3734,7 +3877,14 @@ mod tests {
 
     #[test]
     fn a_running_service_offers_stop_and_a_stopped_one_offers_start() {
-        let running_page = s(service_detail(&a_service(), &a_target(), &running(), &[], &[], "t"));
+        let running_page = s(service_detail(
+            &a_service(),
+            &a_target(),
+            &running(),
+            &[],
+            &[],
+            "t",
+        ));
         assert!(running_page.contains(">Stop<"));
         assert!(!running_page.contains(">Start<"));
 
@@ -3743,7 +3893,14 @@ mod tests {
             sub_state: "dead".to_string(),
             ..Default::default()
         };
-        let stopped_page = s(service_detail(&a_service(), &a_target(), &stopped, &[], &[], "t"));
+        let stopped_page = s(service_detail(
+            &a_service(),
+            &a_target(),
+            &stopped,
+            &[],
+            &[],
+            "t",
+        ));
         assert!(stopped_page.contains(">Start<"));
         // Starting a stopped unit is what the operator came for; no confirm.
         assert!(!stopped_page.contains(">Stop<"));
@@ -3773,7 +3930,10 @@ mod tests {
             "t",
         ));
         assert_eq!(rendered.matches(">Rollback<").count(), 1);
-        assert!(rendered.contains("release rel_1"), "the confirm names the target release");
+        assert!(
+            rendered.contains("release rel_1"),
+            "the confirm names the target release"
+        );
         assert!(rendered.contains(">current<"));
     }
 
@@ -3814,7 +3974,10 @@ mod tests {
         // that means someone has to do something.
         assert!(rendered.contains("class=\"stat is-bad\""));
         assert!(rendered.contains("<div class=\"stat-value\">1</div>"));
-        assert!(rendered.contains("<div class=\"stat-value\">3</div>"), "3 services");
+        assert!(
+            rendered.contains("<div class=\"stat-value\">3</div>"),
+            "3 services"
+        );
         // A target with a failed unit is flagged on its tile.
         assert!(rendered.contains("class=\"tile alert\""));
         assert!(rendered.contains("1 failed"));
@@ -3840,8 +4003,12 @@ mod tests {
     fn the_targets_listing_shows_the_address_and_calls_agentless_out() {
         let mut with_agent = a_target();
         with_agent.agent_version = "0.3.1".to_string();
-        with_agent.labels.insert("env".to_string(), "prod".to_string());
-        with_agent.labels.insert("role".to_string(), "bot".to_string());
+        with_agent
+            .labels
+            .insert("env".to_string(), "prod".to_string());
+        with_agent
+            .labels
+            .insert("role".to_string(), "bot".to_string());
 
         let rendered = s(targets_list(&[a_target(), with_agent]));
         assert!(rendered.contains("deploy@10.0.0.4:22"));
@@ -3869,7 +4036,12 @@ mod tests {
                 },
             ],
         };
-        let rendered = s(target_detail(&a_target(), &[], &HashMap::new(), Some(&checks)));
+        let rendered = s(target_detail(
+            &a_target(),
+            &[],
+            &HashMap::new(),
+            Some(&checks),
+        ));
 
         assert!(rendered.contains("Preflight checks"));
         assert!(rendered.contains("problems found"));
@@ -3895,7 +4067,12 @@ mod tests {
                 detail: String::new(),
             }],
         };
-        let rendered = s(target_detail(&a_target(), &[], &HashMap::new(), Some(&checks)));
+        let rendered = s(target_detail(
+            &a_target(),
+            &[],
+            &HashMap::new(),
+            Some(&checks),
+        ));
         assert!(rendered.contains("all passed"));
     }
 
@@ -3905,7 +4082,10 @@ mod tests {
         statuses.insert("svc_1".to_string(), running());
         let rendered = s(services_list(&[a_service()], &[a_target()], &statuses));
 
-        assert!(rendered.contains("hft-box"), "the target's name, not its id");
+        assert!(
+            rendered.contains("hft-box"),
+            "the target's name, not its id"
+        );
         assert!(rendered.contains("git:owner/bot@main"));
         assert!(rendered.contains("bot.service"));
         assert!(rendered.contains("64.0 MiB"));
@@ -3914,7 +4094,11 @@ mod tests {
 
     #[test]
     fn a_service_with_no_reported_status_says_so_rather_than_guessing() {
-        let rendered = s(services_list(&[a_service()], &[a_target()], &HashMap::new()));
+        let rendered = s(services_list(
+            &[a_service()],
+            &[a_target()],
+            &HashMap::new(),
+        ));
         assert!(rendered.contains("no data"));
     }
 
@@ -3930,7 +4114,14 @@ mod tests {
     fn a_service_with_no_health_check_says_it_will_not_roll_back() {
         let mut service = a_service();
         service.health_check = None;
-        let rendered = s(service_detail(&service, &a_target(), &running(), &[], &[], "t"));
+        let rendered = s(service_detail(
+            &service,
+            &a_target(),
+            &running(),
+            &[],
+            &[],
+            "t",
+        ));
         assert!(rendered.contains("never rolled back automatically"));
     }
 
@@ -3944,11 +4135,20 @@ mod tests {
                 retries: 2,
                 initial_delay_seconds: 1,
             });
-            s(service_detail(&service, &a_target(), &running(), &[], &[], "t"))
+            s(service_detail(
+                &service,
+                &a_target(),
+                &running(),
+                &[],
+                &[],
+                "t",
+            ))
         };
 
         assert!(with(Some(health_check::Kind::HttpUrl("http://x/z".to_string()))).contains("GET "));
-        assert!(with(Some(health_check::Kind::Command("/bin/check".to_string()))).contains("command "));
+        assert!(
+            with(Some(health_check::Kind::Command("/bin/check".to_string()))).contains("command ")
+        );
         assert!(with(Some(health_check::Kind::SystemdActive(true))).contains("is-active only"));
     }
 
@@ -3957,10 +4157,19 @@ mod tests {
         let with = |kind: artifact_source::Kind| {
             let mut service = a_service();
             service.artifact = Some(ArtifactSource { kind: Some(kind) });
-            s(service_detail(&service, &a_target(), &running(), &[], &[], "t"))
+            s(service_detail(
+                &service,
+                &a_target(),
+                &running(),
+                &[],
+                &[],
+                "t",
+            ))
         };
 
-        assert!(with(artifact_source::Kind::Url("https://x/bot".to_string())).contains("https://x/bot"));
+        assert!(
+            with(artifact_source::Kind::Url("https://x/bot".to_string())).contains("https://x/bot")
+        );
         assert!(with(artifact_source::Kind::DirectUpload(true)).contains("pushed by the CLI"));
 
         let git = with(artifact_source::Kind::Git(GitSource {
@@ -3983,7 +4192,14 @@ mod tests {
             restart_count: 7,
             ..Default::default()
         };
-        let rendered = s(service_detail(&a_service(), &a_target(), &failed, &[], &[], "t"));
+        let rendered = s(service_detail(
+            &a_service(),
+            &a_target(),
+            &failed,
+            &[],
+            &[],
+            "t",
+        ));
         assert!(rendered.contains("callout bad"));
         assert!(rendered.contains("Unit is failed"));
     }
@@ -4042,7 +4258,10 @@ mod tests {
             "name=\"artifact_path\"",
             "name=\"auto_deploy_on_push\"",
         ] {
-            assert!(rendered.contains(field), "the service form is missing {field}");
+            assert!(
+                rendered.contains(field),
+                "the service form is missing {field}"
+            );
         }
     }
 
@@ -4054,7 +4273,10 @@ mod tests {
             cpu_affinity: "2-5".to_string(),
             io_scheduling_class: "realtime".to_string(),
             restart: "on-failure".to_string(),
-            after: vec!["network-online.target".to_string(), "redis.service".to_string()],
+            after: vec![
+                "network-online.target".to_string(),
+                "redis.service".to_string(),
+            ],
             extra_directives: HashMap::from([
                 ("LimitNOFILE".to_string(), "65535".to_string()),
                 ("LimitMEMLOCK".to_string(), "infinity".to_string()),
@@ -4175,13 +4397,16 @@ mod tests {
             installed: false,
             ..Default::default()
         };
-        let rendered = s(sources_list(&[source.clone()], "t"));
+        let rendered = s(sources_list(std::slice::from_ref(&source), "t"));
         assert!(rendered.contains("badge warn"));
         assert!(rendered.contains("not installed"));
         assert!(rendered.contains("github_app"));
         assert!(rendered.contains("acme"));
 
-        let installed = Source { installed: true, ..source };
+        let installed = Source {
+            installed: true,
+            ..source
+        };
         let rendered = s(sources_list(&[installed], "t"));
         assert!(rendered.contains("badge ok"));
     }
@@ -4189,7 +4414,10 @@ mod tests {
     #[test]
     fn the_github_handoff_posts_the_manifest_to_github_and_escapes_it() {
         let manifest = r#"{"name":"nudo","url":"https://x/</textarea>"}"#;
-        let rendered = s(github_handoff("https://github.com/settings/apps/new?state=abc", manifest));
+        let rendered = s(github_handoff(
+            "https://github.com/settings/apps/new?state=abc",
+            manifest,
+        ));
 
         assert!(rendered.contains("action=\"https://github.com/settings/apps/new?state=abc\""));
         assert!(rendered.contains("name=\"manifest\""));
@@ -4200,7 +4428,10 @@ mod tests {
         // It posts to GitHub, so it carries no token of ours; there is nothing
         // of ours to forge.
         assert!(!rendered.contains("name=\"csrf\""));
-        assert!(rendered.contains("Create the App on GitHub"), "and a manual fallback");
+        assert!(
+            rendered.contains("Create the App on GitHub"),
+            "and a manual fallback"
+        );
     }
 
     #[test]
@@ -4393,7 +4624,9 @@ mod tests {
         assert_eq!(ago(None), "-");
         // Clock skew must not print "in -3s".
         assert_eq!(
-            ago(Some(&nudo_proto::to_timestamp(now + chrono::Duration::hours(1)))),
+            ago(Some(&nudo_proto::to_timestamp(
+                now + chrono::Duration::hours(1)
+            ))),
             "just now"
         );
     }
@@ -4462,7 +4695,10 @@ mod tests {
             })
         };
 
-        assert_eq!(with(artifact_source::Kind::Url("https://x/bot".to_string())), "url");
+        assert_eq!(
+            with(artifact_source::Kind::Url("https://x/bot".to_string())),
+            "url"
+        );
         assert_eq!(
             with(artifact_source::Kind::Git(GitSource {
                 repo: "owner/bot".to_string(),
@@ -4528,8 +4764,14 @@ mod tests {
             })
         };
 
-        assert!(with(SystemdUnit { cpu_affinity: "0-3".to_string(), ..Default::default() }));
-        assert!(with(SystemdUnit { nice: "-5".to_string(), ..Default::default() }));
+        assert!(with(SystemdUnit {
+            cpu_affinity: "0-3".to_string(),
+            ..Default::default()
+        }));
+        assert!(with(SystemdUnit {
+            nice: "-5".to_string(),
+            ..Default::default()
+        }));
         assert!(with(SystemdUnit {
             io_scheduling_class: "realtime".to_string(),
             ..Default::default()
@@ -4542,14 +4784,27 @@ mod tests {
     fn wide_tables_are_wrapped_so_the_page_does_not_scroll_sideways() {
         let screens = [
             s(targets_list(&[a_target()])),
-            s(services_list(&[a_service()], &[a_target()], &HashMap::new())),
+            s(services_list(
+                &[a_service()],
+                &[a_target()],
+                &HashMap::new(),
+            )),
             s(deployments_list(
-                &[Deployment { id: "d".to_string(), ..Default::default() }],
+                &[Deployment {
+                    id: "d".to_string(),
+                    ..Default::default()
+                }],
                 &[a_service()],
             )),
-            s(audit_list(&[AuditEntry { id: "a".to_string(), ..Default::default() }])),
+            s(audit_list(&[AuditEntry {
+                id: "a".to_string(),
+                ..Default::default()
+            }])),
             s(secrets_list(
-                &[Secret { id: "s".to_string(), ..Default::default() }],
+                &[Secret {
+                    id: "s".to_string(),
+                    ..Default::default()
+                }],
                 &[],
                 &[],
                 "t",

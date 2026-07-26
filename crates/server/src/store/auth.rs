@@ -109,12 +109,11 @@ impl Store {
     }
 
     pub async fn get_user(&self, id: &str) -> anyhow::Result<Option<User>> {
-        let row = sqlx::query(
-            "SELECT id, email, display_name, created_at FROM users WHERE id = ?1",
-        )
-        .bind(id)
-        .fetch_optional(self.pool())
-        .await?;
+        let row =
+            sqlx::query("SELECT id, email, display_name, created_at FROM users WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?;
 
         Ok(row.map(|row| User {
             id: row.get("id"),
@@ -129,11 +128,7 @@ impl Store {
     ///
     /// Returns `None` for both "no such user" and "wrong password" so the
     /// response cannot be used to enumerate accounts.
-    pub async fn authenticate(
-        &self,
-        email: &str,
-        password: &str,
-    ) -> anyhow::Result<Option<User>> {
+    pub async fn authenticate(&self, email: &str, password: &str) -> anyhow::Result<Option<User>> {
         let email = email.trim().to_lowercase();
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT id, password_hash FROM users WHERE email = ?1")
@@ -222,12 +217,10 @@ impl Store {
             return Ok(None);
         }
 
-        let row = sqlx::query(
-            "SELECT user_id, csrf_token, expires_at FROM sessions WHERE id = ?1",
-        )
-        .bind(sha256_hex(cookie))
-        .fetch_optional(self.pool())
-        .await?;
+        let row = sqlx::query("SELECT user_id, csrf_token, expires_at FROM sessions WHERE id = ?1")
+            .bind(sha256_hex(cookie))
+            .fetch_optional(self.pool())
+            .await?;
 
         let Some(row) = row else {
             return Ok(None);
@@ -339,10 +332,12 @@ impl Store {
             return Ok(None);
         }
 
-        let row = sqlx::query(AssertSqlSafe(format!("{TOKEN_SELECT} WHERE token_hash = ?1")))
-            .bind(sha256_hex(plaintext.trim()))
-            .fetch_optional(self.pool())
-            .await?;
+        let row = sqlx::query(AssertSqlSafe(format!(
+            "{TOKEN_SELECT} WHERE token_hash = ?1"
+        )))
+        .bind(sha256_hex(plaintext.trim()))
+        .fetch_optional(self.pool())
+        .await?;
 
         let Some(token) = row.map(row_to_token) else {
             return Ok(None);
@@ -361,9 +356,11 @@ impl Store {
     }
 
     pub async fn list_api_tokens(&self) -> anyhow::Result<Vec<ApiToken>> {
-        let rows = sqlx::query(AssertSqlSafe(format!("{TOKEN_SELECT} ORDER BY created_at DESC")))
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{TOKEN_SELECT} ORDER BY created_at DESC"
+        )))
+        .fetch_all(self.pool())
+        .await?;
         Ok(rows.into_iter().map(row_to_token).collect())
     }
 
@@ -475,14 +472,27 @@ mod tests {
     async fn weak_passwords_and_bad_emails_are_refused() {
         let store = store().await;
         assert!(store.create_user("a@b.com", "short", "x").await.is_err());
-        assert!(store.create_user("not-an-email", "correct horse battery", "x").await.is_err());
-        assert!(store.create_user("", "correct horse battery", "x").await.is_err());
+        assert!(
+            store
+                .create_user("not-an-email", "correct horse battery", "x")
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .create_user("", "correct horse battery", "x")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn duplicate_emails_are_refused() {
         let store = store().await;
-        store.create_user("a@b.com", "correct horse battery", "x").await.expect("first");
+        store
+            .create_user("a@b.com", "correct horse battery", "x")
+            .await
+            .expect("first");
         let error = store
             .create_user("A@B.com", "correct horse battery", "y")
             .await
@@ -515,7 +525,11 @@ mod tests {
             .expect("create");
 
         let (cookie, csrf) = store.create_session(&user.id).await.expect("session");
-        let session = store.lookup_session(&cookie).await.expect("lookup").expect("some");
+        let session = store
+            .lookup_session(&cookie)
+            .await
+            .expect("lookup")
+            .expect("some");
 
         assert_eq!(session.user.id, user.id);
         assert_eq!(session.csrf_token, csrf);
@@ -535,14 +549,23 @@ mod tests {
             .fetch_one(store.pool())
             .await
             .expect("query");
-        assert_ne!(stored_id, cookie, "a database read must not yield the cookie");
+        assert_ne!(
+            stored_id, cookie,
+            "a database read must not yield the cookie"
+        );
         assert_eq!(stored_id, sha256_hex(&cookie));
     }
 
     #[tokio::test]
     async fn unknown_and_empty_cookies_resolve_to_nothing() {
         let store = store().await;
-        assert!(store.lookup_session("nope").await.expect("lookup").is_none());
+        assert!(
+            store
+                .lookup_session("nope")
+                .await
+                .expect("lookup")
+                .is_none()
+        );
         assert!(store.lookup_session("").await.expect("lookup").is_none());
     }
 
@@ -561,7 +584,13 @@ mod tests {
             .await
             .expect("expire");
 
-        assert!(store.lookup_session(&cookie).await.expect("lookup").is_none());
+        assert!(
+            store
+                .lookup_session(&cookie)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
         let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sessions")
             .fetch_one(store.pool())
             .await
@@ -579,7 +608,13 @@ mod tests {
         let (cookie, _) = store.create_session(&user.id).await.expect("session");
 
         store.delete_session(&cookie).await.expect("delete");
-        assert!(store.lookup_session(&cookie).await.expect("lookup").is_none());
+        assert!(
+            store
+                .lookup_session(&cookie)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -618,7 +653,11 @@ mod tests {
                 .is_some()
         );
         assert!(
-            store.lookup_session(&cookie).await.expect("lookup").is_none(),
+            store
+                .lookup_session(&cookie)
+                .await
+                .expect("lookup")
+                .is_none(),
             "a password change must invalidate existing sessions"
         );
     }
@@ -638,7 +677,13 @@ mod tests {
             .await
             .expect("delete");
 
-        assert!(store.lookup_session(&cookie).await.expect("lookup").is_none());
+        assert!(
+            store
+                .lookup_session(&cookie)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -678,8 +723,15 @@ mod tests {
             .expect("create");
         assert!(token.last_used_at.is_none());
 
-        store.authenticate_api_token(&plaintext).await.expect("auth");
-        let reloaded = store.get_api_token(&token.id).await.expect("get").expect("some");
+        store
+            .authenticate_api_token(&plaintext)
+            .await
+            .expect("auth");
+        let reloaded = store
+            .get_api_token(&token.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert!(reloaded.last_used_at.is_some());
     }
 
@@ -692,7 +744,13 @@ mod tests {
             .expect("create");
 
         store.revoke_api_token(&token.id).await.expect("revoke");
-        assert!(store.authenticate_api_token(&plaintext).await.expect("auth").is_none());
+        assert!(
+            store
+                .authenticate_api_token(&plaintext)
+                .await
+                .expect("auth")
+                .is_none()
+        );
 
         // Kept so the audit trail can still name it.
         let listed = store.list_api_tokens().await.expect("list");
@@ -727,8 +785,20 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_token_does_not_authenticate() {
         let store = store().await;
-        assert!(store.authenticate_api_token("nudo_bogus").await.expect("auth").is_none());
-        assert!(store.authenticate_api_token("").await.expect("auth").is_none());
+        assert!(
+            store
+                .authenticate_api_token("nudo_bogus")
+                .await
+                .expect("auth")
+                .is_none()
+        );
+        assert!(
+            store
+                .authenticate_api_token("")
+                .await
+                .expect("auth")
+                .is_none()
+        );
     }
 
     #[tokio::test]

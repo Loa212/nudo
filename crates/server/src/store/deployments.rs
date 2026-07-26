@@ -352,9 +352,7 @@ fn row_to_deployment(row: &SqliteRow) -> Deployment {
         }),
         previous_release_id: row.get("previous_release_id"),
         error: row.get("error"),
-        started_at: nudo_proto::to_timestamp_opt(from_db_time(
-            &row.get::<String, _>("started_at"),
-        )),
+        started_at: nudo_proto::to_timestamp_opt(from_db_time(&row.get::<String, _>("started_at"))),
         finished_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
             row.get::<Option<String>, _>("finished_at").as_deref(),
         )),
@@ -370,9 +368,7 @@ fn row_to_release(row: &SqliteRow) -> Release {
         artifact_digest: row.get("artifact_digest"),
         artifact_bytes: row.get::<i64, _>("artifact_bytes") as u64,
         path: row.get("path"),
-        created_at: nudo_proto::to_timestamp_opt(from_db_time(
-            &row.get::<String, _>("created_at"),
-        )),
+        created_at: nudo_proto::to_timestamp_opt(from_db_time(&row.get::<String, _>("created_at"))),
     }
 }
 
@@ -473,7 +469,11 @@ mod tests {
             .set_deployment_status(&created.id, deployment::Status::Building)
             .await
             .expect("set");
-        let building = store.get_deployment(&created.id).await.expect("get").expect("some");
+        let building = store
+            .get_deployment(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(building.status, deployment::Status::Building as i32);
         assert!(building.finished_at.is_none());
 
@@ -481,7 +481,11 @@ mod tests {
             .set_deployment_status(&created.id, deployment::Status::Succeeded)
             .await
             .expect("set");
-        let done = store.get_deployment(&created.id).await.expect("get").expect("some");
+        let done = store
+            .get_deployment(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert!(done.finished_at.is_some());
     }
 
@@ -497,7 +501,11 @@ mod tests {
             .set_deployment_error(&created.id, "health check failed after 3 retries")
             .await
             .expect("set");
-        let failed = store.get_deployment(&created.id).await.expect("get").expect("some");
+        let failed = store
+            .get_deployment(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert!(failed.error.contains("health check failed"));
     }
 
@@ -526,7 +534,10 @@ mod tests {
             .await
             .expect("set");
 
-        let error = store.request_cancel(&created.id).await.expect_err("must refuse");
+        let error = store
+            .request_cancel(&created.id)
+            .await
+            .expect_err("must refuse");
         assert!(error.to_string().contains("not running"), "got: {error}");
     }
 
@@ -545,9 +556,18 @@ mod tests {
             .await
             .expect("create");
 
-        store.append_deployment_log(&created.id, "compiling", false).await.expect("log");
-        store.append_deployment_log(&created.id, "warning: x", true).await.expect("log");
-        store.append_deployment_log(&created.id, "done", false).await.expect("log");
+        store
+            .append_deployment_log(&created.id, "compiling", false)
+            .await
+            .expect("log");
+        store
+            .append_deployment_log(&created.id, "warning: x", true)
+            .await
+            .expect("log");
+        store
+            .append_deployment_log(&created.id, "done", false)
+            .await
+            .expect("log");
 
         let logs = store.deployment_logs(&created.id).await.expect("logs");
         assert_eq!(logs.len(), 3);
@@ -637,7 +657,11 @@ mod tests {
             .set_deployment_release(&deployment.id, &release.id, "abc123")
             .await
             .expect("bind");
-        let bound = store.get_deployment(&deployment.id).await.expect("get").expect("some");
+        let bound = store
+            .get_deployment(&deployment.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(bound.release_id, release.id);
     }
 
@@ -648,7 +672,10 @@ mod tests {
             .create_deployment(&new_deployment(&service_id))
             .await
             .expect("create");
-        store.append_deployment_log(&deployment.id, "line", false).await.expect("log");
+        store
+            .append_deployment_log(&deployment.id, "line", false)
+            .await
+            .expect("log");
         store
             .create_release(&Release {
                 service_id: service_id.clone(),
@@ -660,10 +687,28 @@ mod tests {
 
         store.delete_service(&service_id).await.expect("delete");
 
-        assert!(store.get_deployment(&deployment.id).await.expect("get").is_none());
-        assert!(store.list_releases(&service_id).await.expect("list").is_empty());
+        assert!(
+            store
+                .get_deployment(&deployment.id)
+                .await
+                .expect("get")
+                .is_none()
+        );
+        assert!(
+            store
+                .list_releases(&service_id)
+                .await
+                .expect("list")
+                .is_empty()
+        );
         // Logs cascade too, rather than being orphaned.
-        assert!(store.deployment_logs(&deployment.id).await.expect("logs").is_empty());
+        assert!(
+            store
+                .deployment_logs(&deployment.id)
+                .await
+                .expect("logs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -678,7 +723,9 @@ mod tests {
             .expect("create");
 
         assert_eq!(
-            deployment_trigger(&store, &created.id).await.expect("trigger"),
+            deployment_trigger(&store, &created.id)
+                .await
+                .expect("trigger"),
             "webhook"
         );
     }

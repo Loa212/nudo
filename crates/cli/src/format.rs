@@ -35,7 +35,11 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
         if index > 0 {
             out.push_str("  ");
         }
-        out.push_str(&pad(&header.to_uppercase(), widths[index], index + 1 == headers.len()));
+        out.push_str(&pad(
+            &header.to_uppercase(),
+            widths[index],
+            index + 1 == headers.len(),
+        ));
     }
     out.push('\n');
 
@@ -141,14 +145,25 @@ pub fn targets_table(targets: &[Target]) -> String {
                     .to_string(),
                 // Marked prominently: this is the flag that changes how every
                 // other command behaves against this host.
-                if t.latency_critical { "yes".to_string() } else { "-".to_string() },
+                if t.latency_critical {
+                    "yes".to_string()
+                } else {
+                    "-".to_string()
+                },
                 ago(t.last_seen_at.as_ref()),
             ]
         })
         .collect();
 
     table(
-        &["id", "name", "address", "status", "latency-critical", "last seen"],
+        &[
+            "id",
+            "name",
+            "address",
+            "status",
+            "latency-critical",
+            "last seen",
+        ],
         &rows,
     )
 }
@@ -171,7 +186,10 @@ pub fn services_table(services: &[Service]) -> String {
         })
         .collect();
 
-    table(&["id", "name", "target", "source", "current release"], &rows)
+    table(
+        &["id", "name", "target", "source", "current release"],
+        &rows,
+    )
 }
 
 /// A one-word description of where a service's binary comes from.
@@ -213,7 +231,10 @@ pub fn deployments_table(deployments: &[Deployment]) -> String {
         })
         .collect();
 
-    table(&["id", "status", "actor", "started", "duration", "error"], &rows)
+    table(
+        &["id", "status", "actor", "started", "duration", "error"],
+        &rows,
+    )
 }
 
 pub fn releases_table(releases: &[Release]) -> String {
@@ -227,7 +248,11 @@ pub fn releases_table(releases: &[Release]) -> String {
                 } else {
                     r.git_sha.chars().take(8).collect()
                 },
-                if r.git_ref.is_empty() { "-".to_string() } else { r.git_ref.clone() },
+                if r.git_ref.is_empty() {
+                    "-".to_string()
+                } else {
+                    r.git_ref.clone()
+                },
                 bytes(r.artifact_bytes),
                 ago(r.created_at.as_ref()),
             ]
@@ -317,7 +342,10 @@ mod tests {
             &["id", "name"],
             &[
                 vec!["tgt_1".to_string(), "short".to_string()],
-                vec!["tgt_longer_id".to_string(), "a much longer name".to_string()],
+                vec![
+                    "tgt_longer_id".to_string(),
+                    "a much longer name".to_string(),
+                ],
             ],
         );
 
@@ -332,10 +360,7 @@ mod tests {
 
     #[test]
     fn table_lines_have_no_trailing_whitespace() {
-        let rendered = table(
-            &["a", "b"],
-            &[vec!["1".to_string(), "2".to_string()]],
-        );
+        let rendered = table(&["a", "b"], &[vec!["1".to_string(), "2".to_string()]]);
         for line in rendered.lines() {
             assert_eq!(line, line.trim_end(), "trailing whitespace in {line:?}");
         }
@@ -350,9 +375,7 @@ mod tests {
     #[test]
     fn relative_times_read_naturally_at_each_scale() {
         let now = chrono::Utc::now();
-        let at = |seconds: i64| {
-            nudo_proto::to_timestamp(now - chrono::Duration::seconds(seconds))
-        };
+        let at = |seconds: i64| nudo_proto::to_timestamp(now - chrono::Duration::seconds(seconds));
 
         assert_eq!(ago(Some(&at(5))), "just now");
         assert_eq!(ago(Some(&at(59))), "just now");
@@ -445,9 +468,15 @@ mod tests {
         assert!(rendered.contains("deploy@10.0.0.2:2222"));
         assert!(rendered.contains("reachable"));
 
-        let hot = rendered.lines().find(|l| l.contains("hot-box")).expect("row");
+        let hot = rendered
+            .lines()
+            .find(|l| l.contains("hot-box"))
+            .expect("row");
         assert!(hot.contains("yes"));
-        let normal = rendered.lines().find(|l| l.contains("normal")).expect("row");
+        let normal = rendered
+            .lines()
+            .find(|l| l.contains("normal"))
+            .expect("row");
         assert!(!normal.contains("yes"));
     }
 

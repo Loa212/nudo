@@ -15,11 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const TEST_KEY: &str = include_str!("data/test_app_key.pem");
 
 /// A source with credentials attached, ready to mint tokens.
-async fn configured_source(
-    store: &Store,
-    key: &SecretKey,
-    api_url: &str,
-) -> (String, i64) {
+async fn configured_source(store: &Store, key: &SecretKey, api_url: &str) -> (String, i64) {
     let source = store
         .create_pending_github_source("test-app", "", api_url, "https://github.com")
         .await
@@ -137,11 +133,9 @@ async fn a_rejected_exchange_reports_githubs_message() {
 
     Mock::given(method("POST"))
         .and(path("/app-manifests/expired/conversions"))
-        .respond_with(
-            ResponseTemplate::new(422).set_body_json(serde_json::json!({
-                "message": "This code has already been used.",
-            })),
-        )
+        .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "message": "This code has already been used.",
+        })))
         .mount(&server)
         .await;
 
@@ -307,7 +301,10 @@ async fn a_token_nearing_expiry_is_refreshed_rather_than_reused() {
     let token = github::installation_token(&store, &key, &source_id)
         .await
         .expect("token");
-    assert_eq!(token, "ghs_fresh", "a nearly-expired token must be replaced");
+    assert_eq!(
+        token, "ghs_fresh",
+        "a nearly-expired token must be replaced"
+    );
 
     // And the replacement is now cached, so the next call does not mint again.
     let again = github::installation_token(&store, &key, &source_id)
@@ -357,7 +354,12 @@ async fn a_source_with_no_installation_cannot_mint_a_token() {
     let key = SecretKey::generate();
 
     let source = store
-        .create_pending_github_source("pending", "", "https://api.github.com", "https://github.com")
+        .create_pending_github_source(
+            "pending",
+            "",
+            "https://api.github.com",
+            "https://github.com",
+        )
         .await
         .expect("create");
 
@@ -485,7 +487,11 @@ async fn a_single_short_page_of_repositories_ends_the_pagination() {
 
     let client = GithubClient::new(&server.uri()).expect("client");
     assert_eq!(
-        client.list_repositories("ghs_token").await.expect("list").len(),
+        client
+            .list_repositories("ghs_token")
+            .await
+            .expect("list")
+            .len(),
         2
     );
 }
@@ -529,7 +535,11 @@ async fn a_repository_name_that_could_traverse_a_path_never_reaches_github() {
     }
 
     assert!(
-        server.received_requests().await.expect("requests").is_empty(),
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty(),
         "a malformed repository must be rejected before any request is sent"
     );
 }
@@ -592,8 +602,7 @@ async fn a_status_description_longer_than_github_allows_is_truncated() {
         .expect("write the status");
 
     let requests = server.received_requests().await.expect("requests");
-    let body: serde_json::Value =
-        serde_json::from_slice(&requests[0].body).expect("a JSON body");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("a JSON body");
     let description = body["description"].as_str().expect("a description");
     assert!(description.chars().count() <= 140, "not truncated");
     // With no target url, the field is omitted rather than sent empty.

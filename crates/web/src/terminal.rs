@@ -31,9 +31,16 @@ pub struct TerminalQuery {
 #[serde(tag = "type", rename_all = "lowercase")]
 enum ClientFrame {
     /// The first frame: spends the single-use token.
-    Attach { token: String },
-    Stdin { data: String },
-    Resize { cols: u32, rows: u32 },
+    Attach {
+        token: String,
+    },
+    Stdin {
+        data: String,
+    },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
     /// Backpressure: the browser is behind on writes.
     Pause,
     Resume,
@@ -73,9 +80,12 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     let token = match first_attach(&mut socket).await {
         Some(token) => token,
         None => {
-            send(&mut socket, ServerFrame::Error {
-                message: "the first message must attach with a session token".to_string(),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: "the first message must attach with a session token".to_string(),
+                },
+            )
             .await;
             return;
         }
@@ -89,17 +99,24 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
         Ok(Some(grant)) => grant,
         Ok(None) => {
             // Single-use: a replayed or expired token finds nothing.
-            send(&mut socket, ServerFrame::Error {
-                message: "that terminal session is unknown, already used, or expired".to_string(),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: "that terminal session is unknown, already used, or expired"
+                        .to_string(),
+                },
+            )
             .await;
             return;
         }
         Err(error) => {
             tracing::error!(%error, "redeeming the terminal grant failed");
-            send(&mut socket, ServerFrame::Error {
-                message: "could not open the session".to_string(),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: "could not open the session".to_string(),
+                },
+            )
             .await;
             return;
         }
@@ -109,9 +126,12 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     let target = match state.store.get_target(&grant.target_id).await {
         Ok(Some(target)) => target,
         _ => {
-            send(&mut socket, ServerFrame::Error {
-                message: "that target no longer exists".to_string(),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: "that target no longer exists".to_string(),
+                },
+            )
             .await;
             return;
         }
@@ -120,9 +140,12 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     let ssh_target = match state.engine.ssh_target_for(&target).await {
         Ok(ssh_target) => ssh_target,
         Err(error) => {
-            send(&mut socket, ServerFrame::Error {
-                message: format!("{error:#}"),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: format!("{error:#}"),
+                },
+            )
             .await;
             return;
         }
@@ -131,9 +154,12 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     let session = match SshSession::connect(&ssh_target).await {
         Ok(session) => session,
         Err(error) => {
-            send(&mut socket, ServerFrame::Error {
-                message: format!("could not reach {}: {error:#}", target.host),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: format!("could not reach {}: {error:#}", target.host),
+                },
+            )
             .await;
             return;
         }
@@ -145,9 +171,12 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     {
         Ok(channel) => channel,
         Err(error) => {
-            send(&mut socket, ServerFrame::Error {
-                message: format!("could not open a PTY: {error:#}"),
-            })
+            send(
+                &mut socket,
+                ServerFrame::Error {
+                    message: format!("could not open a PTY: {error:#}"),
+                },
+            )
             .await;
             return;
         }
@@ -254,7 +283,8 @@ async fn first_attach(socket: &mut WebSocket) -> Option<String> {
     for _ in 0..5 {
         match socket.recv().await {
             Some(Ok(Message::Text(text))) => {
-                if let Ok(ClientFrame::Attach { token }) = serde_json::from_str::<ClientFrame>(&text)
+                if let Ok(ClientFrame::Attach { token }) =
+                    serde_json::from_str::<ClientFrame>(&text)
                 {
                     return Some(token);
                 }
@@ -306,10 +336,16 @@ mod tests {
     fn every_client_frame_kind_parses() {
         let parse = |json: &str| serde_json::from_str::<ClientFrame>(json).expect("parse");
 
-        assert!(matches!(parse(r#"{"type":"stdin","data":"ls\n"}"#), ClientFrame::Stdin { .. }));
+        assert!(matches!(
+            parse(r#"{"type":"stdin","data":"ls\n"}"#),
+            ClientFrame::Stdin { .. }
+        ));
         assert!(matches!(
             parse(r#"{"type":"resize","cols":120,"rows":40}"#),
-            ClientFrame::Resize { cols: 120, rows: 40 }
+            ClientFrame::Resize {
+                cols: 120,
+                rows: 40
+            }
         ));
         assert!(matches!(parse(r#"{"type":"pause"}"#), ClientFrame::Pause));
         assert!(matches!(parse(r#"{"type":"resume"}"#), ClientFrame::Resume));
@@ -319,7 +355,9 @@ mod tests {
     fn an_unknown_or_malformed_frame_is_a_parse_error_rather_than_input() {
         // Falling back to treating it as stdin would let a client bug type into
         // the shell.
-        assert!(serde_json::from_str::<ClientFrame>(r#"{"type":"exec","cmd":"rm -rf /"}"#).is_err());
+        assert!(
+            serde_json::from_str::<ClientFrame>(r#"{"type":"exec","cmd":"rm -rf /"}"#).is_err()
+        );
         assert!(serde_json::from_str::<ClientFrame>("not json").is_err());
         assert!(serde_json::from_str::<ClientFrame>(r#"{"data":"no type"}"#).is_err());
     }

@@ -6,6 +6,10 @@
 //! same generated types.
 
 pub mod v1 {
+    // The generated oneof variants differ in size (a `Deployment` beside an
+    // `i32`), which is inherent to the proto rather than something to fix here.
+    #![allow(clippy::large_enum_variant)]
+
     tonic::include_proto!("controlplane.v1");
 }
 
@@ -229,6 +233,9 @@ mod tests {
         let now = chrono::Utc::now();
         let restored = from_timestamp(&to_timestamp(now)).expect("in range");
         assert_eq!(now.timestamp(), restored.timestamp());
-        assert_eq!(now.timestamp_subsec_nanos(), restored.timestamp_subsec_nanos());
+        assert_eq!(
+            now.timestamp_subsec_nanos(),
+            restored.timestamp_subsec_nanos()
+        );
     }
 }

@@ -47,7 +47,8 @@ fn grpc_error(status: tonic::Status) -> Response {
         _ => 500,
     };
 
-    let http = axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let http = axum::http::StatusCode::from_u16(code)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     (
         http,
         Html(render::error_page(code, status.message()).into_string()),
@@ -123,11 +124,8 @@ pub async fn login_page(State(state): State<AppState>) -> Response {
         .into_response();
     }
 
-    Html(
-        render::page("Sign in", Nav::Dashboard, render::login_page(None, csrf))
-            .into_string(),
-    )
-    .into_response()
+    Html(render::page("Sign in", Nav::Dashboard, render::login_page(None, csrf)).into_string())
+        .into_response()
 }
 
 /// Handles a login.
@@ -575,7 +573,10 @@ pub async fn service_unit(
         Err(status) => return grpc_error(status),
     };
 
-    let unit_file = match client.render_unit(RenderUnitRequest { service_id: id }).await {
+    let unit_file = match client
+        .render_unit(RenderUnitRequest { service_id: id })
+        .await
+    {
         Ok(response) => response.into_inner().unit_file,
         Err(status) => return grpc_error(status),
     };
@@ -669,7 +670,9 @@ impl ServiceForm {
     fn to_service(&self) -> Service {
         let artifact = match self.artifact_kind.as_str() {
             "url" => ArtifactSource {
-                kind: Some(artifact_source::Kind::Url(self.artifact_url.trim().to_string())),
+                kind: Some(artifact_source::Kind::Url(
+                    self.artifact_url.trim().to_string(),
+                )),
             },
             "git" => ArtifactSource {
                 kind: Some(artifact_source::Kind::Git(GitSource {
@@ -1092,8 +1095,8 @@ pub async fn deployment_detail(
         Err(_) => Service::default(),
     };
 
-    let status = deployment::Status::try_from(deployment.status)
-        .unwrap_or(deployment::Status::Unspecified);
+    let status =
+        deployment::Status::try_from(deployment.status).unwrap_or(deployment::Status::Unspecified);
     let live = !status.is_terminal();
 
     // A finished deployment's output is read once here; a live one is streamed,
@@ -1176,8 +1179,8 @@ async fn collect_deployment_lines(
         match event.event {
             Some(deployment_event::Event::OutputLine(line)) => lines.push((at, false, line)),
             Some(deployment_event::Event::StatusChange(status)) => {
-                let status = deployment::Status::try_from(status)
-                    .unwrap_or(deployment::Status::Unspecified);
+                let status =
+                    deployment::Status::try_from(status).unwrap_or(deployment::Status::Unspecified);
                 lines.push((at, false, format!("--- {} ---", status.as_str())));
             }
             Some(deployment_event::Event::TerminalState(state)) => {
@@ -1349,12 +1352,7 @@ pub async fn logs_view(
 }
 
 /// Reads a bounded batch of log lines.
-async fn read_logs_once(
-    state: &AppState,
-    service_id: &str,
-    tail: u32,
-    grep: &str,
-) -> Vec<LogLine> {
+async fn read_logs_once(state: &AppState, service_id: &str, tail: u32, grep: &str) -> Vec<LogLine> {
     let Ok(mut client) = state.api.logs().await else {
         return Vec::new();
     };
@@ -1675,10 +1673,8 @@ pub async fn source_github_create(
         Err(status) => return grpc_error(status),
     };
 
-    Html(
-        render::github_handoff(&response.post_url, &response.manifest_json).into_string(),
-    )
-    .into_response()
+    Html(render::github_handoff(&response.post_url, &response.manifest_json).into_string())
+        .into_response()
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1984,7 +1980,9 @@ mod tests {
             display_name: "  ".to_string(),
             csrf_token: "csrf".to_string(),
         };
-        let actor = mutation(&user, &MutationFlags::default()).actor.expect("actor");
+        let actor = mutation(&user, &MutationFlags::default())
+            .actor
+            .expect("actor");
         assert_eq!(actor.label, "alice@example.com");
     }
 
@@ -2200,7 +2198,10 @@ mod tests {
         );
 
         assert_eq!(service.keep_releases, 9);
-        assert_eq!(service.env.get("LOG_LEVEL").map(String::as_str), Some("info"));
+        assert_eq!(
+            service.env.get("LOG_LEVEL").map(String::as_str),
+            Some("info")
+        );
         // Blank checkbox values are dropped rather than stored as empty ids.
         assert_eq!(service.secret_ids, vec!["sec_1".to_string()]);
     }

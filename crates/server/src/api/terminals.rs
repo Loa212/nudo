@@ -284,12 +284,15 @@ mod tests {
             .expect("create")
             .into_inner();
 
-        let expires_at = nudo_proto::from_timestamp(&session.expires_at.expect("expiry"))
-            .expect("in range");
+        let expires_at =
+            nudo_proto::from_timestamp(&session.expires_at.expect("expiry")).expect("in range");
         let lifetime = expires_at - chrono::Utc::now();
         // Long enough for a browser to connect, short enough that a leaked
         // token is not useful.
-        assert!(lifetime <= chrono::Duration::minutes(5), "grant lives too long");
+        assert!(
+            lifetime <= chrono::Duration::minutes(5),
+            "grant lives too long"
+        );
         assert!(lifetime > chrono::Duration::zero());
     }
 

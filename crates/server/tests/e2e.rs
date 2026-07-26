@@ -78,19 +78,15 @@ impl Fixture {
 
         // The apt install inside the container takes a while; systemd is only
         // usable once it has finished and taken over as PID 1.
-        wait_for(
-            "systemd to come up",
-            Duration::from_secs(240),
-            || {
-                exec_in_container(&["systemctl", "is-system-running", "--wait"])
-                    .map(|output| {
-                        // "degraded" is fine in a container: some units cannot
-                        // start there and that does not affect what is tested.
-                        output.contains("running") || output.contains("degraded")
-                    })
-                    .unwrap_or(false)
-            },
-        )?;
+        wait_for("systemd to come up", Duration::from_secs(240), || {
+            exec_in_container(&["systemctl", "is-system-running", "--wait"])
+                .map(|output| {
+                    // "degraded" is fine in a container: some units cannot
+                    // start there and that does not affect what is tested.
+                    output.contains("running") || output.contains("degraded")
+                })
+                .unwrap_or(false)
+        })?;
 
         // A throwaway key pair, installed as root's authorized key.
         let key_dir = tempfile::tempdir()?;
@@ -122,9 +118,11 @@ impl Fixture {
         ])?;
         exec_in_container(&["systemctl", "enable", "--now", "ssh"])?;
 
-        wait_for("sshd to accept connections", Duration::from_secs(60), || {
-            std::net::TcpStream::connect(("127.0.0.1", SSH_PORT)).is_ok()
-        })?;
+        wait_for(
+            "sshd to accept connections",
+            Duration::from_secs(60),
+            || std::net::TcpStream::connect(("127.0.0.1", SSH_PORT)).is_ok(),
+        )?;
 
         Ok(Self { private_key })
     }
@@ -223,8 +221,8 @@ async fn await_deployment(engine: &Engine, deployment_id: &str) -> deployment::S
             .expect("read the deployment")
             .expect("the deployment exists");
 
-        let status = deployment::Status::try_from(record.status)
-            .unwrap_or(deployment::Status::Unspecified);
+        let status =
+            deployment::Status::try_from(record.status).unwrap_or(deployment::Status::Unspecified);
         if status.is_terminal() {
             return status;
         }
@@ -308,9 +306,7 @@ const READY_FILE: &str = "/run/nudo-e2e-ready";
 /// kinds the product supports.
 fn ready_check() -> HealthCheck {
     HealthCheck {
-        kind: Some(health_check::Kind::Command(format!(
-            "test -s {READY_FILE}"
-        ))),
+        kind: Some(health_check::Kind::Command(format!("test -s {READY_FILE}"))),
         timeout_seconds: 5,
         retries: 6,
         initial_delay_seconds: 2,
@@ -447,7 +443,11 @@ async fn a_binary_deploys_and_the_unit_becomes_active() {
         .exec("test -x /opt/e2e-bot/current/bin && echo yes")
         .await
         .expect("check the binary");
-    assert_eq!(executable.trimmed(), "yes", "the deployed binary should be executable");
+    assert_eq!(
+        executable.trimmed(),
+        "yes",
+        "the deployed binary should be executable"
+    );
 
     // And the running process is v1's, not a leftover.
     let served = session
@@ -609,7 +609,11 @@ async fn a_failed_health_check_rolls_back_to_the_previous_release() {
         .exec("systemctl is-active e2e-rollback.service")
         .await
         .expect("query the unit");
-    assert_eq!(active.trimmed(), "active", "the rolled-back unit should be running");
+    assert_eq!(
+        active.trimmed(),
+        "active",
+        "the rolled-back unit should be running"
+    );
 
     // Healthy again, which is the property that actually matters: the rollback
     // has to restore a *working* service, not merely an active unit.
@@ -761,7 +765,10 @@ async fn secrets_reach_the_target_as_a_locked_down_environment_file() {
         .exec("cat /etc/systemd/system/e2e-secrets.service")
         .await
         .expect("read the unit");
-    assert!(unit.stdout.contains("EnvironmentFile=-/opt/e2e-secrets/env"));
+    assert!(
+        unit.stdout
+            .contains("EnvironmentFile=-/opt/e2e-secrets/env")
+    );
     assert!(
         !unit.stdout.contains(hostile_value),
         "the secret value must not appear in the unit file"

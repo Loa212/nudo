@@ -65,7 +65,10 @@ impl ServicesApi for ServicesApiService {
     }
 
     async fn get(&self, request: Request<GetServiceRequest>) -> Result<Response<Service>, Status> {
-        let service = self.context.require_service(&request.into_inner().id).await?;
+        let service = self
+            .context
+            .require_service(&request.into_inner().id)
+            .await?;
         Ok(Response::new(service))
     }
 
@@ -126,10 +129,7 @@ impl ServicesApi for ServicesApiService {
         Ok(Response::new(updated))
     }
 
-    async fn delete(
-        &self,
-        request: Request<DeleteServiceRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn delete(&self, request: Request<DeleteServiceRequest>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         let (existing, target) = self.context.require_service_and_target(&request.id).await?;
         let unit_name = systemd::unit_file_name(&existing);
@@ -432,7 +432,9 @@ mod tests {
         assert_eq!(created.release_root, "/opt/bot");
 
         let fetched = service
-            .get(Request::new(GetServiceRequest { id: created.id.clone() }))
+            .get(Request::new(GetServiceRequest {
+                id: created.id.clone(),
+            }))
             .await
             .expect("get")
             .into_inner();
@@ -558,8 +560,14 @@ mod tests {
             .await
             .expect("target");
 
-        service.create(Request::new(create(&target_id, "a"))).await.expect("a");
-        service.create(Request::new(create(&other.id, "b"))).await.expect("b");
+        service
+            .create(Request::new(create(&target_id, "a")))
+            .await
+            .expect("a");
+        service
+            .create(Request::new(create(&other.id, "b")))
+            .await
+            .expect("b");
 
         let all = service
             .list(Request::new(ListServicesRequest::default()))
@@ -789,7 +797,9 @@ mod tests {
         // Still there.
         assert!(
             service
-                .get(Request::new(GetServiceRequest { id: created.id.clone() }))
+                .get(Request::new(GetServiceRequest {
+                    id: created.id.clone()
+                }))
                 .await
                 .is_ok()
         );

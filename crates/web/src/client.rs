@@ -60,7 +60,9 @@ impl Api {
     pub async fn terminals(
         &self,
     ) -> Result<terminals_client::TerminalsClient<Channel>, tonic::Status> {
-        Ok(terminals_client::TerminalsClient::new(self.channel().await?))
+        Ok(terminals_client::TerminalsClient::new(
+            self.channel().await?,
+        ))
     }
 
     pub async fn sources(&self) -> Result<sources_client::SourcesClient<Channel>, tonic::Status> {

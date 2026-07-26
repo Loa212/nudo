@@ -106,8 +106,7 @@ pub fn parse_show_output(output: &str, service_id: &str) -> UnitStatus {
         enabled: matches!(get("UnitFileState"), "enabled" | "enabled-runtime"),
         pid: number("MainPID") as u32,
         memory_bytes: number("MemoryCurrent"),
-        since: parse_systemd_timestamp(get("ActiveEnterTimestamp"))
-            .map(nudo_proto::to_timestamp),
+        since: parse_systemd_timestamp(get("ActiveEnterTimestamp")).map(nudo_proto::to_timestamp),
         restart_count: number("NRestarts") as u32,
     }
 }
@@ -256,7 +255,8 @@ mod tests {
     #[test]
     fn output_with_unexpected_or_missing_lines_still_parses() {
         // Different systemd versions report different property sets.
-        let status = parse_show_output("ActiveState=failed\nSomethingElse=x\nnot-a-pair\n", "svc_1");
+        let status =
+            parse_show_output("ActiveState=failed\nSomethingElse=x\nnot-a-pair\n", "svc_1");
         assert_eq!(status.active_state, "failed");
         assert!(status.sub_state.is_empty());
         assert_eq!(status.pid, 0);

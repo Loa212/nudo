@@ -55,23 +55,22 @@ impl Deployments for DeploymentsService {
             .await?;
 
         // A retry after a dropped connection must not deploy twice.
-        if !authorized.idempotency_key.is_empty() {
-            if let Some(existing) = self
+        if !authorized.idempotency_key.is_empty()
+            && let Some(existing) = self
                 .context
                 .store
                 .check_idempotency(&authorized.idempotency_key, "Deploy")
                 .await
                 .map_err(internal)?
-            {
-                let deployment = self
-                    .context
-                    .store
-                    .get_deployment(&existing)
-                    .await
-                    .map_err(internal)?
-                    .ok_or_else(|| Status::internal("the recorded deployment is gone"))?;
-                return Ok(Response::new(deployment));
-            }
+        {
+            let deployment = self
+                .context
+                .store
+                .get_deployment(&existing)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| Status::internal("the recorded deployment is gone"))?;
+            return Ok(Response::new(deployment));
         }
 
         if authorized.dry_run {
@@ -140,9 +139,10 @@ impl Deployments for DeploymentsService {
             .map_err(internal)?;
         let ids: Vec<&str> = releases.iter().map(|r| r.id.as_str()).collect();
 
-        let chosen = systemd::rollback_target(&ids, &service.current_release_id, &request.release_id)
-            .map_err(|error| Status::failed_precondition(error.to_string()))?
-            .to_string();
+        let chosen =
+            systemd::rollback_target(&ids, &service.current_release_id, &request.release_id)
+                .map_err(|error| Status::failed_precondition(error.to_string()))?
+                .to_string();
 
         let authorized = self
             .context
@@ -233,7 +233,10 @@ impl Deployments for DeploymentsService {
                         .store
                         .append_deployment_log(&deployment_id, &message, true)
                         .await;
-                    let _ = engine.store.set_deployment_error(&deployment_id, &message).await;
+                    let _ = engine
+                        .store
+                        .set_deployment_error(&deployment_id, &message)
+                        .await;
                     let _ = engine
                         .store
                         .set_deployment_status(&deployment_id, deployment::Status::Failed)
@@ -615,12 +618,26 @@ mod tests {
             ..deploy(&service_id)
         };
 
-        let first = service.deploy(Request::new(request())).await.expect("first").into_inner();
-        let second = service.deploy(Request::new(request())).await.expect("second").into_inner();
+        let first = service
+            .deploy(Request::new(request()))
+            .await
+            .expect("first")
+            .into_inner();
+        let second = service
+            .deploy(Request::new(request()))
+            .await
+            .expect("second")
+            .into_inner();
 
         assert_eq!(first.id, second.id);
         assert_eq!(
-            service.context.store.list_deployments("", 50, 0).await.expect("list").len(),
+            service
+                .context
+                .store
+                .list_deployments("", 50, 0)
+                .await
+                .expect("list")
+                .len(),
             1
         );
     }
@@ -716,7 +733,10 @@ mod tests {
             .iter()
             .find(|e| e.action == "Deployments.Rollback")
             .expect("entry");
-        assert!(entry.summary.contains(&first), "the audit entry must name the release");
+        assert!(
+            entry.summary.contains(&first),
+            "the audit entry must name the release"
+        );
     }
 
     #[tokio::test]
@@ -730,7 +750,12 @@ mod tests {
             .set_current_release(&service_id, &second)
             .await
             .expect("set current");
-        service.context.store.mark_release_pruned(&first).await.expect("prune");
+        service
+            .context
+            .store
+            .mark_release_pruned(&first)
+            .await
+            .expect("prune");
 
         let status = service
             .rollback(Request::new(RollbackRequest {
@@ -841,7 +866,12 @@ mod tests {
         let (service, service_id) = fixture().await;
         let first = add_release(&service, &service_id, 1).await;
         add_release(&service, &service_id, 2).await;
-        service.context.store.mark_release_pruned(&first).await.expect("prune");
+        service
+            .context
+            .store
+            .mark_release_pruned(&first)
+            .await
+            .expect("prune");
 
         let listed = service
             .list_releases(Request::new(ListReleasesRequest {
@@ -920,7 +950,7 @@ mod tests {
         let status = expect_status(
             service
                 .watch(Request::new(WatchDeploymentRequest {
-                deployment_id: "dep_nope".to_string(),
+                    deployment_id: "dep_nope".to_string(),
                 }))
                 .await,
             "err",

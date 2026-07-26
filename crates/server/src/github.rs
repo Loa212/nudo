@@ -232,11 +232,12 @@ impl GithubClient {
     ///
     /// This is the one call in the flow that cannot be retried: the code is
     /// single-use, so a failure here means starting the manifest flow again.
-    pub async fn exchange_manifest_code(
-        &self,
-        code: &str,
-    ) -> anyhow::Result<GithubAppCredentials> {
-        let url = format!("{}/app-manifests/{}/conversions", self.api_url, urlencoding::encode(code));
+    pub async fn exchange_manifest_code(&self, code: &str) -> anyhow::Result<GithubAppCredentials> {
+        let url = format!(
+            "{}/app-manifests/{}/conversions",
+            self.api_url,
+            urlencoding::encode(code)
+        );
 
         let response = self
             .http
@@ -253,8 +254,8 @@ impl GithubClient {
             bail!("GitHub rejected the manifest code exchange (HTTP {status}): {body}");
         }
 
-        let parsed: ConversionResponse = serde_json::from_str(&body)
-            .context("parsing GitHub's manifest conversion response")?;
+        let parsed: ConversionResponse =
+            serde_json::from_str(&body).context("parsing GitHub's manifest conversion response")?;
 
         // A missing private key or webhook secret would leave a source that
         // cannot clone or cannot verify deliveries, so refuse it now rather than
@@ -397,8 +398,10 @@ impl GithubClient {
                 bail!("listing repositories failed (HTTP {})", response.status());
             }
 
-            let parsed: RepositoriesResponse =
-                response.json().await.context("parsing the repository list")?;
+            let parsed: RepositoriesResponse = response
+                .json()
+                .await
+                .context("parsing the repository list")?;
 
             let returned = parsed.repositories.len();
             repositories.extend(parsed.repositories.into_iter().map(|repo| {
@@ -417,7 +420,7 @@ impl GithubClient {
             }
         }
 
-        repositories.sort_by(|a, b| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()));
+        repositories.sort_by_key(|a| a.full_name.to_lowercase());
         Ok(repositories)
     }
 
@@ -511,7 +514,10 @@ impl GithubClient {
             .context("writing the commit status")?;
 
         if !response.status().is_success() {
-            bail!("writing the commit status failed (HTTP {})", response.status());
+            bail!(
+                "writing the commit status failed (HTTP {})",
+                response.status()
+            );
         }
         Ok(())
     }
@@ -541,7 +547,10 @@ impl CommitStatus {
     pub fn from_deployment(status: nudo_proto::deployment::Status) -> Option<Self> {
         use nudo_proto::deployment::Status;
         match status {
-            Status::Queued | Status::Building | Status::Uploading | Status::Activating
+            Status::Queued
+            | Status::Building
+            | Status::Uploading
+            | Status::Activating
             | Status::HealthChecking => Some(Self::Pending),
             Status::Succeeded => Some(Self::Success),
             // A rollback means the deploy did not hold, which is a failure of
@@ -573,11 +582,10 @@ pub fn sign_app_jwt(private_key_pem: &str, app_id: i64) -> anyhow::Result<String
     };
 
     // GitHub App keys are RSA and GitHub requires RS256.
-    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.trim().as_bytes())
-        .context(
-            "reading the GitHub App private key — it must be the PEM GitHub issued, \
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem.trim().as_bytes()).context(
+        "reading the GitHub App private key — it must be the PEM GitHub issued, \
              not an OpenSSH-format key",
-        )?;
+    )?;
 
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
@@ -649,7 +657,10 @@ pub fn split_repo(repo: &str) -> anyhow::Result<(&str, &str)> {
     }
     // GitHub's own character set for owners and repository names. Anything else
     // is either a typo or an attempt at path traversal.
-    let valid = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let valid = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
     if !valid(owner) || !valid(name) {
         bail!("repository {repo:?} contains characters GitHub does not allow");
     }
@@ -729,16 +740,25 @@ mod tests {
     fn the_manifest_requests_only_the_permissions_this_tool_uses() {
         let manifest = build_manifest("nudo", "https://n.example.com");
         assert_eq!(
-            manifest.default_permissions.get("contents").map(String::as_str),
+            manifest
+                .default_permissions
+                .get("contents")
+                .map(String::as_str),
             Some("read")
         );
         assert_eq!(
-            manifest.default_permissions.get("metadata").map(String::as_str),
+            manifest
+                .default_permissions
+                .get("metadata")
+                .map(String::as_str),
             Some("read")
         );
         // Needed to report a deploy's outcome on the commit.
         assert_eq!(
-            manifest.default_permissions.get("statuses").map(String::as_str),
+            manifest
+                .default_permissions
+                .get("statuses")
+                .map(String::as_str),
             Some("write")
         );
         // Nothing here administers a repository.
@@ -803,8 +823,14 @@ mod tests {
 
     #[test]
     fn the_api_url_is_derived_for_each_kind_of_github_host() {
-        assert_eq!(api_url_from_html_url("https://github.com"), "https://api.github.com");
-        assert_eq!(api_url_from_html_url("https://github.com/"), "https://api.github.com");
+        assert_eq!(
+            api_url_from_html_url("https://github.com"),
+            "https://api.github.com"
+        );
+        assert_eq!(
+            api_url_from_html_url("https://github.com/"),
+            "https://api.github.com"
+        );
         // Enterprise Cloud puts the API on a subdomain.
         assert_eq!(
             api_url_from_html_url("https://octocorp.ghe.com"),
@@ -819,7 +845,10 @@ mod tests {
 
     #[test]
     fn host_matching_for_api_derivation_is_case_insensitive() {
-        assert_eq!(api_url_from_html_url("https://GitHub.com"), "https://api.github.com");
+        assert_eq!(
+            api_url_from_html_url("https://GitHub.com"),
+            "https://api.github.com"
+        );
     }
 
     // ---- jwt ----
@@ -837,11 +866,9 @@ mod tests {
 
         // Decode the payload without verifying, to inspect the claims.
         let payload = token.split('.').nth(1).expect("payload");
-        let decoded = base64::Engine::decode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            payload,
-        )
-        .expect("base64");
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+                .expect("base64");
         let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("json");
 
         // `iss` is the App id, as a string.
@@ -854,14 +881,17 @@ mod tests {
         // Back-dated, so a fast clock here is not rejected as future-dated.
         assert!(iat <= now - JWT_BACKDATE_SECONDS + 2 && iat >= now - JWT_BACKDATE_SECONDS - 5);
         // Inside GitHub's ten-minute ceiling.
-        assert!(exp - iat <= 600, "exp must be within GitHub's 10 minute limit");
+        assert!(
+            exp - iat <= 600,
+            "exp must be within GitHub's 10 minute limit"
+        );
         assert!(exp > now);
     }
 
     #[test]
     fn a_key_that_is_not_an_rsa_pem_is_rejected_with_a_useful_message() {
-        let error = sign_app_jwt("-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n", 1)
-            .expect_err("must fail");
+        let error =
+            sign_app_jwt("-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n", 1).expect_err("must fail");
         assert!(error.to_string().contains("PEM"), "got: {error}");
     }
 
@@ -870,11 +900,20 @@ mod tests {
     #[test]
     fn owner_and_name_are_split_from_a_repository_string() {
         assert_eq!(split_repo("owner/name").expect("split"), ("owner", "name"));
-        assert_eq!(split_repo(" owner/name ").expect("split"), ("owner", "name"));
+        assert_eq!(
+            split_repo(" owner/name ").expect("split"),
+            ("owner", "name")
+        );
         // A .git suffix is what a clone URL carries.
-        assert_eq!(split_repo("owner/name.git").expect("split"), ("owner", "name"));
+        assert_eq!(
+            split_repo("owner/name.git").expect("split"),
+            ("owner", "name")
+        );
         assert_eq!(split_repo("owner/name/").expect("split"), ("owner", "name"));
-        assert_eq!(split_repo("my-org/my_repo.v2").expect("split"), ("my-org", "my_repo.v2"));
+        assert_eq!(
+            split_repo("my-org/my_repo.v2").expect("split"),
+            ("my-org", "my_repo.v2")
+        );
     }
 
     #[test]
@@ -894,7 +933,10 @@ mod tests {
             "owner/",
             "",
         ] {
-            assert!(split_repo(hostile).is_err(), "{hostile:?} should be rejected");
+            assert!(
+                split_repo(hostile).is_err(),
+                "{hostile:?} should be rejected"
+            );
         }
     }
 
@@ -962,7 +1004,10 @@ mod tests {
     fn deployment_statuses_map_onto_commit_statuses() {
         use nudo_proto::deployment::Status;
 
-        assert_eq!(CommitStatus::from_deployment(Status::Queued), Some(CommitStatus::Pending));
+        assert_eq!(
+            CommitStatus::from_deployment(Status::Queued),
+            Some(CommitStatus::Pending)
+        );
         assert_eq!(
             CommitStatus::from_deployment(Status::HealthChecking),
             Some(CommitStatus::Pending)
@@ -971,7 +1016,10 @@ mod tests {
             CommitStatus::from_deployment(Status::Succeeded),
             Some(CommitStatus::Success)
         );
-        assert_eq!(CommitStatus::from_deployment(Status::Failed), Some(CommitStatus::Failure));
+        assert_eq!(
+            CommitStatus::from_deployment(Status::Failed),
+            Some(CommitStatus::Failure)
+        );
         // A rollback means the change did not hold.
         assert_eq!(
             CommitStatus::from_deployment(Status::RolledBack),

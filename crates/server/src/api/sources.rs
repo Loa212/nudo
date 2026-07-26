@@ -230,10 +230,7 @@ impl Sources for SourcesService {
         Ok(Response::new(ListBranchesResponse { branches }))
     }
 
-    async fn delete(
-        &self,
-        request: Request<DeleteSourceRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn delete(&self, request: Request<DeleteSourceRequest>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         let source = self
             .context
@@ -253,10 +250,12 @@ impl Sources for SourcesService {
             .map_err(internal)?;
         let dependent = services
             .iter()
-            .filter(|service| match service.artifact.as_ref().and_then(|a| a.kind.as_ref()) {
-                Some(artifact_source::Kind::Git(git)) => git.source_id == request.id,
-                _ => false,
-            })
+            .filter(
+                |service| match service.artifact.as_ref().and_then(|a| a.kind.as_ref()) {
+                    Some(artifact_source::Kind::Git(git)) => git.source_id == request.id,
+                    _ => false,
+                },
+            )
             .count();
 
         let authorized = self

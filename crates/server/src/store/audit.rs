@@ -3,8 +3,8 @@
 use nudo_proto::{Actor, AuditEntry, actor};
 use sqlx::Row;
 
-use super::{Store, from_db_time, new_id, now_string};
 use super::deployments::parse_actor_kind;
+use super::{Store, from_db_time, new_id, now_string};
 // The SQL strings below are composed only from `const` fragments in this file
 // plus bound parameters; no caller-supplied value is ever interpolated, which is
 // what `AssertSqlSafe` asserts.
@@ -92,7 +92,10 @@ impl Store {
             sql.push_str(&format!(" AND actor_kind = ?{next}"));
             next += 1;
         }
-        sql.push_str(&format!(" ORDER BY at DESC, id DESC LIMIT ?{next} OFFSET ?{}", next + 1));
+        sql.push_str(&format!(
+            " ORDER BY at DESC, id DESC LIMIT ?{next} OFFSET ?{}",
+            next + 1
+        ));
         let _ = subject_placeholder;
 
         let mut query = sqlx::query(AssertSqlSafe(sql.clone()));
@@ -102,7 +105,11 @@ impl Store {
         if filter_kind {
             query = query.bind(actor_kind_str(actor_kind));
         }
-        let rows = query.bind(limit).bind(offset).fetch_all(self.pool()).await?;
+        let rows = query
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(self.pool())
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -241,15 +248,27 @@ mod tests {
     #[tokio::test]
     async fn entries_can_be_filtered_by_actor_kind() {
         let store = store().await;
-        store.audit(entry("human-thing", Actor::human("u", "alice"))).await;
-        store.audit(entry("agent-thing", Actor::agent("a", "claude"))).await;
-        store.audit(entry("hook-thing", Actor::webhook("d", "push"))).await;
+        store
+            .audit(entry("human-thing", Actor::human("u", "alice")))
+            .await;
+        store
+            .audit(entry("agent-thing", Actor::agent("a", "claude")))
+            .await;
+        store
+            .audit(entry("hook-thing", Actor::webhook("d", "push")))
+            .await;
 
-        let agents = store.list_audit("", actor::Kind::Agent, 50, 0).await.expect("list");
+        let agents = store
+            .list_audit("", actor::Kind::Agent, 50, 0)
+            .await
+            .expect("list");
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].action, "agent-thing");
 
-        let hooks = store.list_audit("", actor::Kind::Webhook, 50, 0).await.expect("list");
+        let hooks = store
+            .list_audit("", actor::Kind::Webhook, 50, 0)
+            .await
+            .expect("list");
         assert_eq!(hooks.len(), 1);
     }
 
@@ -287,12 +306,20 @@ mod tests {
     async fn listing_paginates() {
         let store = store().await;
         for i in 0..5 {
-            store.audit(entry(&format!("A{i}"), Actor::system("s"))).await;
+            store
+                .audit(entry(&format!("A{i}"), Actor::system("s")))
+                .await;
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
 
-        let first = store.list_audit("", actor::Kind::Unspecified, 2, 0).await.expect("list");
-        let second = store.list_audit("", actor::Kind::Unspecified, 2, 2).await.expect("list");
+        let first = store
+            .list_audit("", actor::Kind::Unspecified, 2, 0)
+            .await
+            .expect("list");
+        let second = store
+            .list_audit("", actor::Kind::Unspecified, 2, 2)
+            .await
+            .expect("list");
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
         assert!(first.iter().all(|a| second.iter().all(|b| a.id != b.id)));
@@ -304,7 +331,9 @@ mod tests {
         // The point of an audit log is to record what happened to something
         // that may since have been deleted, so there is no foreign key.
         let store = store().await;
-        store.audit(entry("Targets.Delete", Actor::human("u", "alice"))).await;
+        store
+            .audit(entry("Targets.Delete", Actor::human("u", "alice")))
+            .await;
 
         let entries = store
             .list_audit("svc_1", actor::Kind::Unspecified, 50, 0)

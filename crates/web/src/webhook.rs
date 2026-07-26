@@ -29,11 +29,7 @@ const TARGET_ID_HEADER: &str = "x-github-hook-installation-target-id";
 /// not actionable — an unknown event, a branch nothing watches — because GitHub
 /// treats a 4xx as a failed delivery and will retry it and eventually disable
 /// the hook. Only an authentication failure is a 4xx.
-pub async fn receive(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+pub async fn receive(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let event = header(&headers, EVENT_HEADER).to_lowercase();
     let delivery = header(&headers, DELIVERY_HEADER);
 
@@ -72,7 +68,11 @@ pub async fn receive(
         }
     };
 
-    let secret = match state.store.source_webhook_secret(&state.secret_key, &source.id).await {
+    let secret = match state
+        .store
+        .source_webhook_secret(&state.secret_key, &source.id)
+        .await
+    {
         Ok(Some(secret)) if !secret.trim().is_empty() => secret,
         Ok(_) => {
             // Refused rather than waved through: a source with no secret cannot
@@ -152,7 +152,9 @@ async fn handle_push(
             .into_response();
     };
 
-    let repo = payload["repository"]["full_name"].as_str().unwrap_or_default();
+    let repo = payload["repository"]["full_name"]
+        .as_str()
+        .unwrap_or_default();
     if repo.is_empty() {
         return (StatusCode::OK, "ignored: the delivery named no repository").into_response();
     }
@@ -179,7 +181,11 @@ async fn handle_push(
 
     let after = payload["after"].as_str().unwrap_or_default();
 
-    let services = match state.store.services_for_push(&source.id, repo, branch).await {
+    let services = match state
+        .store
+        .services_for_push(&source.id, repo, branch)
+        .await
+    {
         Ok(services) => services,
         Err(error) => {
             tracing::error!(%error, "resolving the push to services failed");
@@ -306,15 +312,14 @@ async fn handle_installation(
         return (StatusCode::OK, "recorded: the App was uninstalled").into_response();
     }
 
-    if installation_id != 0 {
-        if let Err(error) = state
+    if installation_id != 0
+        && let Err(error) = state
             .store
             .set_installation(&source.id, installation_id, account)
             .await
-        {
-            tracing::error!(%error, "recording the installation failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    {
+        tracing::error!(%error, "recording the installation failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     (StatusCode::OK, "recorded").into_response()
@@ -388,11 +393,7 @@ fn spawn_status_writeback(
             }
         };
 
-        write(
-            CommitStatus::Pending,
-            format!("Deploying {service_name}…"),
-        )
-        .await;
+        write(CommitStatus::Pending, format!("Deploying {service_name}…")).await;
 
         // Poll rather than subscribe, because this task outlives the request and
         // a broadcast subscription would be dropped when the deployment's
@@ -402,10 +403,9 @@ fn spawn_status_writeback(
             match receiver.recv().await {
                 Ok(nudo_server::events::DeploymentEvent::Finished(status)) => {
                     let (commit_status, description) = match status {
-                        nudo_proto::deployment::Status::Succeeded => (
-                            CommitStatus::Success,
-                            format!("{service_name} deployed"),
-                        ),
+                        nudo_proto::deployment::Status::Succeeded => {
+                            (CommitStatus::Success, format!("{service_name} deployed"))
+                        }
                         nudo_proto::deployment::Status::RolledBack => (
                             CommitStatus::Failure,
                             format!("{service_name} failed its health check and was rolled back"),
@@ -427,9 +427,7 @@ fn spawn_status_writeback(
                     // The channel closed without a terminal event; read the row
                     // so a status is still written rather than left pending
                     // forever.
-                    if let Ok(Some(deployment)) =
-                        state.store.get_deployment(&deployment_id).await
-                    {
+                    if let Ok(Some(deployment)) = state.store.get_deployment(&deployment_id).await {
                         let status = nudo_proto::deployment::Status::try_from(deployment.status)
                             .unwrap_or(nudo_proto::deployment::Status::Unspecified);
                         if let Some(commit_status) = CommitStatus::from_deployment(status) {

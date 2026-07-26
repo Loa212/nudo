@@ -52,7 +52,10 @@ pub struct HealthParams {
 
 impl HealthParams {
     pub fn from_proto(check: Option<&HealthCheck>) -> Self {
-        let timeout_seconds = check.map(|c| c.timeout_seconds).filter(|t| *t > 0).unwrap_or(10);
+        let timeout_seconds = check
+            .map(|c| c.timeout_seconds)
+            .filter(|t| *t > 0)
+            .unwrap_or(10);
         // `retries` counts retries after the first try, so total attempts is
         // one more; an unset value gives three attempts.
         let retries = check.map(|c| c.retries).unwrap_or(2);
@@ -179,7 +182,10 @@ mod tests {
             Some(&http("http://x/; rm -rf /tmp/evidence")),
             "bot.service",
         );
-        assert!(!command.contains("; rm -rf /tmp/evidence "), "unquoted injection");
+        assert!(
+            !command.contains("; rm -rf /tmp/evidence "),
+            "unquoted injection"
+        );
         assert!(command.contains("'http://x/; rm -rf /tmp/evidence'"));
     }
 

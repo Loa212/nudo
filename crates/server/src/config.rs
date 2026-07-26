@@ -12,7 +12,10 @@ use clap::Parser;
 /// `NUDO_SECRET_KEY`), since a generated-per-boot key would make previously
 /// stored secrets unreadable after a restart.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "nudo-server", about = "nudo control plane (gRPC API + deploy engine)")]
+#[command(
+    name = "nudo-server",
+    about = "nudo control plane (gRPC API + deploy engine)"
+)]
 pub struct Config {
     /// Address the gRPC API listens on.
     #[arg(long, env = "NUDO_GRPC_ADDR", default_value = "127.0.0.1:50051")]

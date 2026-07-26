@@ -17,10 +17,7 @@ pub const CHECK_NAMES: [&str; 4] = ["ssh", "sudo", "systemd", "release_dir"];
 /// A failed SSH connection short-circuits the rest: without a connection the
 /// other three cannot be evaluated, and reporting them as "failed" would imply
 /// we looked.
-pub async fn check_target(
-    ssh_target: &SshTarget,
-    release_root: &str,
-) -> (bool, Vec<Check>) {
+pub async fn check_target(ssh_target: &SshTarget, release_root: &str) -> (bool, Vec<Check>) {
     let session = match SshSession::connect(ssh_target).await {
         Ok(session) => session,
         Err(error) => {
@@ -103,9 +100,7 @@ pub async fn check_target(
     }
 
     // ---- systemd ----
-    let systemd = session
-        .exec("systemctl --version 2>&1 | head -n 1")
-        .await;
+    let systemd = session.exec("systemctl --version 2>&1 | head -n 1").await;
     match systemd {
         Ok(result) if result.ok() && !result.trimmed().is_empty() => checks.push(Check {
             name: "systemd".to_string(),

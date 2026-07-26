@@ -31,9 +31,7 @@ impl Store {
         }
         // The name becomes an environment variable key on the target, so it has
         // to be one systemd and the shell will accept.
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             || name.chars().next().is_some_and(|c| c.is_ascii_digit())
         {
             bail!(
@@ -45,15 +43,15 @@ impl Store {
         let target_scope = normalize_scope(scope_target_id);
         let service_scope = normalize_scope(scope_service_id);
 
-        if let Some(target_id) = &target_scope {
-            if self.get_target(target_id).await?.is_none() {
-                bail!("no such target: {target_id}");
-            }
+        if let Some(target_id) = &target_scope
+            && self.get_target(target_id).await?.is_none()
+        {
+            bail!("no such target: {target_id}");
         }
-        if let Some(service_id) = &service_scope {
-            if self.get_service(service_id).await?.is_none() {
-                bail!("no such service: {service_id}");
-            }
+        if let Some(service_id) = &service_scope
+            && self.get_service(service_id).await?.is_none()
+        {
+            bail!("no such service: {service_id}");
         }
 
         let sealed = key.seal(value)?;
@@ -157,11 +155,7 @@ impl Store {
     /// Deliberately not reachable from the gRPC surface: only the deploy engine
     /// and the SSH layer call this, to build an `EnvironmentFile` or to
     /// authenticate to a target.
-    pub async fn reveal_secret(
-        &self,
-        key: &SecretKey,
-        id: &str,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn reveal_secret(&self, key: &SecretKey, id: &str) -> anyhow::Result<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as("SELECT value_enc FROM secrets WHERE id = ?1")
             .bind(id)
             .fetch_optional(self.pool())
@@ -216,10 +210,9 @@ impl Store {
     /// Whether any service still references this secret, so a delete can warn
     /// rather than break the next deploy.
     pub async fn secret_referenced_by(&self, id: &str) -> anyhow::Result<Vec<String>> {
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, secret_ids FROM services")
-                .fetch_all(self.pool())
-                .await?;
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, secret_ids FROM services")
+            .fetch_all(self.pool())
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -250,9 +243,7 @@ fn row_to_secret(row: &SqliteRow) -> Secret {
         scope_service_id: row
             .get::<Option<String>, _>("scope_service_id")
             .unwrap_or_default(),
-        updated_at: nudo_proto::to_timestamp_opt(from_db_time(
-            &row.get::<String, _>("updated_at"),
-        )),
+        updated_at: nudo_proto::to_timestamp_opt(from_db_time(&row.get::<String, _>("updated_at"))),
         digest: row.get("digest"),
     }
 }
@@ -314,15 +305,24 @@ mod tests {
             .fetch_one(store.pool())
             .await
             .expect("query");
-        assert!(!stored.contains("plaintext-value"), "secret stored in the clear");
+        assert!(
+            !stored.contains("plaintext-value"),
+            "secret stored in the clear"
+        );
         assert_eq!(key.open(&stored).expect("open"), "plaintext-value");
     }
 
     #[tokio::test]
     async fn writing_the_same_name_rotates_the_value_rather_than_duplicating() {
         let (store, key, _, _) = fixture().await;
-        let first = store.put_secret(&key, "ROTATE", "v1", "", "").await.expect("put");
-        let second = store.put_secret(&key, "ROTATE", "v2", "", "").await.expect("put");
+        let first = store
+            .put_secret(&key, "ROTATE", "v1", "", "")
+            .await
+            .expect("put");
+        let second = store
+            .put_secret(&key, "ROTATE", "v2", "", "")
+            .await
+            .expect("put");
 
         assert_eq!(first.id, second.id, "the same row is updated");
         assert_ne!(first.digest, second.digest);
@@ -337,7 +337,10 @@ mod tests {
     async fn the_same_name_can_exist_in_different_scopes() {
         let (store, key, target_id, service_id) = fixture().await;
 
-        let global = store.put_secret(&key, "DB_URL", "global", "", "").await.expect("put");
+        let global = store
+            .put_secret(&key, "DB_URL", "global", "", "")
+            .await
+            .expect("put");
         let per_target = store
             .put_secret(&key, "DB_URL", "target", &target_id, "")
             .await
@@ -359,7 +362,10 @@ mod tests {
         );
 
         assert_eq!(
-            store.reveal_secret(&key, &per_target.id).await.expect("reveal"),
+            store
+                .reveal_secret(&key, &per_target.id)
+                .await
+                .expect("reveal"),
             Some("target".to_string())
         );
     }
@@ -367,9 +373,18 @@ mod tests {
     #[tokio::test]
     async fn listing_can_be_narrowed_to_a_scope() {
         let (store, key, target_id, service_id) = fixture().await;
-        store.put_secret(&key, "GLOBAL_ONE", "a", "", "").await.expect("put");
-        store.put_secret(&key, "TARGET_ONE", "b", &target_id, "").await.expect("put");
-        store.put_secret(&key, "SERVICE_ONE", "c", "", &service_id).await.expect("put");
+        store
+            .put_secret(&key, "GLOBAL_ONE", "a", "", "")
+            .await
+            .expect("put");
+        store
+            .put_secret(&key, "TARGET_ONE", "b", &target_id, "")
+            .await
+            .expect("put");
+        store
+            .put_secret(&key, "SERVICE_ONE", "c", "", &service_id)
+            .await
+            .expect("put");
 
         assert_eq!(store.list_secrets("", "").await.expect("list").len(), 3);
 
@@ -417,8 +432,14 @@ mod tests {
     #[tokio::test]
     async fn a_services_secrets_resolve_to_an_ordered_name_value_map() {
         let (store, key, _, _) = fixture().await;
-        let b = store.put_secret(&key, "B_KEY", "second", "", "").await.expect("put");
-        let a = store.put_secret(&key, "A_KEY", "first", "", "").await.expect("put");
+        let b = store
+            .put_secret(&key, "B_KEY", "second", "", "")
+            .await
+            .expect("put");
+        let a = store
+            .put_secret(&key, "A_KEY", "first", "", "")
+            .await
+            .expect("put");
 
         let resolved = store
             .resolve_service_secrets(&key, &[b.id.clone(), a.id.clone()])
@@ -447,7 +468,10 @@ mod tests {
     #[tokio::test]
     async fn a_secret_sealed_under_a_different_key_cannot_be_read() {
         let (store, key, _, _) = fixture().await;
-        let secret = store.put_secret(&key, "KEY", "v", "", "").await.expect("put");
+        let secret = store
+            .put_secret(&key, "KEY", "v", "", "")
+            .await
+            .expect("put");
         // Simulates an operator losing or rotating the key file.
         assert!(
             store
@@ -460,13 +484,22 @@ mod tests {
     #[tokio::test]
     async fn revealing_a_missing_secret_is_none_not_an_error() {
         let (store, key, _, _) = fixture().await;
-        assert!(store.reveal_secret(&key, "sec_nope").await.expect("reveal").is_none());
+        assert!(
+            store
+                .reveal_secret(&key, "sec_nope")
+                .await
+                .expect("reveal")
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn deleting_a_secret_works_once() {
         let (store, key, _, _) = fixture().await;
-        let secret = store.put_secret(&key, "GONE", "v", "", "").await.expect("put");
+        let secret = store
+            .put_secret(&key, "GONE", "v", "", "")
+            .await
+            .expect("put");
 
         store.delete_secret(&secret.id).await.expect("delete");
         assert!(store.get_secret(&secret.id).await.expect("get").is_none());
@@ -476,7 +509,10 @@ mod tests {
     #[tokio::test]
     async fn references_from_services_are_discoverable_before_a_delete() {
         let (store, key, target_id, _) = fixture().await;
-        let secret = store.put_secret(&key, "USED", "v", "", "").await.expect("put");
+        let secret = store
+            .put_secret(&key, "USED", "v", "", "")
+            .await
+            .expect("put");
 
         let service = store
             .create_service(&nudo_proto::Service {
@@ -490,14 +526,26 @@ mod tests {
 
         let referencing = store.secret_referenced_by(&secret.id).await.expect("refs");
         assert_eq!(referencing, vec![service.id]);
-        assert!(store.secret_referenced_by("sec_other").await.expect("refs").is_empty());
+        assert!(
+            store
+                .secret_referenced_by("sec_other")
+                .await
+                .expect("refs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn deleting_a_scope_deletes_the_secrets_scoped_to_it() {
         let (store, key, target_id, _) = fixture().await;
-        store.put_secret(&key, "SCOPED", "v", &target_id, "").await.expect("put");
-        store.put_secret(&key, "GLOBAL", "v", "", "").await.expect("put");
+        store
+            .put_secret(&key, "SCOPED", "v", &target_id, "")
+            .await
+            .expect("put");
+        store
+            .put_secret(&key, "GLOBAL", "v", "", "")
+            .await
+            .expect("put");
 
         store.delete_target(&target_id).await.expect("delete");
 

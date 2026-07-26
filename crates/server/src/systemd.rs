@@ -148,7 +148,10 @@ pub fn render_unit(service: &Service) -> String {
     // Non-secret env is inlined; secrets go to the EnvironmentFile so their
     // values never appear in `systemctl cat` output or the unit on disk.
     for (key, value) in sorted(&service.env) {
-        out.push_str(&format!("Environment=\"{key}={}\"\n", escape_unit_env(value)));
+        out.push_str(&format!(
+            "Environment=\"{key}={}\"\n",
+            escape_unit_env(value)
+        ));
     }
     if !service.secret_ids.is_empty() {
         // The dash makes a missing file non-fatal, which matters on the very
@@ -161,7 +164,11 @@ pub fn render_unit(service: &Service) -> String {
         other => other,
     };
     out.push_str(&format!("Restart={restart}\n"));
-    let restart_sec = if unit.restart_sec == 0 { 5 } else { unit.restart_sec };
+    let restart_sec = if unit.restart_sec == 0 {
+        5
+    } else {
+        unit.restart_sec
+    };
     out.push_str(&format!("RestartSec={restart_sec}\n"));
 
     // ---- latency knobs ----
@@ -322,7 +329,11 @@ pub fn releases_to_prune<'a>(
 ) -> Vec<&'a str> {
     // Zero would mean "delete everything including what is running"; treat it
     // as the default rather than honoring it.
-    let keep = if keep == 0 { DEFAULT_KEEP_RELEASES } else { keep } as usize;
+    let keep = if keep == 0 {
+        DEFAULT_KEEP_RELEASES
+    } else {
+        keep
+    } as usize;
 
     releases_newest_first
         .iter()
@@ -408,7 +419,10 @@ mod tests {
         assert_eq!(paths.release_dir("r1"), "/opt/bot/releases/r1");
         assert_eq!(paths.current_link(), "/opt/bot/current");
         assert_eq!(paths.current_binary("bin"), "/opt/bot/current/bin");
-        assert_eq!(paths.release_binary("r1", "bin"), "/opt/bot/releases/r1/bin");
+        assert_eq!(
+            paths.release_binary("r1", "bin"),
+            "/opt/bot/releases/r1/bin"
+        );
         assert_eq!(paths.env_file(), "/opt/bot/env");
     }
 
@@ -418,7 +432,10 @@ mod tests {
             ReleasePaths::new("/opt/bot/"),
             ReleasePaths::new("/opt/bot")
         );
-        assert_eq!(ReleasePaths::new("/opt/bot/").current_link(), "/opt/bot/current");
+        assert_eq!(
+            ReleasePaths::new("/opt/bot/").current_link(),
+            "/opt/bot/current"
+        );
     }
 
     #[test]
@@ -450,7 +467,8 @@ mod tests {
         let mut svc = service();
         svc.unit.as_mut().expect("unit").exec_args = "--config /etc/bot.toml --verbose".into();
         assert!(
-            render_unit(&svc).contains("ExecStart=/opt/hft-bot/current/bin --config /etc/bot.toml --verbose\n")
+            render_unit(&svc)
+                .contains("ExecStart=/opt/hft-bot/current/bin --config /etc/bot.toml --verbose\n")
         );
     }
 
@@ -573,7 +591,10 @@ mod tests {
         assert!(line.contains("\\n"));
         assert!(!rendered.contains("\nRestart=no\n"));
         assert!(line.contains("\\\""));
-        assert!(line.contains("$$HOME"), "literal $ must be escaped for systemd");
+        assert!(
+            line.contains("$$HOME"),
+            "literal $ must be escaped for systemd"
+        );
     }
 
     #[test]
@@ -690,10 +711,7 @@ mod tests {
             ("PEM".to_string(), "line1\nline2".to_string()),
         ]);
         let rendered = render_env_file(&entries);
-        assert_eq!(
-            rendered,
-            "API_KEY=\"abc123\"\nPEM=\"line1\\nline2\"\n"
-        );
+        assert_eq!(rendered, "API_KEY=\"abc123\"\nPEM=\"line1\\nline2\"\n");
         // One key per line, so a multi-line secret cannot introduce a second
         // assignment.
         assert_eq!(rendered.lines().count(), 2);
@@ -704,13 +722,13 @@ mod tests {
         // systemd expands `$VAR` in a unit's `Environment=` directive but not in
         // an `EnvironmentFile`. Doubling the `$` in both places delivered a
         // literal `$$` to the service — a real bug the end-to-end test caught.
-        let entries = BTreeMap::from([(
-            "APP_TOKEN".to_string(),
-            "p@ss$word".to_string(),
-        )]);
+        let entries = BTreeMap::from([("APP_TOKEN".to_string(), "p@ss$word".to_string())]);
         let rendered = render_env_file(&entries);
         assert_eq!(rendered, "APP_TOKEN=\"p@ss$word\"\n");
-        assert!(!rendered.contains("$$"), "an EnvironmentFile must not double $");
+        assert!(
+            !rendered.contains("$$"),
+            "an EnvironmentFile must not double $"
+        );
     }
 
     #[test]
@@ -718,12 +736,13 @@ mod tests {
         // The other half of the same distinction: here it must be escaped, or
         // systemd substitutes an empty value.
         let mut svc = service();
-        svc.env = std::collections::HashMap::from([(
-            "PROMPT".to_string(),
-            "$HOME/bin".to_string(),
-        )]);
+        svc.env =
+            std::collections::HashMap::from([("PROMPT".to_string(), "$HOME/bin".to_string())]);
         let rendered = render_unit(&svc);
-        assert!(rendered.contains("Environment=\"PROMPT=$$HOME/bin\""), "got: {rendered}");
+        assert!(
+            rendered.contains("Environment=\"PROMPT=$$HOME/bin\""),
+            "got: {rendered}"
+        );
     }
 
     // ---- retention ----
@@ -731,10 +750,7 @@ mod tests {
     #[test]
     fn retention_keeps_the_newest_n_releases() {
         let releases = ["r5", "r4", "r3", "r2", "r1"];
-        assert_eq!(
-            releases_to_prune(&releases, 3, "r5"),
-            vec!["r2", "r1"]
-        );
+        assert_eq!(releases_to_prune(&releases, 3, "r5"), vec!["r2", "r1"]);
     }
 
     #[test]
@@ -778,8 +794,14 @@ mod tests {
     #[test]
     fn an_explicit_release_is_honored_when_still_retained() {
         let releases = ["r3", "r2", "r1"];
-        assert_eq!(rollback_target(&releases, "r3", "r1").expect("target"), "r1");
-        assert_eq!(rollback_target(&releases, "r3", " r1 ").expect("target"), "r1");
+        assert_eq!(
+            rollback_target(&releases, "r3", "r1").expect("target"),
+            "r1"
+        );
+        assert_eq!(
+            rollback_target(&releases, "r3", " r1 ").expect("target"),
+            "r1"
+        );
     }
 
     #[test]

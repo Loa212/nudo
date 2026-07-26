@@ -77,7 +77,10 @@ impl Targets for TargetsService {
     }
 
     async fn get(&self, request: Request<GetTargetRequest>) -> Result<Response<Target>, Status> {
-        let target = self.context.require_target(&request.into_inner().id).await?;
+        let target = self
+            .context
+            .require_target(&request.into_inner().id)
+            .await?;
         Ok(Response::new(target))
     }
 
@@ -139,10 +142,7 @@ impl Targets for TargetsService {
         Ok(Response::new(updated))
     }
 
-    async fn delete(
-        &self,
-        request: Request<DeleteTargetRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn delete(&self, request: Request<DeleteTargetRequest>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         let existing = self.context.require_target(&request.id).await?;
 
@@ -194,7 +194,10 @@ impl Targets for TargetsService {
         &self,
         request: Request<CheckTargetRequest>,
     ) -> Result<Response<CheckTargetResponse>, Status> {
-        let target = self.context.require_target(&request.into_inner().id).await?;
+        let target = self
+            .context
+            .require_target(&request.into_inner().id)
+            .await?;
 
         // A check is read-only, so it is allowed against a latency-critical box
         // without an opt-in: it opens one SSH connection and runs four trivial
@@ -268,7 +271,9 @@ mod tests {
 
         assert_eq!(created.name, "edge-1");
         let fetched = service
-            .get(Request::new(GetTargetRequest { id: created.id.clone() }))
+            .get(Request::new(GetTargetRequest {
+                id: created.id.clone(),
+            }))
             .await
             .expect("get")
             .into_inner();
@@ -363,7 +368,10 @@ mod tests {
     #[tokio::test]
     async fn a_duplicate_name_is_an_invalid_argument_not_an_internal_error() {
         let service = service().await;
-        service.create(Request::new(create("dup", false))).await.expect("first");
+        service
+            .create(Request::new(create("dup", false)))
+            .await
+            .expect("first");
         let status = service
             .create(Request::new(create("dup", false)))
             .await
@@ -402,7 +410,12 @@ mod tests {
             .expect("list")
             .into_inner();
         assert_eq!(second.targets.len(), 2);
-        assert!(first.targets.iter().all(|a| second.targets.iter().all(|b| a.id != b.id)));
+        assert!(
+            first
+                .targets
+                .iter()
+                .all(|a| second.targets.iter().all(|b| a.id != b.id))
+        );
 
         // The last page ends the sequence.
         let last = service
@@ -423,15 +436,15 @@ mod tests {
         let service = service().await;
         service
             .create(Request::new(CreateTargetRequest {
-                labels: std::collections::HashMap::from([(
-                    "env".to_string(),
-                    "prod".to_string(),
-                )]),
+                labels: std::collections::HashMap::from([("env".to_string(), "prod".to_string())]),
                 ..create("prod-box", false)
             }))
             .await
             .expect("create");
-        service.create(Request::new(create("other-box", false))).await.expect("create");
+        service
+            .create(Request::new(create("other-box", false)))
+            .await
+            .expect("create");
 
         let filtered = service
             .list(Request::new(ListTargetsRequest {
@@ -656,6 +669,10 @@ mod tests {
             .check(Request::new(CheckTargetRequest { id: created.id }))
             .await
             .expect_err("err");
-        assert!(status.message().contains("SSH key"), "got: {}", status.message());
+        assert!(
+            status.message().contains("SSH key"),
+            "got: {}",
+            status.message()
+        );
     }
 }

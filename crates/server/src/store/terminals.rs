@@ -46,8 +46,7 @@ impl Store {
 
         let id = new_id("term");
         let token = random_token(32);
-        let expires_at =
-            chrono::Utc::now() + chrono::Duration::seconds(TERMINAL_TOKEN_TTL_SECONDS);
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(TERMINAL_TOKEN_TTL_SECONDS);
 
         // Zero would request a degenerate PTY, so unset values become a
         // conventional default the client then corrects on its first resize.
@@ -211,7 +210,13 @@ mod tests {
                 .expect("consume")
                 .is_none()
         );
-        assert!(store.consume_terminal_session(&id, "").await.expect("consume").is_none());
+        assert!(
+            store
+                .consume_terminal_session(&id, "")
+                .await
+                .expect("consume")
+                .is_none()
+        );
 
         // The real token still works, so a failed attempt does not burn it.
         assert!(
@@ -232,7 +237,9 @@ mod tests {
             .expect("create");
 
         sqlx::query("UPDATE terminal_sessions SET expires_at = ?1")
-            .bind(to_db_time(chrono::Utc::now() - chrono::Duration::seconds(1)))
+            .bind(to_db_time(
+                chrono::Utc::now() - chrono::Duration::seconds(1),
+            ))
             .execute(store.pool())
             .await
             .expect("expire");

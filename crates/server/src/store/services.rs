@@ -92,7 +92,11 @@ impl Store {
         } else {
             unit.restart.trim()
         })
-        .bind(if unit.restart_sec == 0 { 5 } else { unit.restart_sec })
+        .bind(if unit.restart_sec == 0 {
+            5
+        } else {
+            unit.restart_sec
+        })
         .bind(encode_list(&unit.after))
         .bind(unit.cpu_affinity.trim())
         .bind(unit.nice.trim())
@@ -210,86 +214,89 @@ impl Store {
             .await?
             .ok_or_else(|| anyhow::anyhow!("no such service: {id}"))?;
 
-        let touch =
-            |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
+        let touch = |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
 
         // The unit, artifact and health check are replaced wholesale when named,
         // because a partial update of a oneof has no meaning — "set the git
         // branch but keep the url kind" is not a state the proto can express.
-        if touch("unit") {
-            if let Some(unit) = &service.unit {
-                sqlx::query(
-                    "UPDATE services SET unit_name = ?1, unit_description = ?2, exec_args = ?3,
+        if touch("unit")
+            && let Some(unit) = &service.unit
+        {
+            sqlx::query(
+                "UPDATE services SET unit_name = ?1, unit_description = ?2, exec_args = ?3,
                        working_directory = ?4, unit_user = ?5, unit_group = ?6, restart = ?7,
                        restart_sec = ?8, after_units = ?9, cpu_affinity = ?10, nice = ?11,
                        io_scheduling_class = ?12, extra_directives = ?13
                      WHERE id = ?14",
-                )
-                .bind(unit.unit_name.trim())
-                .bind(unit.description.trim())
-                .bind(unit.exec_args.trim())
-                .bind(unit.working_directory.trim())
-                .bind(unit.user.trim())
-                .bind(unit.group.trim())
-                .bind(if unit.restart.trim().is_empty() {
-                    "always"
-                } else {
-                    unit.restart.trim()
-                })
-                .bind(if unit.restart_sec == 0 { 5 } else { unit.restart_sec })
-                .bind(encode_list(&unit.after))
-                .bind(unit.cpu_affinity.trim())
-                .bind(unit.nice.trim())
-                .bind(unit.io_scheduling_class.trim())
-                .bind(encode_map(&unit.extra_directives))
-                .bind(id)
-                .execute(self.pool())
-                .await?;
-            }
+            )
+            .bind(unit.unit_name.trim())
+            .bind(unit.description.trim())
+            .bind(unit.exec_args.trim())
+            .bind(unit.working_directory.trim())
+            .bind(unit.user.trim())
+            .bind(unit.group.trim())
+            .bind(if unit.restart.trim().is_empty() {
+                "always"
+            } else {
+                unit.restart.trim()
+            })
+            .bind(if unit.restart_sec == 0 {
+                5
+            } else {
+                unit.restart_sec
+            })
+            .bind(encode_list(&unit.after))
+            .bind(unit.cpu_affinity.trim())
+            .bind(unit.nice.trim())
+            .bind(unit.io_scheduling_class.trim())
+            .bind(encode_map(&unit.extra_directives))
+            .bind(id)
+            .execute(self.pool())
+            .await?;
         }
 
-        if touch("artifact") {
-            if let Some(artifact) = &service.artifact {
-                let cols = ArtifactColumns::from_proto(Some(artifact));
-                sqlx::query(
-                    "UPDATE services SET artifact_kind = ?1, artifact_url = ?2,
+        if touch("artifact")
+            && let Some(artifact) = &service.artifact
+        {
+            let cols = ArtifactColumns::from_proto(Some(artifact));
+            sqlx::query(
+                "UPDATE services SET artifact_kind = ?1, artifact_url = ?2,
                        git_source_id = ?3, git_repo = ?4, git_branch = ?5,
                        git_build_command = ?6, git_artifact_path = ?7, git_auto_deploy = ?8
                      WHERE id = ?9",
-                )
-                .bind(&cols.kind)
-                .bind(&cols.url)
-                .bind(cols.source_id.clone())
-                .bind(&cols.repo)
-                .bind(&cols.branch)
-                .bind(&cols.build_command)
-                .bind(&cols.artifact_path)
-                .bind(cols.auto_deploy as i64)
-                .bind(id)
-                .execute(self.pool())
-                .await?;
-            }
+            )
+            .bind(&cols.kind)
+            .bind(&cols.url)
+            .bind(cols.source_id.clone())
+            .bind(&cols.repo)
+            .bind(&cols.branch)
+            .bind(&cols.build_command)
+            .bind(&cols.artifact_path)
+            .bind(cols.auto_deploy as i64)
+            .bind(id)
+            .execute(self.pool())
+            .await?;
         }
 
-        if touch("health_check") {
-            if let Some(health) = &service.health_check {
-                let cols = HealthColumns::from_proto(Some(health));
-                sqlx::query(
-                    "UPDATE services SET health_kind = ?1, health_http_url = ?2,
+        if touch("health_check")
+            && let Some(health) = &service.health_check
+        {
+            let cols = HealthColumns::from_proto(Some(health));
+            sqlx::query(
+                "UPDATE services SET health_kind = ?1, health_http_url = ?2,
                        health_command = ?3, health_timeout_seconds = ?4, health_retries = ?5,
                        health_initial_delay_seconds = ?6
                      WHERE id = ?7",
-                )
-                .bind(&cols.kind)
-                .bind(&cols.http_url)
-                .bind(&cols.command)
-                .bind(cols.timeout_seconds)
-                .bind(cols.retries)
-                .bind(cols.initial_delay_seconds)
-                .bind(id)
-                .execute(self.pool())
-                .await?;
-            }
+            )
+            .bind(&cols.kind)
+            .bind(&cols.http_url)
+            .bind(&cols.command)
+            .bind(cols.timeout_seconds)
+            .bind(cols.retries)
+            .bind(cols.initial_delay_seconds)
+            .bind(id)
+            .execute(self.pool())
+            .await?;
         }
 
         if touch("name") && !service.name.trim().is_empty() {
@@ -417,8 +424,7 @@ impl ArtifactColumns {
                 out.kind = "git".to_string();
                 // Stored as NULL rather than "" so the foreign key to sources
                 // is satisfied when no source is set yet.
-                out.source_id = Some(git.source_id.trim().to_string())
-                    .filter(|s| !s.is_empty());
+                out.source_id = Some(git.source_id.trim().to_string()).filter(|s| !s.is_empty());
                 out.repo = git.repo.trim().to_string();
                 out.branch = git.branch.trim().to_string();
                 out.build_command = git.build_command.trim().to_string();
@@ -452,7 +458,10 @@ impl HealthColumns {
             command: String::new(),
             // A zero timeout would mean "give up instantly", so unset values
             // become working defaults.
-            timeout_seconds: health.map(|h| h.timeout_seconds).filter(|t| *t > 0).unwrap_or(10),
+            timeout_seconds: health
+                .map(|h| h.timeout_seconds)
+                .filter(|t| *t > 0)
+                .unwrap_or(10),
             retries: health.map(|h| h.retries).filter(|r| *r > 0).unwrap_or(3),
             initial_delay_seconds: health.map(|h| h.initial_delay_seconds).unwrap_or(2),
         };
@@ -563,7 +572,10 @@ mod tests {
     #[tokio::test]
     async fn a_created_service_gets_defaults_for_everything_unset() {
         let (store, target_id) = store_with_target().await;
-        let created = store.create_service(&service(&target_id)).await.expect("create");
+        let created = store
+            .create_service(&service(&target_id))
+            .await
+            .expect("create");
 
         assert!(created.id.starts_with("svc_"));
         // Release root is derived from the name.
@@ -582,7 +594,10 @@ mod tests {
         ));
 
         let health = created.health_check.expect("health");
-        assert!(matches!(health.kind, Some(health_check::Kind::SystemdActive(true))));
+        assert!(matches!(
+            health.kind,
+            Some(health_check::Kind::SystemdActive(true))
+        ));
         assert_eq!(health.timeout_seconds, 10);
         assert_eq!(health.retries, 3);
     }
@@ -624,7 +639,10 @@ mod tests {
     #[tokio::test]
     async fn two_services_on_one_target_cannot_share_a_name() {
         let (store, target_id) = store_with_target().await;
-        store.create_service(&service(&target_id)).await.expect("first");
+        store
+            .create_service(&service(&target_id))
+            .await
+            .expect("first");
         let error = store
             .create_service(&service(&target_id))
             .await
@@ -644,8 +662,14 @@ mod tests {
             .await
             .expect("target");
 
-        store.create_service(&service(&target_id)).await.expect("first");
-        store.create_service(&service(&other.id)).await.expect("second");
+        store
+            .create_service(&service(&target_id))
+            .await
+            .expect("first");
+        store
+            .create_service(&service(&other.id))
+            .await
+            .expect("second");
     }
 
     #[tokio::test]
@@ -764,10 +788,7 @@ mod tests {
                         "1048576".to_string(),
                     )]),
                 }),
-                env: std::collections::HashMap::from([(
-                    "LOG".to_string(),
-                    "debug".to_string(),
-                )]),
+                env: std::collections::HashMap::from([("LOG".to_string(), "debug".to_string())]),
                 secret_ids: vec!["sec_a".to_string()],
                 keep_releases: 9,
                 ..service(&target_id)
@@ -813,7 +834,10 @@ mod tests {
             .expect("b");
 
         assert_eq!(store.list_services("", 50, 0).await.expect("all").len(), 2);
-        let filtered = store.list_services(&target_id, 50, 0).await.expect("filtered");
+        let filtered = store
+            .list_services(&target_id, 50, 0)
+            .await
+            .expect("filtered");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "bot");
         assert_eq!(store.count_services().await.expect("count"), 2);
@@ -824,16 +848,31 @@ mod tests {
         // The service's unit and releases live on that host; keeping the row
         // after the target is gone would leave an unreachable service.
         let (store, target_id) = store_with_target().await;
-        store.create_service(&service(&target_id)).await.expect("create");
+        store
+            .create_service(&service(&target_id))
+            .await
+            .expect("create");
 
-        store.delete_target(&target_id).await.expect("delete target");
-        assert!(store.list_services("", 50, 0).await.expect("list").is_empty());
+        store
+            .delete_target(&target_id)
+            .await
+            .expect("delete target");
+        assert!(
+            store
+                .list_services("", 50, 0)
+                .await
+                .expect("list")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn a_masked_update_replaces_only_the_named_parts() {
         let (store, target_id) = store_with_target().await;
-        let created = store.create_service(&service(&target_id)).await.expect("create");
+        let created = store
+            .create_service(&service(&target_id))
+            .await
+            .expect("create");
 
         let updated = store
             .update_service(
@@ -859,7 +898,10 @@ mod tests {
     #[tokio::test]
     async fn moving_a_service_to_another_target_is_refused() {
         let (store, target_id) = store_with_target().await;
-        let created = store.create_service(&service(&target_id)).await.expect("create");
+        let created = store
+            .create_service(&service(&target_id))
+            .await
+            .expect("create");
         let other = store
             .create_target(&TargetInput {
                 name: "elsewhere".to_string(),
@@ -880,19 +922,29 @@ mod tests {
             )
             .await
             .expect_err("must refuse");
-        assert!(error.to_string().contains("cannot be moved"), "got: {error}");
+        assert!(
+            error.to_string().contains("cannot be moved"),
+            "got: {error}"
+        );
     }
 
     #[tokio::test]
     async fn the_current_release_pointer_can_be_set() {
         let (store, target_id) = store_with_target().await;
-        let created = store.create_service(&service(&target_id)).await.expect("create");
+        let created = store
+            .create_service(&service(&target_id))
+            .await
+            .expect("create");
 
         store
             .set_current_release(&created.id, "rel_abc")
             .await
             .expect("set");
-        let reloaded = store.get_service(&created.id).await.expect("get").expect("some");
+        let reloaded = store
+            .get_service(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(reloaded.current_release_id, "rel_abc");
     }
 
@@ -913,13 +965,29 @@ mod tests {
             ..service(&target_id)
         };
 
-        store.create_service(&git(true, "auto", "main")).await.expect("a");
-        store.create_service(&git(false, "manual", "main")).await.expect("b");
-        store.create_service(&git(true, "other-branch", "dev")).await.expect("c");
+        store
+            .create_service(&git(true, "auto", "main"))
+            .await
+            .expect("a");
+        store
+            .create_service(&git(false, "manual", "main"))
+            .await
+            .expect("b");
+        store
+            .create_service(&git(true, "other-branch", "dev"))
+            .await
+            .expect("c");
 
         // Source id is empty here (deploy-key style), which must still match.
-        let matched = store.services_for_push("", "owner/bot", "main").await.expect("match");
-        assert_eq!(matched.len(), 1, "only the auto-deploy service on that branch");
+        let matched = store
+            .services_for_push("", "owner/bot", "main")
+            .await
+            .expect("match");
+        assert_eq!(
+            matched.len(),
+            1,
+            "only the auto-deploy service on that branch"
+        );
         assert_eq!(matched[0].name, "auto");
     }
 
@@ -944,11 +1012,19 @@ mod tests {
             .expect("create");
 
         assert_eq!(
-            store.services_for_push("", "OWNER/BOT", "Main").await.expect("m").len(),
+            store
+                .services_for_push("", "OWNER/BOT", "Main")
+                .await
+                .expect("m")
+                .len(),
             1
         );
         assert!(
-            store.services_for_push("", "owner/bot", "main").await.expect("m").is_empty(),
+            store
+                .services_for_push("", "owner/bot", "main")
+                .await
+                .expect("m")
+                .is_empty(),
             "branch comparison must be exact"
         );
     }

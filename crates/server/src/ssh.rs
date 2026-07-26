@@ -114,26 +114,24 @@ impl SshSession {
             ..Default::default()
         });
 
-        let key = russh::keys::decode_secret_key(
-            &target.private_key,
-            target.passphrase.as_deref(),
-        )
-        .context(
-            "decoding the target's SSH private key — it must be an OpenSSH or PEM private key",
-        )?;
+        let key = russh::keys::decode_secret_key(&target.private_key, target.passphrase.as_deref())
+            .context(
+                "decoding the target's SSH private key — it must be an OpenSSH or PEM private key",
+            )?;
 
         let addr = (target.host.as_str(), target.port);
-        let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, Handler))
-            .await
-            .map_err(|_| {
-                anyhow!(
-                    "timed out connecting to {}:{} after {}s",
-                    target.host,
-                    target.port,
-                    CONNECT_TIMEOUT.as_secs()
-                )
-            })?
-            .with_context(|| format!("connecting to {}:{}", target.host, target.port))?;
+        let mut handle =
+            tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, Handler))
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "timed out connecting to {}:{} after {}s",
+                        target.host,
+                        target.port,
+                        CONNECT_TIMEOUT.as_secs()
+                    )
+                })?
+                .with_context(|| format!("connecting to {}:{}", target.host, target.port))?;
 
         let best_hash = handle.best_supported_rsa_hash().await?.flatten();
         let auth = handle
@@ -227,17 +225,17 @@ impl SshSession {
 
         while let Some(msg) = channel.wait().await {
             match msg {
-                ChannelMsg::Data { data } => {
-                    if !drain_lines(&mut stdout_buf, &data, false, &sink).await {
-                        // Receiver is gone — the browser navigated away or the
-                        // CLI detached. Stop rather than filling memory.
-                        break;
-                    }
+                ChannelMsg::Data { data }
+                    if !drain_lines(&mut stdout_buf, &data, false, &sink).await =>
+                {
+                    // Receiver is gone — the browser navigated away or the
+                    // CLI detached. Stop rather than filling memory.
+                    break;
                 }
-                ChannelMsg::ExtendedData { data, .. } => {
-                    if !drain_lines(&mut stderr_buf, &data, true, &sink).await {
-                        break;
-                    }
+                ChannelMsg::ExtendedData { data, .. }
+                    if !drain_lines(&mut stderr_buf, &data, true, &sink).await =>
+                {
+                    break;
                 }
                 ChannelMsg::ExitStatus { exit_status } => exit_code = exit_status as i32,
                 // See `exec`: EOF precedes the exit status, so only `Close` ends
@@ -328,7 +326,9 @@ impl SshSession {
 
             written += chunk.len();
             if let Some(sink) = progress {
-                let percent = if total == 0 { 100 } else { written * 100 / total };
+                // An empty artifact reports complete rather than dividing by
+                // zero.
+                let percent = (written * 100).checked_div(total).unwrap_or(100);
                 let _ = sink
                     .send(OutputLine::stdout(format!(
                         "uploaded {}/{} bytes ({percent}%)",
@@ -342,19 +342,14 @@ impl SshSession {
         // systemd then tries to exec is a much worse failure than a failed
         // deploy.
         let remote_size = self
-            .exec(&format!(
-                "wc -c < {} | tr -d ' \\n'",
-                quote(path)
-            ))
+            .exec(&format!("wc -c < {} | tr -d ' \\n'", quote(path)))
             .await?;
         let remote_size: usize = remote_size
             .trimmed()
             .parse()
             .with_context(|| format!("reading back the size of {path}"))?;
         if remote_size != total {
-            bail!(
-                "upload of {path} is incomplete: wrote {total} bytes, target has {remote_size}"
-            );
+            bail!("upload of {path} is incomplete: wrote {total} bytes, target has {remote_size}");
         }
 
         if let Some(mode) = mode {
@@ -398,7 +393,10 @@ impl SshSession {
                 channel.exec(true, command).await.context("exec on PTY")?;
             }
             _ => {
-                channel.request_shell(true).await.context("requesting a shell")?;
+                channel
+                    .request_shell(true)
+                    .await
+                    .context("requesting a shell")?;
             }
         }
 
@@ -560,7 +558,10 @@ mod tests {
     #[test]
     fn quoting_leaves_ordinary_paths_readable() {
         // Over-quoting would make every generated command unreadable in logs.
-        assert_eq!(quote("/opt/hft-bot/current/bin"), "/opt/hft-bot/current/bin");
+        assert_eq!(
+            quote("/opt/hft-bot/current/bin"),
+            "/opt/hft-bot/current/bin"
+        );
         assert_eq!(quote("hft-bot.service"), "hft-bot.service");
     }
 
@@ -585,8 +586,14 @@ mod tests {
 
     #[test]
     fn parent_directories_are_extracted_from_absolute_paths() {
-        assert_eq!(parent_dir("/opt/bot/releases/r1/bin"), "/opt/bot/releases/r1");
-        assert_eq!(parent_dir("/etc/systemd/system/x.service"), "/etc/systemd/system");
+        assert_eq!(
+            parent_dir("/opt/bot/releases/r1/bin"),
+            "/opt/bot/releases/r1"
+        );
+        assert_eq!(
+            parent_dir("/etc/systemd/system/x.service"),
+            "/etc/systemd/system"
+        );
         assert_eq!(parent_dir("/file"), "/");
         assert_eq!(parent_dir("relative"), ".");
     }
@@ -653,7 +660,9 @@ mod tests {
             stdout: String::new(),
             stderr: "Unit not found.".to_string(),
         };
-        let error = result.require_success("restarting unit").expect_err("must fail");
+        let error = result
+            .require_success("restarting unit")
+            .expect_err("must fail");
         let message = error.to_string();
         assert!(message.contains("restarting unit"));
         assert!(message.contains("Unit not found."));

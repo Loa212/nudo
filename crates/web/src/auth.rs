@@ -43,7 +43,11 @@ pub fn clear_cookie(secure: bool) -> Cookie<'static> {
 
 /// Reads the session cookie out of the request headers.
 pub fn cookie_value(parts: &Parts) -> Option<String> {
-    let header = parts.headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    let header = parts
+        .headers
+        .get(axum::http::header::COOKIE)?
+        .to_str()
+        .ok()?;
 
     // A request can carry several Cookie values, and other cookies may share a
     // prefix with ours, so each pair is parsed rather than string-searched.
@@ -188,7 +192,11 @@ mod tests {
         assert!(is_https("HTTPS://NUDO.EXAMPLE.COM"));
         assert!(!is_https("http://localhost:3000"));
 
-        assert!(!session_cookie("v".to_string(), false).secure().unwrap_or(true));
+        assert!(
+            !session_cookie("v".to_string(), false)
+                .secure()
+                .unwrap_or(true)
+        );
     }
 
     #[test]

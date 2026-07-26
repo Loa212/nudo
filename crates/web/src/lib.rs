@@ -40,7 +40,10 @@ pub const PRE_AUTH_CSRF: &str = "nudo-pre-auth";
 
 /// Configuration for the web tier.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "nudo-web", about = "nudo dashboard (a gRPC client of the control plane)")]
+#[command(
+    name = "nudo-web",
+    about = "nudo dashboard (a gRPC client of the control plane)"
+)]
 pub struct WebConfig {
     /// Address to serve the dashboard on.
     #[arg(long, env = "NUDO_WEB_ADDR", default_value = "127.0.0.1:3000")]
@@ -206,7 +209,9 @@ pub fn router(state: AppState) -> Router {
         // A body cap so a malformed or hostile request cannot exhaust memory.
         // Generous enough for the largest form (a service definition) and for a
         // webhook delivery, which can carry a long commit list.
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(2 * 1024 * 1024))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            2 * 1024 * 1024,
+        ))
         .with_state(state)
 }
 
@@ -335,7 +340,11 @@ mod tests {
                 )
                 .await
                 .expect("response");
-            assert_eq!(response.status(), StatusCode::OK, "{path} was not reachable");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{path} was not reachable"
+            );
         }
     }
 
@@ -463,7 +472,10 @@ mod tests {
             .await
             .expect("body");
         let text = String::from_utf8_lossy(&body);
-        assert!(!text.contains("action=\"/setup\""), "setup must close once claimed");
+        assert!(
+            !text.contains("action=\"/setup\""),
+            "setup must close once claimed"
+        );
     }
 
     #[tokio::test]
@@ -600,7 +612,12 @@ mod tests {
             .await
             .expect("response");
 
-        assert!(response.headers().get(axum::http::header::SET_COOKIE).is_none());
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::SET_COOKIE)
+                .is_none()
+        );
 
         let body = axum::body::to_bytes(response.into_body(), 256 * 1024)
             .await

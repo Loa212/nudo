@@ -340,20 +340,20 @@ impl NudoTools {
             .into_inner();
 
         let targets: Vec<TargetSummary> = response
-                .targets
-                .into_iter()
-                .map(|target| TargetSummary {
-                    id: target.id,
-                    name: target.name,
-                    host: target.host,
-                    reachability: target::Status::try_from(target.status)
-                        .unwrap_or(target::Status::Unknown)
-                        .as_str()
-                        .to_string(),
-                    latency_critical: target.latency_critical,
-                    labels: target.labels.into_iter().collect(),
-                })
-                .collect();
+            .targets
+            .into_iter()
+            .map(|target| TargetSummary {
+                id: target.id,
+                name: target.name,
+                host: target.host,
+                reachability: target::Status::try_from(target.status)
+                    .unwrap_or(target::Status::Unknown)
+                    .as_str()
+                    .to_string(),
+                latency_critical: target.latency_critical,
+                labels: target.labels.into_iter().collect(),
+            })
+            .collect();
 
         Ok(Json(TargetList {
             count: targets.len(),
@@ -404,23 +404,23 @@ impl NudoTools {
         };
 
         let services: Vec<ServiceSummary> = response
-                .services
-                .into_iter()
-                .map(|service| {
-                    let target = targets.get(&service.target_id);
-                    ServiceSummary {
-                        source: describe_artifact(&service),
-                        target_name: target
-                            .map(|t| t.name.clone())
-                            .unwrap_or_else(|| "(unknown)".to_string()),
-                        target_latency_critical: target.is_some_and(|t| t.latency_critical),
-                        id: service.id,
-                        name: service.name,
-                        target_id: service.target_id,
-                        current_release_id: service.current_release_id,
-                    }
-                })
-                .collect();
+            .services
+            .into_iter()
+            .map(|service| {
+                let target = targets.get(&service.target_id);
+                ServiceSummary {
+                    source: describe_artifact(&service),
+                    target_name: target
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| "(unknown)".to_string()),
+                    target_latency_critical: target.is_some_and(|t| t.latency_critical),
+                    id: service.id,
+                    name: service.name,
+                    target_id: service.target_id,
+                    current_release_id: service.current_release_id,
+                }
+            })
+            .collect();
 
         Ok(Json(ServiceList {
             count: services.len(),
@@ -723,35 +723,35 @@ impl NudoTools {
             .into_inner();
 
         let deployments: Vec<DeploymentSummary> = response
-                .deployments
-                .into_iter()
-                .map(|deployment| {
-                    let status = deployment::Status::try_from(deployment.status)
-                        .unwrap_or(deployment::Status::Unspecified);
-                    DeploymentSummary {
-                        id: deployment.id,
-                        service_id: deployment.service_id,
-                        release_id: deployment.release_id,
-                        status: status.as_str().to_string(),
-                        finished: status.is_terminal(),
-                        actor: deployment
-                            .actor
-                            .map(|actor| actor.label)
-                            .unwrap_or_default(),
-                        error: deployment.error,
-                        started_at: deployment
-                            .started_at
-                            .as_ref()
-                            .and_then(nudo_proto::from_timestamp)
-                            .map(|t| t.to_rfc3339()),
-                        finished_at: deployment
-                            .finished_at
-                            .as_ref()
-                            .and_then(nudo_proto::from_timestamp)
-                            .map(|t| t.to_rfc3339()),
-                    }
-                })
-                .collect();
+            .deployments
+            .into_iter()
+            .map(|deployment| {
+                let status = deployment::Status::try_from(deployment.status)
+                    .unwrap_or(deployment::Status::Unspecified);
+                DeploymentSummary {
+                    id: deployment.id,
+                    service_id: deployment.service_id,
+                    release_id: deployment.release_id,
+                    status: status.as_str().to_string(),
+                    finished: status.is_terminal(),
+                    actor: deployment
+                        .actor
+                        .map(|actor| actor.label)
+                        .unwrap_or_default(),
+                    error: deployment.error,
+                    started_at: deployment
+                        .started_at
+                        .as_ref()
+                        .and_then(nudo_proto::from_timestamp)
+                        .map(|t| t.to_rfc3339()),
+                    finished_at: deployment
+                        .finished_at
+                        .as_ref()
+                        .and_then(nudo_proto::from_timestamp)
+                        .map(|t| t.to_rfc3339()),
+                }
+            })
+            .collect();
 
         Ok(Json(DeploymentList {
             count: deployments.len(),
@@ -772,7 +772,7 @@ impl ServerHandler for NudoTools {
         info.server_info.name = "nudo".to_string();
         info.server_info.version = env!("CARGO_PKG_VERSION").to_string();
         info.instructions = Some(
-                "nudo deploys plain binaries to remote machines over SSH and manages them \
+            "nudo deploys plain binaries to remote machines over SSH and manages them \
                  with systemd. Targets are machines; services are systemd units on them.\n\n\
                  Work in this order: list_targets, then list_services, then get_unit_status \
                  or stream_logs to understand the current state before changing anything.\n\n\
@@ -787,7 +787,7 @@ impl ServerHandler for NudoTools {
                  There is no tool to create or edit targets, services or secrets, and no \
                  interactive shell. Those are deliberately left to a human using the dashboard \
                  or the CLI."
-                    .to_string(),
+                .to_string(),
         );
         info
     }
@@ -829,9 +829,7 @@ impl NudoTools {
         Ok(targets_client::TargetsClient::new(self.channel().await?))
     }
 
-    async fn services(
-        &self,
-    ) -> Result<services_api_client::ServicesApiClient<Channel>, ErrorData> {
+    async fn services(&self) -> Result<services_api_client::ServicesApiClient<Channel>, ErrorData> {
         Ok(services_api_client::ServicesApiClient::new(
             self.channel().await?,
         ))
@@ -1058,7 +1056,10 @@ mod tests {
         let deploy: DeployParams =
             serde_json::from_str(r#"{"service_id":"svc_1"}"#).expect("parse");
         assert!(deploy.dry_run, "deploy must default to a dry run");
-        assert!(!deploy.allow_latency_critical, "the guardrail must default to closed");
+        assert!(
+            !deploy.allow_latency_critical,
+            "the guardrail must default to closed"
+        );
 
         let rollback: RollbackParams =
             serde_json::from_str(r#"{"service_id":"svc_1"}"#).expect("parse");
@@ -1082,14 +1083,13 @@ mod tests {
     fn read_only_tools_have_no_dry_run_or_guardrail_field() {
         // They cannot change anything, so those fields would be noise in the
         // schema and would suggest the tool mutates.
-        let schema = serde_json::to_value(schemars::schema_for!(StreamLogsParams))
-            .expect("schema");
+        let schema = serde_json::to_value(schemars::schema_for!(StreamLogsParams)).expect("schema");
         let text = schema.to_string();
         assert!(!text.contains("dry_run"));
         assert!(!text.contains("allow_latency_critical"));
 
-        let schema = serde_json::to_value(schemars::schema_for!(ListTargetsParams))
-            .expect("schema");
+        let schema =
+            serde_json::to_value(schemars::schema_for!(ListTargetsParams)).expect("schema");
         assert!(!schema.to_string().contains("dry_run"));
     }
 
@@ -1139,7 +1139,10 @@ mod tests {
             "target hft-box is marked latency-critical; set allow_latency_critical on the request",
         ));
         let rendered = format!("{error:?}");
-        assert!(rendered.contains("allow_latency_critical"), "got: {rendered}");
+        assert!(
+            rendered.contains("allow_latency_critical"),
+            "got: {rendered}"
+        );
     }
 
     #[test]
@@ -1159,7 +1162,10 @@ mod tests {
             })
         };
 
-        assert_eq!(with(Kind::Url("https://x/bot".to_string())), "url:https://x/bot");
+        assert_eq!(
+            with(Kind::Url("https://x/bot".to_string())),
+            "url:https://x/bot"
+        );
         assert_eq!(
             with(Kind::Git(GitSource {
                 repo: "owner/bot".to_string(),
@@ -1202,7 +1208,10 @@ mod tests {
     fn a_described_command_quotes_arguments_that_need_it() {
         assert_eq!(describe_command("uptime", &[]), "uptime");
         assert_eq!(
-            describe_command("systemctl", &["restart".to_string(), "bot.service".to_string()]),
+            describe_command(
+                "systemctl",
+                &["restart".to_string(), "bot.service".to_string()]
+            ),
             "systemctl restart bot.service"
         );
 
@@ -1217,8 +1226,8 @@ mod tests {
     #[test]
     fn each_result_shape_names_its_enums_rather_than_exposing_wire_integers() {
         // An agent reading `status: 2` has to guess.
-        let schema = serde_json::to_value(schemars::schema_for!(DeploymentSummary))
-            .expect("schema");
+        let schema =
+            serde_json::to_value(schemars::schema_for!(DeploymentSummary)).expect("schema");
         let status = &schema["properties"]["status"];
         assert_eq!(status["type"], "string");
 
@@ -1232,8 +1241,7 @@ mod tests {
     fn a_service_summary_mirrors_its_targets_guardrail_flag() {
         // Otherwise the agent must cross-reference two calls to know whether a
         // deploy needs the opt-in.
-        let schema = serde_json::to_value(schemars::schema_for!(ServiceSummary))
-            .expect("schema");
+        let schema = serde_json::to_value(schemars::schema_for!(ServiceSummary)).expect("schema");
         assert!(
             schema["properties"]
                 .get("target_latency_critical")

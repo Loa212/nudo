@@ -106,7 +106,10 @@ impl Engine {
                 tracing::warn!(deployment = %deployment_id, %message, "deployment failed");
 
                 self.emit(deployment_id, &message, true).await;
-                let _ = self.store.set_deployment_error(deployment_id, &message).await;
+                let _ = self
+                    .store
+                    .set_deployment_error(deployment_id, &message)
+                    .await;
 
                 // Distinguish a cancel from a genuine failure so the history
                 // does not report user intent as a fault.
@@ -130,7 +133,8 @@ impl Engine {
                         )
                         .await;
                     } else {
-                        self.finish(deployment_id, deployment::Status::RolledBack).await;
+                        self.finish(deployment_id, deployment::Status::RolledBack)
+                            .await;
                         return;
                     }
                 }
@@ -141,11 +145,7 @@ impl Engine {
     }
 
     /// The deploy proper.
-    async fn try_deploy(
-        &self,
-        deployment_id: &str,
-        options: &DeployOptions,
-    ) -> anyhow::Result<()> {
+    async fn try_deploy(&self, deployment_id: &str, options: &DeployOptions) -> anyhow::Result<()> {
         let deployment = self
             .store
             .get_deployment(deployment_id)
@@ -198,7 +198,8 @@ impl Engine {
 
         // ---- connect ----
         self.check_cancelled(deployment_id).await?;
-        self.transition(deployment_id, deployment::Status::Uploading).await;
+        self.transition(deployment_id, deployment::Status::Uploading)
+            .await;
 
         let ssh_target = self.ssh_target_for(&target).await?;
         let session = SshSession::connect(&ssh_target)
@@ -222,8 +223,12 @@ impl Engine {
             .await?
             .require_success("preparing the release directories")?;
 
-        self.emit(deployment_id, &format!("uploading to {staged_binary}"), false)
-            .await;
+        self.emit(
+            deployment_id,
+            &format!("uploading to {staged_binary}"),
+            false,
+        )
+        .await;
 
         let (progress_tx, mut progress_rx) = mpsc::channel::<OutputLine>(64);
         let progress_engine = self.clone();
@@ -237,7 +242,12 @@ impl Engine {
         });
 
         let upload = session
-            .upload_file(&staged_binary, &artifact.bytes, Some("0755"), Some(&progress_tx))
+            .upload_file(
+                &staged_binary,
+                &artifact.bytes,
+                Some("0755"),
+                Some(&progress_tx),
+            )
             .await;
         drop(progress_tx);
         let _ = progress_task.await;
@@ -330,11 +340,13 @@ impl Engine {
             .write_file(&unit_path, unit_body.as_bytes(), Some("0644"))
             .await
             .context("writing the systemd unit")?;
-        self.emit(deployment_id, &format!("wrote {unit_path}"), false).await;
+        self.emit(deployment_id, &format!("wrote {unit_path}"), false)
+            .await;
 
         // ---- activate ----
         self.check_cancelled(deployment_id).await?;
-        self.transition(deployment_id, deployment::Status::Activating).await;
+        self.transition(deployment_id, deployment::Status::Activating)
+            .await;
 
         // `ln -sfn` onto a temporary name followed by a rename is what makes the
         // swap atomic: a plain `ln -sf` over an existing symlink is unlink-then-
@@ -351,7 +363,8 @@ impl Engine {
             ))
             .await?
             .require_success("swapping the current symlink")?;
-        self.emit(deployment_id, &format!("{link} -> {release_dir}"), false).await;
+        self.emit(deployment_id, &format!("{link} -> {release_dir}"), false)
+            .await;
 
         session
             .exec("systemctl daemon-reload")
@@ -384,11 +397,13 @@ impl Engine {
             }
             restart.require_success("systemctl restart")?;
         }
-        self.emit(deployment_id, &format!("restarted {unit_name}"), false).await;
+        self.emit(deployment_id, &format!("restarted {unit_name}"), false)
+            .await;
 
         // ---- health check ----
         if options.skip_health_check {
-            self.emit(deployment_id, "health check skipped by request", false).await;
+            self.emit(deployment_id, "health check skipped by request", false)
+                .await;
         } else {
             self.check_cancelled(deployment_id).await?;
             self.transition(deployment_id, deployment::Status::HealthChecking)
@@ -442,7 +457,8 @@ impl Engine {
             .await;
         }
 
-        self.finish(deployment_id, deployment::Status::Succeeded).await;
+        self.finish(deployment_id, deployment::Status::Succeeded)
+            .await;
         let _ = session.close().await;
         Ok(())
     }
@@ -461,10 +477,7 @@ impl Engine {
 
         self.emit(
             deployment_id,
-            &format!(
-                "rolling back to release {}",
-                deployment.previous_release_id
-            ),
+            &format!("rolling back to release {}", deployment.previous_release_id),
             true,
         )
         .await;
@@ -553,7 +566,9 @@ impl Engine {
             .await?
             .require_success("systemctl restart")?;
 
-        self.store.set_current_release(service_id, release_id).await?;
+        self.store
+            .set_current_release(service_id, release_id)
+            .await?;
         let _ = session.close().await;
 
         Ok(vec![
@@ -625,7 +640,8 @@ impl Engine {
                 self.download_artifact(deployment_id, url.trim()).await
             }
             Some(artifact_source::Kind::Git(git_source)) => {
-                self.transition(deployment_id, deployment::Status::Building).await;
+                self.transition(deployment_id, deployment::Status::Building)
+                    .await;
                 self.build_from_git(deployment_id, git_source, &options.git_ref)
                     .await
             }
@@ -637,12 +653,9 @@ impl Engine {
     }
 
     /// Downloads a prebuilt binary.
-    async fn download_artifact(
-        &self,
-        deployment_id: &str,
-        url: &str,
-    ) -> anyhow::Result<Artifact> {
-        self.emit(deployment_id, &format!("downloading {url}"), false).await;
+    async fn download_artifact(&self, deployment_id: &str, url: &str) -> anyhow::Result<Artifact> {
+        self.emit(deployment_id, &format!("downloading {url}"), false)
+            .await;
 
         let client = reqwest::Client::builder()
             .timeout(DOWNLOAD_TIMEOUT)
@@ -658,7 +671,10 @@ impl Engine {
             bail!("downloading {url} returned HTTP {status}");
         }
 
-        let bytes = response.bytes().await.context("reading the artifact body")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("reading the artifact body")?;
         if bytes.is_empty() {
             bail!("{url} returned an empty artifact");
         }
@@ -723,10 +739,7 @@ impl Engine {
     ///
     /// The key never leaves the server, and a client cannot influence any of
     /// these fields.
-    pub async fn ssh_target_for(
-        &self,
-        target: &nudo_proto::Target,
-    ) -> anyhow::Result<SshTarget> {
+    pub async fn ssh_target_for(&self, target: &nudo_proto::Target) -> anyhow::Result<SshTarget> {
         if target.ssh_key_id.trim().is_empty() {
             bail!(
                 "target {} has no SSH key: create a secret holding the private key \
@@ -749,7 +762,11 @@ impl Engine {
 
         Ok(SshTarget {
             host: target.host.clone(),
-            port: if target.port == 0 { 22 } else { target.port as u16 },
+            port: if target.port == 0 {
+                22
+            } else {
+                target.port as u16
+            },
             user: if target.user.trim().is_empty() {
                 "root".to_string()
             } else {
@@ -765,7 +782,12 @@ impl Engine {
     /// Checked between steps rather than by killing the task, so a cancel never
     /// interrupts a symlink swap or leaves a half-written unit file.
     async fn check_cancelled(&self, deployment_id: &str) -> anyhow::Result<()> {
-        if self.store.cancel_requested(deployment_id).await.unwrap_or(false) {
+        if self
+            .store
+            .cancel_requested(deployment_id)
+            .await
+            .unwrap_or(false)
+        {
             bail!("deployment cancelled");
         }
         Ok(())
@@ -773,7 +795,11 @@ impl Engine {
 
     /// Records a status transition and tells watchers.
     async fn transition(&self, deployment_id: &str, status: deployment::Status) {
-        if let Err(error) = self.store.set_deployment_status(deployment_id, status).await {
+        if let Err(error) = self
+            .store
+            .set_deployment_status(deployment_id, status)
+            .await
+        {
             tracing::error!(%error, deployment = %deployment_id, "recording status failed");
         }
         self.bus
@@ -782,7 +808,11 @@ impl Engine {
 
     /// Records a terminal status, tells watchers, and releases the channel.
     async fn finish(&self, deployment_id: &str, status: deployment::Status) {
-        if let Err(error) = self.store.set_deployment_status(deployment_id, status).await {
+        if let Err(error) = self
+            .store
+            .set_deployment_status(deployment_id, status)
+            .await
+        {
             tracing::error!(%error, deployment = %deployment_id, "recording status failed");
         }
         self.bus
@@ -928,14 +958,26 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(engine.store.list_deployments("", 50, 0).await.expect("list").is_empty());
+        assert!(
+            engine
+                .store
+                .list_deployments("", 50, 0)
+                .await
+                .expect("list")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn a_service_with_no_artifact_source_fails_with_actionable_advice() {
         let engine = engine().await;
         let (_, service_id) = service_on_target(&engine, false).await;
-        let service = engine.store.get_service(&service_id).await.expect("get").expect("some");
+        let service = engine
+            .store
+            .get_service(&service_id)
+            .await
+            .expect("get")
+            .expect("some");
 
         let error = engine
             .obtain_artifact("dep_x", &service, &DeployOptions::default())
@@ -951,11 +993,18 @@ mod tests {
     async fn an_uploaded_artifact_is_read_from_disk() {
         let engine = engine().await;
         let (_, service_id) = service_on_target(&engine, false).await;
-        let service = engine.store.get_service(&service_id).await.expect("get").expect("some");
+        let service = engine
+            .store
+            .get_service(&service_id)
+            .await
+            .expect("get")
+            .expect("some");
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bot");
-        tokio::fs::write(&path, b"ELF binary bytes").await.expect("write");
+        tokio::fs::write(&path, b"ELF binary bytes")
+            .await
+            .expect("write");
 
         let artifact = engine
             .obtain_artifact(
@@ -975,7 +1024,12 @@ mod tests {
     async fn a_missing_uploaded_artifact_fails_rather_than_deploying_nothing() {
         let engine = engine().await;
         let (_, service_id) = service_on_target(&engine, false).await;
-        let service = engine.store.get_service(&service_id).await.expect("get").expect("some");
+        let service = engine
+            .store
+            .get_service(&service_id)
+            .await
+            .expect("get")
+            .expect("some");
 
         assert!(
             engine
@@ -998,7 +1052,12 @@ mod tests {
         // authentication failure that looks like a network problem.
         let engine = engine().await;
         let (target_id, _) = service_on_target(&engine, false).await;
-        let target = engine.store.get_target(&target_id).await.expect("get").expect("some");
+        let target = engine
+            .store
+            .get_target(&target_id)
+            .await
+            .expect("get")
+            .expect("some");
 
         let error = engine.ssh_target_for(&target).await.expect_err("must fail");
         assert!(error.to_string().contains("no SSH key"), "got: {error}");
@@ -1089,7 +1148,10 @@ mod tests {
             .activate_release(&service_id, &release.id)
             .await
             .expect_err("must refuse");
-        assert!(error.to_string().contains("does not belong"), "got: {error}");
+        assert!(
+            error.to_string().contains("does not belong"),
+            "got: {error}"
+        );
     }
 
     #[tokio::test]
@@ -1121,7 +1183,11 @@ mod tests {
             .await
             .expect("create");
 
-        engine.store.request_cancel(&deployment.id).await.expect("cancel");
+        engine
+            .store
+            .request_cancel(&deployment.id)
+            .await
+            .expect("cancel");
         assert!(engine.check_cancelled(&deployment.id).await.is_err());
     }
 
@@ -1150,7 +1216,11 @@ mod tests {
             DeploymentEvent::Output { line, .. } if line == "compiling bot v2"
         ));
         // ...and survives for a view opened later.
-        let stored = engine.store.deployment_logs(&deployment.id).await.expect("logs");
+        let stored = engine
+            .store
+            .deployment_logs(&deployment.id)
+            .await
+            .expect("logs");
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].line, "compiling bot v2");
     }
@@ -1173,7 +1243,14 @@ mod tests {
 
         engine.emit(&deployment.id, "   ", false).await;
         engine.emit(&deployment.id, "", false).await;
-        assert!(engine.store.deployment_logs(&deployment.id).await.expect("logs").is_empty());
+        assert!(
+            engine
+                .store
+                .deployment_logs(&deployment.id)
+                .await
+                .expect("logs")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1216,7 +1293,9 @@ mod tests {
             .expect("create");
 
         let mut watcher = engine.bus.watch_deployment(&deployment.id);
-        engine.finish(&deployment.id, deployment::Status::Succeeded).await;
+        engine
+            .finish(&deployment.id, deployment::Status::Succeeded)
+            .await;
 
         assert!(matches!(
             watcher.recv().await.expect("event"),

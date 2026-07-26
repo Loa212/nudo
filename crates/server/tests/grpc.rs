@@ -218,7 +218,9 @@ async fn a_target_round_trips_over_the_wire() {
     let fetched = harness
         .targets()
         .await
-        .get(GetTargetRequest { id: created.id.clone() })
+        .get(GetTargetRequest {
+            id: created.id.clone(),
+        })
         .await
         .expect("get")
         .into_inner();

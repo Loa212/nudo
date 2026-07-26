@@ -109,7 +109,10 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default();
             if name.ends_with(".css") {
-                assert!(content_type.starts_with("text/css"), "{name}: {content_type}");
+                assert!(
+                    content_type.starts_with("text/css"),
+                    "{name}: {content_type}"
+                );
             } else {
                 assert!(
                     content_type.starts_with("application/javascript"),
@@ -151,9 +154,15 @@ mod tests {
         assert!(htmx.contains("htmx"), "htmx.min.js does not look like htmx");
 
         let xterm = String::from_utf8_lossy(XTERM_JS.bytes);
-        assert!(xterm.contains("Terminal"), "xterm.js does not define Terminal");
+        assert!(
+            xterm.contains("Terminal"),
+            "xterm.js does not define Terminal"
+        );
 
         let fit = String::from_utf8_lossy(XTERM_FIT.bytes);
-        assert!(fit.contains("FitAddon"), "the fit addon does not define FitAddon");
+        assert!(
+            fit.contains("FitAddon"),
+            "the fit addon does not define FitAddon"
+        );
     }
 }

@@ -38,9 +38,9 @@ impl SecretKey {
                 .context("secret key is neither 64 hex chars nor valid base64")?
         };
 
-        let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-            anyhow!("secret key must be 32 bytes, got {}", v.len())
-        })?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| anyhow!("secret key must be 32 bytes, got {}", v.len()))?;
         Ok(Self(bytes))
     }
 
@@ -284,13 +284,21 @@ mod tests {
 
     #[test]
     fn a_signature_over_different_bytes_is_rejected() {
-        assert!(!verify_github_signature(GH_SIGNATURE, b"Hello, World", GH_SECRET));
+        assert!(!verify_github_signature(
+            GH_SIGNATURE,
+            b"Hello, World",
+            GH_SECRET
+        ));
         assert!(!verify_github_signature(GH_SIGNATURE, b"", GH_SECRET));
     }
 
     #[test]
     fn a_signature_under_the_wrong_secret_is_rejected() {
-        assert!(!verify_github_signature(GH_SIGNATURE, GH_BODY, "wrong secret"));
+        assert!(!verify_github_signature(
+            GH_SIGNATURE,
+            GH_BODY,
+            "wrong secret"
+        ));
     }
 
     #[test]
@@ -299,13 +307,21 @@ mod tests {
         // wrong and we do not accept it.
         let bare = GH_SIGNATURE.trim_start_matches("sha256=");
         assert!(!verify_github_signature(bare, GH_BODY, GH_SECRET));
-        assert!(!verify_github_signature(&format!("sha1={bare}"), GH_BODY, GH_SECRET));
+        assert!(!verify_github_signature(
+            &format!("sha1={bare}"),
+            GH_BODY,
+            GH_SECRET
+        ));
         assert!(!verify_github_signature("", GH_BODY, GH_SECRET));
     }
 
     #[test]
     fn malformed_and_wrong_length_digests_are_rejected() {
-        assert!(!verify_github_signature("sha256=nothex", GH_BODY, GH_SECRET));
+        assert!(!verify_github_signature(
+            "sha256=nothex",
+            GH_BODY,
+            GH_SECRET
+        ));
         assert!(!verify_github_signature("sha256=aabb", GH_BODY, GH_SECRET));
         // A correct digest with a trailing byte appended must not pass.
         assert!(!verify_github_signature(
@@ -339,6 +355,9 @@ mod tests {
         let a = random_token(32);
         let b = random_token(32);
         assert_ne!(a, b);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
     }
 }

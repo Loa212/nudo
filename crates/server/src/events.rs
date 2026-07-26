@@ -201,7 +201,10 @@ mod tests {
         let bus = Bus::default();
         let mut watcher = bus.watch_deployment("dep_1");
 
-        bus.publish_deployment("dep_1", DeploymentEvent::Status(deployment::Status::Building));
+        bus.publish_deployment(
+            "dep_1",
+            DeploymentEvent::Status(deployment::Status::Building),
+        );
         bus.publish_deployment(
             "dep_1",
             DeploymentEvent::Output {
@@ -224,7 +227,10 @@ mod tests {
     async fn publishing_with_nobody_watching_is_not_an_error() {
         // The engine must not care whether a dashboard is open.
         let bus = Bus::default();
-        bus.publish_deployment("dep_nobody", DeploymentEvent::Status(deployment::Status::Queued));
+        bus.publish_deployment(
+            "dep_nobody",
+            DeploymentEvent::Status(deployment::Status::Queued),
+        );
     }
 
     #[tokio::test]
@@ -233,7 +239,10 @@ mod tests {
         let mut first = bus.watch_deployment("dep_1");
         let mut second = bus.watch_deployment("dep_1");
 
-        bus.publish_deployment("dep_1", DeploymentEvent::Finished(deployment::Status::Succeeded));
+        bus.publish_deployment(
+            "dep_1",
+            DeploymentEvent::Finished(deployment::Status::Succeeded),
+        );
 
         assert!(matches!(
             first.recv().await.expect("event"),
@@ -251,8 +260,14 @@ mod tests {
         let mut mine = bus.watch_deployment("dep_mine");
         let _theirs = bus.watch_deployment("dep_theirs");
 
-        bus.publish_deployment("dep_theirs", DeploymentEvent::Status(deployment::Status::Failed));
-        assert!(mine.try_recv().is_err(), "events must not cross deployments");
+        bus.publish_deployment(
+            "dep_theirs",
+            DeploymentEvent::Status(deployment::Status::Failed),
+        );
+        assert!(
+            mine.try_recv().is_err(),
+            "events must not cross deployments"
+        );
     }
 
     #[tokio::test]

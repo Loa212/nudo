@@ -24,7 +24,12 @@ use tonic::transport::Channel;
 )]
 struct Cli {
     /// The control plane's gRPC endpoint.
-    #[arg(long, env = "NUDO_ENDPOINT", default_value = "http://127.0.0.1:50051", global = true)]
+    #[arg(
+        long,
+        env = "NUDO_ENDPOINT",
+        default_value = "http://127.0.0.1:50051",
+        global = true
+    )]
     endpoint: String,
 
     /// An API token, for CI use.
@@ -359,10 +364,10 @@ fn hostname() -> String {
 /// Attaches the API token, when one was supplied.
 fn authenticated<T>(cli: &Cli, message: T) -> tonic::Request<T> {
     let mut request = tonic::Request::new(message);
-    if let Some(token) = &cli.token {
-        if let Ok(value) = format!("Bearer {token}").parse() {
-            request.metadata_mut().insert("authorization", value);
-        }
+    if let Some(token) = &cli.token
+        && let Ok(value) = format!("Bearer {token}").parse()
+    {
+        request.metadata_mut().insert("authorization", value);
     }
     request
 }
@@ -622,8 +627,7 @@ async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Result<()> {
         ServiceCommand::Disable { id } => unit_action(cli, &mut client, id, "disable").await?,
 
         ServiceCommand::Deployments { id, limit } => {
-            let mut deployments =
-                deployments_client::DeploymentsClient::new(channel(cli).await?);
+            let mut deployments = deployments_client::DeploymentsClient::new(channel(cli).await?);
             let response = deployments
                 .list(authenticated(
                     cli,
@@ -643,8 +647,7 @@ async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Result<()> {
         }
 
         ServiceCommand::Releases { id } => {
-            let mut deployments =
-                deployments_client::DeploymentsClient::new(channel(cli).await?);
+            let mut deployments = deployments_client::DeploymentsClient::new(channel(cli).await?);
             let response = deployments
                 .list_releases(authenticated(
                     cli,
@@ -807,8 +810,8 @@ async fn follow_deployment(cli: &Cli, deployment_id: &str) -> anyhow::Result<()>
         match event.event {
             Some(deployment_event::Event::OutputLine(line)) => println!("{line}"),
             Some(deployment_event::Event::StatusChange(status)) => {
-                let status = deployment::Status::try_from(status)
-                    .unwrap_or(deployment::Status::Unspecified);
+                let status =
+                    deployment::Status::try_from(status).unwrap_or(deployment::Status::Unspecified);
                 println!("--- {} ---", status.as_str());
             }
             Some(deployment_event::Event::TerminalState(state)) => {
@@ -1157,7 +1160,11 @@ async fn audit(cli: &Cli, subject: Option<&str>, limit: u32) -> anyhow::Result<(
                         .filter(|l| !l.is_empty())
                         .unwrap_or_else(|| "-".to_string()),
                     entry.action.clone(),
-                    if entry.dry_run { "yes".to_string() } else { "-".to_string() },
+                    if entry.dry_run {
+                        "yes".to_string()
+                    } else {
+                        "-".to_string()
+                    },
                     format::truncate(&entry.summary, 60),
                 ]
             })
@@ -1195,7 +1202,11 @@ async fn sources(cli: &Cli) -> anyhow::Result<()> {
                     } else {
                         source.account_login.clone()
                     },
-                    if source.installed { "yes".to_string() } else { "no".to_string() },
+                    if source.installed {
+                        "yes".to_string()
+                    } else {
+                        "no".to_string()
+                    },
                 ]
             })
             .collect();
@@ -1208,7 +1219,11 @@ async fn sources(cli: &Cli) -> anyhow::Result<()> {
 /// Prefixes human output during a dry run, so it is never mistaken for a real
 /// effect.
 fn dry_run_prefix(cli: &Cli) -> &'static str {
-    if cli.dry_run { "dry run: would have " } else { "" }
+    if cli.dry_run {
+        "dry run: would have "
+    } else {
+        ""
+    }
 }
 
 /// A short badge for a unit's state.
@@ -1282,7 +1297,11 @@ impl From<&Vec<Target>> for JsonTargets {
                         .as_str()
                         .to_string(),
                     latency_critical: t.latency_critical,
-                    labels: t.labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    labels: t
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                 })
                 .collect(),
         }
@@ -1354,7 +1373,11 @@ impl From<&Vec<Deployment>> for JsonDeployments {
                         .unwrap_or(deployment::Status::Unspecified)
                         .as_str()
                         .to_string(),
-                    actor: d.actor.as_ref().map(|a| a.label.clone()).unwrap_or_default(),
+                    actor: d
+                        .actor
+                        .as_ref()
+                        .map(|a| a.label.clone())
+                        .unwrap_or_default(),
                     error: d.error.clone(),
                 })
                 .collect(),
@@ -1544,7 +1567,11 @@ impl From<&Vec<AuditEntry>> for JsonAudit {
                         .as_ref()
                         .map(|a| a.kind_str().to_string())
                         .unwrap_or_default(),
-                    actor: e.actor.as_ref().map(|a| a.label.clone()).unwrap_or_default(),
+                    actor: e
+                        .actor
+                        .as_ref()
+                        .map(|a| a.label.clone())
+                        .unwrap_or_default(),
                     action: e.action.clone(),
                     subject_id: e.subject_id.clone(),
                     dry_run: e.dry_run,
@@ -1603,8 +1630,8 @@ mod tests {
 
     #[test]
     fn labels_parse_from_key_equals_value() {
-        let parsed = parse_labels(&["env=prod".to_string(), " role = indexer ".to_string()])
-            .expect("parse");
+        let parsed =
+            parse_labels(&["env=prod".to_string(), " role = indexer ".to_string()]).expect("parse");
         assert_eq!(parsed.get("env").map(String::as_str), Some("prod"));
         assert_eq!(parsed.get("role").map(String::as_str), Some("indexer"));
     }
@@ -1786,7 +1813,16 @@ mod tests {
         for args in [
             vec!["nudo", "init"],
             vec!["nudo", "targets", "list"],
-            vec!["nudo", "targets", "add", "box", "--host", "h", "--ssh-key", "sec_1"],
+            vec![
+                "nudo",
+                "targets",
+                "add",
+                "box",
+                "--host",
+                "h",
+                "--ssh-key",
+                "sec_1",
+            ],
             vec!["nudo", "targets", "check", "tgt_1"],
             vec!["nudo", "services", "list"],
             vec!["nudo", "services", "unit", "svc_1"],
@@ -1853,16 +1889,11 @@ mod tests {
     fn exec_captures_trailing_arguments_including_flags() {
         // `nudo exec tgt systemctl status --no-pager` must not have --no-pager
         // interpreted as a nudo flag.
-        let cli = Cli::parse_from([
-            "nudo",
-            "exec",
-            "tgt_1",
-            "systemctl",
-            "status",
-            "--no-pager",
-        ]);
+        let cli = Cli::parse_from(["nudo", "exec", "tgt_1", "systemctl", "status", "--no-pager"]);
         match cli.command {
-            Command::Exec { target, command, .. } => {
+            Command::Exec {
+                target, command, ..
+            } => {
                 assert_eq!(target, "tgt_1");
                 assert_eq!(command, vec!["systemctl", "status", "--no-pager"]);
             }

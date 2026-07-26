@@ -45,7 +45,9 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
 
     tonic::transport::Server::builder()
         .add_service(health_service)
-        .add_service(TargetsServer::new(api::TargetsService::new(context.clone())))
+        .add_service(TargetsServer::new(api::TargetsService::new(
+            context.clone(),
+        )))
         .add_service(ServicesApiServer::new(api::ServicesApiService::new(
             context.clone(),
         )))
@@ -56,8 +58,12 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
         .add_service(TerminalsServer::new(api::TerminalsService::new(
             context.clone(),
         )))
-        .add_service(SourcesServer::new(api::SourcesService::new(context.clone())))
-        .add_service(SecretsServer::new(api::SecretsService::new(context.clone())))
+        .add_service(SourcesServer::new(api::SourcesService::new(
+            context.clone(),
+        )))
+        .add_service(SecretsServer::new(api::SecretsService::new(
+            context.clone(),
+        )))
         .add_service(AuditServer::new(api::AuditService::new(context)))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;

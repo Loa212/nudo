@@ -40,11 +40,11 @@ pub struct Store {
 impl Store {
     /// Opens (creating if absent) the database at `path` and applies migrations.
     pub async fn open(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
 
         let options = SqliteConnectOptions::new()
@@ -105,13 +105,12 @@ impl Store {
             return Ok(None);
         }
 
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT result_id FROM idempotency_keys WHERE key = ?1 AND action = ?2",
-        )
-        .bind(key)
-        .bind(action)
-        .fetch_optional(&self.pool)
-        .await?;
+        let existing: Option<(String,)> =
+            sqlx::query_as("SELECT result_id FROM idempotency_keys WHERE key = ?1 AND action = ?2")
+                .bind(key)
+                .bind(action)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(existing.map(|(id,)| id))
     }
@@ -252,13 +251,12 @@ mod tests {
             "audit_entries",
             "idempotency_keys",
         ] {
-            let found: Option<(String,)> = sqlx::query_as(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            )
-            .bind(table)
-            .fetch_optional(store.pool())
-            .await
-            .expect("query");
+            let found: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1")
+                    .bind(table)
+                    .fetch_optional(store.pool())
+                    .await
+                    .expect("query");
             assert!(found.is_some(), "table {table} is missing");
         }
     }
@@ -280,13 +278,22 @@ mod tests {
     async fn an_idempotency_key_returns_the_original_result_on_replay() {
         let store = Store::open_in_memory().await.expect("open");
 
-        assert_eq!(store.check_idempotency("key-1", "Deploy").await.expect("check"), None);
+        assert_eq!(
+            store
+                .check_idempotency("key-1", "Deploy")
+                .await
+                .expect("check"),
+            None
+        );
         store
             .record_idempotency("key-1", "Deploy", "dep_first")
             .await
             .expect("record");
         assert_eq!(
-            store.check_idempotency("key-1", "Deploy").await.expect("check"),
+            store
+                .check_idempotency("key-1", "Deploy")
+                .await
+                .expect("check"),
             Some("dep_first".to_string())
         );
 
@@ -296,7 +303,10 @@ mod tests {
             .await
             .expect("record");
         assert_eq!(
-            store.check_idempotency("key-1", "Deploy").await.expect("check"),
+            store
+                .check_idempotency("key-1", "Deploy")
+                .await
+                .expect("check"),
             Some("dep_first".to_string())
         );
     }
@@ -310,7 +320,10 @@ mod tests {
             .expect("record");
         // The same key under a different action must not collide.
         assert_eq!(
-            store.check_idempotency("shared", "Rollback").await.expect("check"),
+            store
+                .check_idempotency("shared", "Rollback")
+                .await
+                .expect("check"),
             None
         );
     }
@@ -318,8 +331,14 @@ mod tests {
     #[tokio::test]
     async fn an_empty_idempotency_key_is_ignored() {
         let store = Store::open_in_memory().await.expect("open");
-        store.record_idempotency("", "Deploy", "x").await.expect("record");
-        assert_eq!(store.check_idempotency("", "Deploy").await.expect("check"), None);
+        store
+            .record_idempotency("", "Deploy", "x")
+            .await
+            .expect("record");
+        assert_eq!(
+            store.check_idempotency("", "Deploy").await.expect("check"),
+            None
+        );
     }
 
     #[test]
@@ -394,7 +413,11 @@ mod tests {
     fn page_tokens_carry_the_offset_and_end_the_sequence_on_a_short_page() {
         assert_eq!(page_offset(""), 0);
         assert_eq!(page_offset("100"), 100);
-        assert_eq!(page_offset("garbage"), 0, "a bad token restarts rather than errors");
+        assert_eq!(
+            page_offset("garbage"),
+            0,
+            "a bad token restarts rather than errors"
+        );
 
         // A full page means there may be more.
         assert_eq!(next_page_token(0, 50, 50), "50");

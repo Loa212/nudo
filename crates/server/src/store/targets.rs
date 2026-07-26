@@ -100,9 +100,11 @@ impl Store {
             return Ok(rows.iter().map(row_to_target).collect());
         }
 
-        let rows = sqlx::query(AssertSqlSafe(format!("{TARGET_SELECT} ORDER BY created_at DESC, id DESC")))
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "{TARGET_SELECT} ORDER BY created_at DESC, id DESC"
+        )))
+        .fetch_all(self.pool())
+        .await?;
 
         Ok(rows
             .iter()
@@ -135,9 +137,7 @@ impl Store {
 
         // An empty mask means "everything the message carries", which is what a
         // simple client sending a whole object expects.
-        let touch = |field: &str| {
-            update_mask.is_empty() || update_mask.iter().any(|m| m == field)
-        };
+        let touch = |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
 
         if touch("name") && !target.name.trim().is_empty() {
             sqlx::query("UPDATE targets SET name = ?1 WHERE id = ?2")
@@ -207,11 +207,7 @@ impl Store {
     }
 
     /// Records the outcome of a reachability probe.
-    pub async fn set_target_status(
-        &self,
-        id: &str,
-        status: target::Status,
-    ) -> anyhow::Result<()> {
+    pub async fn set_target_status(&self, id: &str, status: target::Status) -> anyhow::Result<()> {
         // `last_seen_at` means "last confirmed reachable", so it is only
         // advanced on success — otherwise it would just track probe attempts.
         let last_seen = if status == target::Status::Reachable {
@@ -341,7 +337,11 @@ mod tests {
         // Agentless: never a version.
         assert!(created.agent_version.is_empty());
 
-        let fetched = store.get_target(&created.id).await.expect("get").expect("some");
+        let fetched = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(fetched.id, created.id);
     }
 
@@ -389,7 +389,10 @@ mod tests {
     async fn duplicate_names_are_refused_with_a_readable_message() {
         let store = store().await;
         store.create_target(&input("dup")).await.expect("first");
-        let error = store.create_target(&input("dup")).await.expect_err("second");
+        let error = store
+            .create_target(&input("dup"))
+            .await
+            .expect_err("second");
         assert!(error.to_string().contains("already exists"), "got: {error}");
     }
 
@@ -424,7 +427,10 @@ mod tests {
     #[tokio::test]
     async fn an_empty_mask_updates_every_populated_field() {
         let store = store().await;
-        let created = store.create_target(&input("wholesale")).await.expect("create");
+        let created = store
+            .create_target(&input("wholesale"))
+            .await
+            .expect("create");
 
         let updated = store
             .update_target(
@@ -499,7 +505,11 @@ mod tests {
             .set_target_status(&created.id, target::Status::Reachable)
             .await
             .expect("set");
-        let seen = store.get_target(&created.id).await.expect("get").expect("some");
+        let seen = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(seen.status, target::Status::Reachable as i32);
         let first_seen = seen.last_seen_at.expect("last_seen_at");
 
@@ -507,7 +517,11 @@ mod tests {
             .set_target_status(&created.id, target::Status::Unreachable)
             .await
             .expect("set");
-        let now_unreachable = store.get_target(&created.id).await.expect("get").expect("some");
+        let now_unreachable = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("some");
         assert_eq!(now_unreachable.status, target::Status::Unreachable as i32);
         // Still shows when it was last actually up.
         assert_eq!(now_unreachable.last_seen_at, Some(first_seen));
@@ -543,7 +557,10 @@ mod tests {
         let prod = store.list_targets("env=prod", 50, 0).await.expect("list");
         assert_eq!(prod.len(), 1);
         assert_eq!(prod[0].name, "prod-indexer");
-        assert_eq!(prod[0].labels.get("role").map(String::as_str), Some("indexer"));
+        assert_eq!(
+            prod[0].labels.get("role").map(String::as_str),
+            Some("indexer")
+        );
 
         // Every clause must match.
         let both = store

@@ -72,7 +72,10 @@ pub struct LogQuery {
 
 /// Builds the `journalctl` command for a query.
 pub fn build_command(unit_name: &str, query: &LogQuery) -> String {
-    let mut command = format!("journalctl --unit={} --output=json --no-pager", quote(unit_name));
+    let mut command = format!(
+        "journalctl --unit={} --output=json --no-pager",
+        quote(unit_name)
+    );
 
     // A cursor is more precise than a timestamp, so it wins when both are given.
     if !query.since_cursor.trim().is_empty() {
@@ -126,10 +129,10 @@ pub async fn stream(
             if line.stderr {
                 continue;
             }
-            if let Some(event) = parse_line(&line.text) {
-                if sink.send(event).await.is_err() {
-                    return;
-                }
+            if let Some(event) = parse_line(&line.text)
+                && sink.send(event).await.is_err()
+            {
+                return;
             }
         }
     });
@@ -277,7 +280,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(command.contains("--since='2026-07-22 14:05:33'"), "got: {command}");
+        assert!(
+            command.contains("--since='2026-07-22 14:05:33'"),
+            "got: {command}"
+        );
     }
 
     #[test]
@@ -373,8 +379,8 @@ mod tests {
 
     #[test]
     fn an_unparseable_timestamp_falls_back_to_now() {
-        let event = parse_line(r#"{"MESSAGE":"x","__REALTIME_TIMESTAMP":"not-a-number"}"#)
-            .expect("parse");
+        let event =
+            parse_line(r#"{"MESSAGE":"x","__REALTIME_TIMESTAMP":"not-a-number"}"#).expect("parse");
         assert!(event.at <= chrono::Utc::now());
     }
 

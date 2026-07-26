@@ -81,30 +81,31 @@ impl Context {
         // change is unacceptable — the HFT bot's machine — so touching it takes
         // an explicit per-request opt-in, and saying so is the caller's
         // responsibility rather than a default.
-        if let Some(target) = subject_target {
-            if target.latency_critical && !mutation.allow_latency_critical {
-                // Recorded even though it is refused: an agent repeatedly
-                // trying to touch the hot-path box is something an operator
-                // wants to see.
-                self.store
-                    .audit(NewAuditEntry {
-                        actor: actor.clone(),
-                        action: format!("{action} (refused)"),
-                        subject_id: subject_id.to_string(),
-                        dry_run: mutation.dry_run,
-                        summary: format!(
-                            "refused: {} is latency-critical and allow_latency_critical was not set",
-                            target.name
-                        ),
-                    })
-                    .await;
+        if let Some(target) = subject_target
+            && target.latency_critical
+            && !mutation.allow_latency_critical
+        {
+            // Recorded even though it is refused: an agent repeatedly
+            // trying to touch the hot-path box is something an operator
+            // wants to see.
+            self.store
+                .audit(NewAuditEntry {
+                    actor: actor.clone(),
+                    action: format!("{action} (refused)"),
+                    subject_id: subject_id.to_string(),
+                    dry_run: mutation.dry_run,
+                    summary: format!(
+                        "refused: {} is latency-critical and allow_latency_critical was not set",
+                        target.name
+                    ),
+                })
+                .await;
 
-                return Err(Status::failed_precondition(format!(
-                    "target {} is marked latency-critical; set allow_latency_critical \
+            return Err(Status::failed_precondition(format!(
+                "target {} is marked latency-critical; set allow_latency_critical \
                      on the request to mutate it",
-                    target.name
-                )));
-            }
+                target.name
+            )));
         }
 
         self.store
@@ -207,7 +208,12 @@ mod tests {
         context
             .store
             .create_target(&TargetInput {
-                name: if latency_critical { "hot-box" } else { "normal-box" }.to_string(),
+                name: if latency_critical {
+                    "hot-box"
+                } else {
+                    "normal-box"
+                }
+                .to_string(),
                 host: "10.0.0.1".to_string(),
                 latency_critical,
                 ..Default::default()
@@ -423,11 +429,19 @@ mod tests {
     async fn missing_entities_produce_not_found_rather_than_internal() {
         let context = context().await;
         assert_eq!(
-            context.require_target("tgt_nope").await.expect_err("err").code(),
+            context
+                .require_target("tgt_nope")
+                .await
+                .expect_err("err")
+                .code(),
             tonic::Code::NotFound
         );
         assert_eq!(
-            context.require_service("svc_nope").await.expect_err("err").code(),
+            context
+                .require_service("svc_nope")
+                .await
+                .expect_err("err")
+                .code(),
             tonic::Code::NotFound
         );
     }

@@ -26,7 +26,11 @@ impl Secrets for SecretsService {
         let scope_target = if request.scope_target_id.trim().is_empty() {
             None
         } else {
-            Some(self.context.require_target(&request.scope_target_id).await?)
+            Some(
+                self.context
+                    .require_target(&request.scope_target_id)
+                    .await?,
+            )
         };
 
         // A service-scoped secret is checked against the target the service runs
@@ -104,10 +108,7 @@ impl Secrets for SecretsService {
         Ok(Response::new(ListSecretsResponse { secrets }))
     }
 
-    async fn delete(
-        &self,
-        request: Request<DeleteSecretRequest>,
-    ) -> Result<Response<()>, Status> {
+    async fn delete(&self, request: Request<DeleteSecretRequest>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         let secret = self
             .context
@@ -243,7 +244,10 @@ mod tests {
             .into_inner();
 
         assert_eq!(secret.name, "API_KEY");
-        assert_eq!(secret.digest, crate::crypto::sha256_hex("super-secret-value"));
+        assert_eq!(
+            secret.digest,
+            crate::crypto::sha256_hex("super-secret-value")
+        );
         assert!(secret.updated_at.is_some());
 
         // Nothing in the response carries the value.
@@ -296,8 +300,16 @@ mod tests {
     #[tokio::test]
     async fn writing_the_same_name_twice_rotates_it() {
         let service = fixture().await.0;
-        let first = service.put(Request::new(put("ROTATE", "v1"))).await.expect("put").into_inner();
-        let second = service.put(Request::new(put("ROTATE", "v2"))).await.expect("put").into_inner();
+        let first = service
+            .put(Request::new(put("ROTATE", "v1")))
+            .await
+            .expect("put")
+            .into_inner();
+        let second = service
+            .put(Request::new(put("ROTATE", "v2")))
+            .await
+            .expect("put")
+            .into_inner();
 
         assert_eq!(first.id, second.id);
         assert_ne!(first.digest, second.digest);
@@ -454,7 +466,10 @@ mod tests {
             .list_audit("", actor::Kind::Unspecified, 50, 0)
             .await
             .expect("audit");
-        let entry = audit.iter().find(|e| e.action == "Secrets.Put").expect("entry");
+        let entry = audit
+            .iter()
+            .find(|e| e.action == "Secrets.Put")
+            .expect("entry");
         assert!(entry.summary.contains("API_KEY"));
         assert!(
             !entry.summary.contains("super-secret-value"),
@@ -465,7 +480,10 @@ mod tests {
     #[tokio::test]
     async fn listing_can_be_narrowed_to_a_scope() {
         let (service, target_id, service_id) = fixture().await;
-        service.put(Request::new(put("GLOBAL", "v"))).await.expect("put");
+        service
+            .put(Request::new(put("GLOBAL", "v")))
+            .await
+            .expect("put");
         service
             .put(Request::new(PutSecretRequest {
                 scope_target_id: target_id.clone(),
@@ -537,7 +555,10 @@ mod tests {
         // Removing it would leave the host unreachable with no obvious cause.
         let (service, target_id, _) = fixture().await;
         let key = service
-            .put(Request::new(put("SSH_KEY", "-----BEGIN OPENSSH PRIVATE KEY-----")))
+            .put(Request::new(put(
+                "SSH_KEY",
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+            )))
             .await
             .expect("put")
             .into_inner();

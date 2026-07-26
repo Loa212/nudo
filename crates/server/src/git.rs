@@ -60,7 +60,16 @@ pub async fn clone_and_build(
         )))
         .await;
 
-    clone(&credentials, owner, name, git_ref, &checkout, &output, timeout).await?;
+    clone(
+        &credentials,
+        owner,
+        name,
+        git_ref,
+        &checkout,
+        &output,
+        timeout,
+    )
+    .await?;
 
     let sha = resolve_head_sha(&checkout).await.unwrap_or_default();
     if !sha.is_empty() {
@@ -221,7 +230,10 @@ async fn clone(
             // The insteadOf rewrite means submodules on the same host
             // authenticate too, without the token being written into
             // .git/config.
-            let authed = format!("https://x-access-token:{}@{host}/", urlencoding::encode(token));
+            let authed = format!(
+                "https://x-access-token:{}@{host}/",
+                urlencoding::encode(token)
+            );
             command
                 .arg("-c")
                 .arg(format!("url.{authed}.insteadOf=https://{host}/"))
@@ -337,7 +349,10 @@ async fn run_streaming(
             // kill_on_drop would handle this eventually, but killing now stops
             // a runaway build from holding the machine.
             let _ = child.kill().await;
-            bail!("the command exceeded its {} second limit", timeout.as_secs());
+            bail!(
+                "the command exceeded its {} second limit",
+                timeout.as_secs()
+            );
         }
     };
 
@@ -499,7 +514,10 @@ mod tests {
     fn a_host_is_extracted_from_a_base_url() {
         assert_eq!(host_of("https://github.com"), "github.com");
         assert_eq!(host_of("https://github.com/"), "github.com");
-        assert_eq!(host_of("https://git.internal.example.com/path"), "git.internal.example.com");
+        assert_eq!(
+            host_of("https://git.internal.example.com/path"),
+            "git.internal.example.com"
+        );
     }
 
     #[test]
@@ -529,16 +547,25 @@ mod tests {
         let mut command = tokio::process::Command::new("sh");
         command.arg("-c").arg("echo to-stdout; echo to-stderr >&2");
 
-        let status = run_streaming(&mut command, &Credentials::None, &tx, Duration::from_secs(30))
-            .await
-            .expect("run");
+        let status = run_streaming(
+            &mut command,
+            &Credentials::None,
+            &tx,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("run");
         assert_eq!(status, 0);
         drop(tx);
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         while let Some(line) = rx.recv().await {
-            if line.stderr { stderr.push(line.text) } else { stdout.push(line.text) }
+            if line.stderr {
+                stderr.push(line.text)
+            } else {
+                stdout.push(line.text)
+            }
         }
         assert_eq!(stdout, vec!["to-stdout"]);
         assert_eq!(stderr, vec!["to-stderr"]);
@@ -565,7 +592,10 @@ mod tests {
         drop(tx);
 
         let line = rx.recv().await.expect("line").text;
-        assert!(!line.contains("ghs_supersecrettoken"), "token leaked: {line}");
+        assert!(
+            !line.contains("ghs_supersecrettoken"),
+            "token leaked: {line}"
+        );
         assert!(line.contains(REDACTED));
     }
 
@@ -575,9 +605,14 @@ mod tests {
         let mut command = tokio::process::Command::new("sh");
         command.arg("-c").arg("exit 7");
 
-        let status = run_streaming(&mut command, &Credentials::None, &tx, Duration::from_secs(30))
-            .await
-            .expect("run");
+        let status = run_streaming(
+            &mut command,
+            &Credentials::None,
+            &tx,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("run");
         assert_eq!(status, 7);
     }
 
@@ -623,7 +658,11 @@ mod tests {
     async fn a_git_source_naming_an_unknown_source_id_is_refused() {
         let store = Store::open_in_memory().await.expect("store");
         let key = SecretKey::generate();
-        assert!(resolve_credentials(&store, &key, "src_missing").await.is_err());
+        assert!(
+            resolve_credentials(&store, &key, "src_missing")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -631,7 +670,9 @@ mod tests {
         let store = Store::open_in_memory().await.expect("store");
         let key = SecretKey::generate();
         assert!(matches!(
-            resolve_credentials(&store, &key, "").await.expect("resolve"),
+            resolve_credentials(&store, &key, "")
+                .await
+                .expect("resolve"),
             Credentials::None
         ));
     }
@@ -645,9 +686,15 @@ mod tests {
             .await
             .expect("source");
 
-        match resolve_credentials(&store, &key, &source.id).await.expect("resolve") {
+        match resolve_credentials(&store, &key, &source.id)
+            .await
+            .expect("resolve")
+        {
             Credentials::DeployKey { private_key } => assert_eq!(private_key, "PRIVATE-KEY-BODY"),
-            other => panic!("expected a deploy key, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected a deploy key, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }
