@@ -294,7 +294,7 @@ sessions and the webhook receiver.
 ## Development
 
 ```sh
-cargo test --workspace          # unit and integration tests
+cargo test --workspace          # 691 unit and integration tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
