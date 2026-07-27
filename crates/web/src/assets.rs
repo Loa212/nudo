@@ -68,13 +68,54 @@ pub async fn serve(name: &str) -> Response {
     (
         [
             (header::CONTENT_TYPE, asset.content_type),
-            // Assets change only when the binary does, and the binary is what
-            // serves them, so a long cache is safe within one deployment.
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            // Cached hard, and safely: every reference carries `?v=<build>`, so
+            // a new binary asks for a URL the browser has never seen. Without
+            // that, this header meant an hour of stale CSS after every deploy
+            // — invisible to whoever shipped it, since their own reload was
+            // usually a hard one.
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         asset.bytes,
     )
         .into_response()
+}
+
+/// A fingerprint of the embedded assets, appended to every asset URL.
+///
+/// Derived from the bytes themselves rather than a version number or a build
+/// timestamp: a rebuild that changes nothing keeps the same URL and the cache
+/// stays warm, while any real change to an asset produces a different one and
+/// invalidates it. The crate version would not do — the dashboard is rebuilt
+/// far more often than it is released, which is exactly when stale CSS bites.
+pub fn build_id() -> &'static str {
+    use std::sync::OnceLock;
+
+    static BUILD_ID: OnceLock<String> = OnceLock::new();
+    BUILD_ID.get_or_init(|| {
+        // FNV-1a over each asset's bytes. Not cryptographic — this only has to
+        // differ when the content differs, and be cheap to compute once.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for asset in [
+            APP_CSS,
+            TERMINAL_JS,
+            HTMX,
+            SSE,
+            XTERM_JS,
+            XTERM_FIT,
+            XTERM_CSS,
+        ] {
+            for byte in asset.bytes {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        format!("{hash:x}")
+    })
+}
+
+/// The URL for an embedded asset, fingerprinted so a stale copy is never used.
+pub fn url(name: &str) -> String {
+    format!("/assets/{name}?v={}", build_id())
 }
 
 /// The names this module will serve. Used by tests and by the page templates so

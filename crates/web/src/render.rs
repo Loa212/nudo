@@ -264,9 +264,9 @@ pub fn page(title: &str, nav: Nav, body: Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · nudo" }
-                link rel="stylesheet" href="/assets/app.css";
-                script src="/assets/htmx.min.js" defer {}
-                script src="/assets/sse.js" defer {}
+                link rel="stylesheet" href=(crate::assets::url("app.css"));
+                script src=(crate::assets::url("htmx.min.js")) defer {}
+                script src=(crate::assets::url("sse.js")) defer {}
             }
             body {
                 div .shell {
@@ -2613,7 +2613,7 @@ pub fn terminal_page(target: &Target, session_id: &str, token: &str) -> Markup {
                 }))
             }
 
-            link rel="stylesheet" href="/assets/xterm.css";
+            link rel="stylesheet" href=(crate::assets::url("xterm.css"));
             div .term-wrap {
                 div #terminal {}
             }
@@ -2623,11 +2623,11 @@ pub fn terminal_page(target: &Target, session_id: &str, token: &str) -> Markup {
                  ends it; reconnecting needs a new one."
             }
 
-            script src="/assets/xterm.js" {}
-            script src="/assets/xterm-addon-fit.js" {}
+            script src=(crate::assets::url("xterm.js")) {}
+            script src=(crate::assets::url("xterm-addon-fit.js")) {}
             // Set before terminal.js runs, which reads it at load.
             script { (PreEscaped(format!("window.nudoTerminal = {config};"))) }
-            script src="/assets/terminal.js" {}
+            script src=(crate::assets::url("terminal.js")) {}
         }
     }
 }
@@ -2929,7 +2929,7 @@ fn auth_shell(title: &str, body: Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · nudo" }
-                link rel="stylesheet" href="/assets/app.css";
+                link rel="stylesheet" href=(crate::assets::url("app.css"));
             }
             body {
                 div .auth-page {
@@ -3876,9 +3876,15 @@ mod tests {
         assert!(rendered.contains("<meta charset=\"utf-8\">"));
         assert!(rendered.contains("name=\"viewport\""));
         assert!(rendered.contains("<title>Overview · nudo</title>"));
-        assert!(rendered.contains("href=\"/assets/app.css\""));
-        assert!(rendered.contains("src=\"/assets/htmx.min.js\""));
-        assert!(rendered.contains("src=\"/assets/sse.js\""));
+        // Fingerprinted, so the URL carries a `?v=` the page shell does not
+        // spell out. What matters is that each asset is referenced and that the
+        // reference can be invalidated by a rebuild.
+        for asset in ["app.css", "htmx.min.js", "sse.js"] {
+            assert!(
+                rendered.contains(&format!("/assets/{asset}?v=")),
+                "{asset} is missing or unfingerprinted"
+            );
+        }
         assert!(rendered.contains("class=\"shell\""));
         assert!(rendered.contains("class=\"rail\""));
         assert!(rendered.contains("class=\"main\""));
