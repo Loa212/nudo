@@ -232,6 +232,7 @@ pub fn router(state: AppState) -> Router {
         // ---- audit and settings ----
         .route("/audit", get(routes::audit_list))
         .route("/changelog", get(routes::changelog))
+        .route("/upgrade", get(routes::upgrade))
         .route("/support/dismiss", post(routes::support_dismiss))
         .route("/settings", get(routes::settings))
         .route("/settings/updates", post(routes::settings_updates))

@@ -38,6 +38,52 @@ pub fn current_version() -> &'static str {
 /// How long a fetched manifest is trusted before being refetched.
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
+/// How this instance was installed, which decides what upgrading it looks like.
+///
+/// Detected rather than configured: an operator should not have to tell nudo
+/// something it can see for itself, and a wrong answer here means printing
+/// instructions that do not apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallKind {
+    /// Running inside a container. Upgrading means pulling a new image and
+    /// recreating the container; the process cannot replace its own image.
+    Container,
+    /// A binary on the host, typically under systemd. Upgrading means replacing
+    /// the binaries and restarting the unit.
+    Binary,
+}
+
+impl InstallKind {
+    /// Works out how this process is running.
+    ///
+    /// `/.dockerenv` is written by Docker itself; the cgroup path catches
+    /// Podman and containerd, which do not. Either being present is enough —
+    /// a false negative prints binary instructions to someone in a container,
+    /// which is worse than the reverse, since those instructions would have
+    /// them overwrite files inside an ephemeral filesystem.
+    pub fn detect() -> Self {
+        if std::path::Path::new("/.dockerenv").exists() {
+            return Self::Container;
+        }
+
+        // Set by this project's own image, and a reliable signal for anyone
+        // building their own on top of it.
+        if std::env::var_os("NUDO_IN_CONTAINER").is_some() {
+            return Self::Container;
+        }
+
+        if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup")
+            && (cgroup.contains("/docker/")
+                || cgroup.contains("/podman/")
+                || cgroup.contains("containerd"))
+        {
+            return Self::Container;
+        }
+
+        Self::Binary
+    }
+}
+
 /// A published release.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -668,5 +714,29 @@ mod tests {
         store.set_release_check_enabled(true).await.expect("on");
         assert!(checker.cached_status().await.available);
         assert_eq!(checker.changelog().await.len(), 1);
+    }
+    #[test]
+    fn a_container_is_detected_from_the_environment_marker() {
+        // The image sets this. The other two signals cannot be exercised in a
+        // unit test without writing to /, so this is the one asserted here;
+        // the rest are covered by running the image, where a wrong answer
+        // shows up immediately as the wrong upgrade instructions.
+        //
+        // Uses a scoped guard rather than leaving the variable set, since the
+        // test binary is shared.
+        let previous = std::env::var_os("NUDO_IN_CONTAINER");
+        // SAFETY: single-threaded within this test; restored below.
+        unsafe { std::env::set_var("NUDO_IN_CONTAINER", "1") };
+
+        let detected = InstallKind::detect();
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("NUDO_IN_CONTAINER", value),
+                None => std::env::remove_var("NUDO_IN_CONTAINER"),
+            }
+        }
+
+        assert_eq!(detected, InstallKind::Container);
     }
 }

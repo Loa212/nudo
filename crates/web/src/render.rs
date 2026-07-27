@@ -4556,6 +4556,135 @@ mod tests {
         assert!(rendered.contains("svc_gone"));
     }
 
+    // -- upgrading ---------------------------------------------------------
+
+    fn an_upgrade(install: UpgradeInstall) -> UpgradeView {
+        UpgradeView {
+            current: "0.1.0".to_string(),
+            latest: "0.2.0".to_string(),
+            available: true,
+            breaking: false,
+            install,
+        }
+    }
+
+    #[test]
+    fn the_banner_points_at_the_instructions() {
+        let rendered = s(update_banner(&an_update(true, false)));
+        assert!(rendered.contains(r#"href="/upgrade""#));
+    }
+
+    #[test]
+    fn a_containerised_instance_is_told_to_pull_an_image() {
+        let rendered = s(upgrade_page(&an_upgrade(UpgradeInstall::Container {
+            image: "ghcr.io/loa212/nudo",
+        })));
+        assert!(rendered.contains("docker pull ghcr.io/loa212/nudo:0.2.0"));
+        assert!(rendered.contains("docker compose pull"));
+        // Instructions for the other kind would be actively misleading here.
+        assert!(
+            !rendered.contains("systemctl stop nudo"),
+            "a container was told to restart a systemd unit"
+        );
+    }
+
+    #[test]
+    fn a_binary_instance_is_told_to_verify_what_it_downloaded() {
+        let rendered = s(upgrade_page(&an_upgrade(UpgradeInstall::Binary)));
+        assert!(rendered.contains("sha256sum -c"), "no checksum step");
+        assert!(rendered.contains("systemctl stop nudo"));
+        assert!(rendered.contains("systemctl start nudo"));
+        assert!(
+            !rendered.contains("docker pull"),
+            "a host install was told to pull an image"
+        );
+    }
+
+    #[test]
+    fn the_page_answers_whether_upgrading_loses_anything() {
+        // The first question anyone has. Both install kinds must answer it.
+        for install in [
+            UpgradeInstall::Container {
+                image: "ghcr.io/loa212/nudo",
+            },
+            UpgradeInstall::Binary,
+        ] {
+            let rendered = s(upgrade_page(&an_upgrade(install)));
+            assert!(
+                rendered.contains("Your data is not touched"),
+                "the page does not say whether data survives"
+            );
+            // The generated-key trap, which is the one way someone can actually
+            // lose something.
+            assert!(rendered.contains("secret key"));
+            // And what to do when it goes wrong.
+            assert!(rendered.contains("If it goes wrong"));
+        }
+    }
+
+    #[test]
+    fn a_breaking_release_is_called_out_on_the_upgrade_page_too() {
+        let mut view = an_upgrade(UpgradeInstall::Binary);
+        view.breaking = true;
+        let rendered = s(upgrade_page(&view));
+        assert!(rendered.contains("needs manual steps"));
+    }
+
+    #[test]
+    fn an_up_to_date_instance_is_not_told_to_pull_the_version_it_runs() {
+        // `docker pull ...:0.1.0` while running 0.1.0 is a no-op dressed up as
+        // an instruction.
+        let mut view = an_upgrade(UpgradeInstall::Container {
+            image: "ghcr.io/loa212/nudo",
+        });
+        view.available = false;
+        let rendered = s(upgrade_page(&view));
+        assert!(rendered.contains("docker pull ghcr.io/loa212/nudo:latest"));
+        assert!(!rendered.contains(":0.1.0"));
+
+        // The binary snippet becomes an illustration rather than something to
+        // paste, and says which version to substitute.
+        let mut binary = an_upgrade(UpgradeInstall::Binary);
+        binary.available = false;
+        let rendered = s(upgrade_page(&binary));
+        assert!(rendered.contains("version=X.Y.Z"));
+        assert!(!rendered.contains("version=latest"));
+    }
+
+    #[test]
+    fn an_up_to_date_instance_still_gets_the_instructions() {
+        // Reached from a bookmark or the nav rather than the banner. Saying
+        // "nothing to do" and hiding the steps would be a dead end.
+        let mut view = an_upgrade(UpgradeInstall::Binary);
+        view.available = false;
+        let rendered = s(upgrade_page(&view));
+        assert!(rendered.contains("You are up to date"));
+        assert!(rendered.contains("sha256sum -c"), "the steps are hidden");
+    }
+
+    #[test]
+    fn the_upgrade_page_never_offers_to_do_it_for_you() {
+        // nudo holds the SSH keys for every machine it manages. A button here
+        // that ran an upgrade would be a much larger thing to trust than a page
+        // that tells you what to type, and this test is what keeps it a page.
+        for install in [
+            UpgradeInstall::Container {
+                image: "ghcr.io/loa212/nudo",
+            },
+            UpgradeInstall::Binary,
+        ] {
+            let rendered = s(upgrade_page(&an_upgrade(install)));
+            assert!(
+                !rendered.contains("<form"),
+                "the upgrade page has a form, so something is being submitted"
+            );
+            assert!(
+                !rendered.contains("curl -fsSL") && !rendered.contains("| sh"),
+                "the page pipes a downloaded script into a shell"
+            );
+        }
+    }
+
     // -- the first-run checklist ------------------------------------------
 
     fn a_finished_deployment() -> Deployment {
@@ -5110,15 +5239,21 @@ mod tests {
     }
 
     #[test]
-    fn the_update_banner_never_offers_to_upgrade_the_host() {
+    fn the_update_banner_never_offers_to_perform_the_upgrade() {
         // Coolify's equivalent runs a downloaded script as root. nudo's banner
-        // is a link; upgrading stays a deliberate act on the host, and this test
-        // is what stops that changing quietly.
+        // only ever links: `/upgrade` is a page of instructions, and the test
+        // below asserts that page has no form and pipes nothing into a shell.
+        // What is forbidden here is anything that would *act* — a POST, or a
+        // command embedded in the banner itself.
         let rendered = s(update_banner(&an_update(true, true)));
-        for forbidden in ["/update", "/upgrade", "curl", "install.sh"] {
+        assert!(
+            !rendered.contains("<form"),
+            "the banner submits something, so it does more than link"
+        );
+        for forbidden in ["curl", "install.sh", "| sh"] {
             assert!(
                 !rendered.contains(forbidden),
-                "the banner offers {forbidden}, which would run code on the host"
+                "the banner contains {forbidden}, which would run code on the host"
             );
         }
     }
@@ -5291,6 +5426,7 @@ pub fn update_banner(status: &UpdateBanner) -> Markup {
                 }
             }
             div .form-actions {
+                a .btn.small.primary href="/upgrade" { "How to upgrade" }
                 a .btn.small href="/changelog" { "What's new" }
                 @if !status.url.is_empty() {
                     a .btn.small href=(status.url) target="_blank" rel="noreferrer noopener" {
@@ -5300,6 +5436,208 @@ pub fn update_banner(status: &UpdateBanner) -> Markup {
             }
         }
     }
+}
+
+/// The upgrade instructions, for the way this instance is actually installed.
+///
+/// A page rather than a button. nudo does not upgrade itself: it holds the SSH
+/// keys for every machine it manages, and a process that can rewrite its own
+/// binary — or fetch and run a script as root, which is how the tool this was
+/// modelled on does it — is a much larger thing to trust than one that tells
+/// you what to type.
+///
+/// The commands are exact and the reasoning is stated, because the questions
+/// someone actually has at this point are "will this lose my data" and "what if
+/// it goes wrong".
+pub fn upgrade_page(view: &UpgradeView) -> Markup {
+    html! {
+        (topbar(
+            "Upgrading nudo",
+            Some(&format!("running {}", view.current)),
+            html! { a .btn href="/changelog" { "What's new" } },
+        ))
+        div .content {
+            @if view.available {
+                (callout("info", &format!("nudo {} is available", view.latest), html! {
+                    p { "You are running " (view.current) "." }
+                }))
+            } @else {
+                (callout("info", "You are up to date", html! {
+                    p {
+                        "Nothing to do — these are the steps for when there is. "
+                        "The version here is " (view.current) "."
+                    }
+                }))
+            }
+
+            @if view.breaking {
+                (callout("bad", "This release needs manual steps", html! {
+                    p {
+                        "Read the release notes before starting. Something in this \
+                         release does not migrate itself."
+                    }
+                }))
+            }
+
+            div .card {
+                h2 { "Your data is not touched by any of this" }
+                div .card-body {
+                    p {
+                        "Upgrading replaces executables. Everything nudo remembers \
+                         lives outside them and is left exactly as it is:"
+                    }
+                    ul {
+                        li { "the database — targets, services, deployment history, sessions" }
+                        li { "the data directory — build workspaces and uploaded artifacts" }
+                        li { "your configuration — environment variables or the systemd unit" }
+                    }
+                    p {
+                        "Schema changes are applied automatically the first time the \
+                         new version opens the database, so there is no migration \
+                         step to run by hand."
+                    }
+                    (callout("warn", "The one thing worth checking first", html! {
+                        p {
+                            "If you never set a secret key, nudo generated one into the \
+                             data directory and warned you at startup. It is still there \
+                             and still works — but every stored secret is unreadable \
+                             without it, so back it up before doing anything that could \
+                             remove that directory."
+                        }
+                    }))
+                }
+            }
+
+            // The tag to pull: the new version when there is one, otherwise
+            // `latest` — pulling the version already running is a no-op, and
+            // printing it as an instruction is just confusing.
+            @let tag = if view.available { view.latest.as_str() } else { "latest" };
+
+            @match view.install {
+                UpgradeInstall::Container { image } => (container_upgrade(image, tag)),
+                UpgradeInstall::Binary => (binary_upgrade(tag)),
+            }
+
+            div .card {
+                h2 { "If it goes wrong" }
+                div .card-body {
+                    p {
+                        "Run the previous version again — it is the same command with \
+                         the older tag, or the binaries you moved aside. The database \
+                         is compatible in the direction you have already come from, so \
+                         going back works as long as the older version has seen that \
+                         schema before."
+                    }
+                    p .small.muted {
+                        "Downgrading across a release marked as needing manual steps is \
+                         the exception: check its notes, which say what changed."
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Upgrade steps for a containerised install.
+fn container_upgrade(image: &str, latest: &str) -> Markup {
+    let pull = format!("docker pull {image}:{latest}");
+    html! {
+        div .card {
+            h2 { "This instance is running in a container" }
+            div .card-body {
+                p {
+                    "Upgrading means pulling the new image and recreating the \
+                     container. The state volume is not part of the image, so \
+                     recreating the container keeps everything."
+                }
+                pre .code {
+                    (pull) "\n"
+                    "docker stop nudo\n"
+                    "docker rm nudo\n"
+                    "# then run it again with your usual flags, using the new tag"
+                }
+                p .small.muted {
+                    "Using compose instead: " code { "docker compose pull" } " then "
+                    code { "docker compose up -d" } " — which does the same thing and \
+                     keeps your flags where you already wrote them down."
+                }
+                (callout("warn", "Check for the volume before you remove anything", html! {
+                    p {
+                        "Recreating the container is only safe because the database \
+                         lives on a volume. If you started nudo without one, its state \
+                         is inside the container and removing it destroys that state. "
+                        code { "docker inspect -f '{{ .Mounts }}' nudo" }
+                        " says which you have."
+                    }
+                }))
+            }
+        }
+    }
+}
+
+/// Upgrade steps for a binary install.
+///
+/// `version` is the release to fetch, or `latest` when the instance is already
+/// current — in which case the snippet is an illustration rather than something
+/// to paste, and says so.
+fn binary_upgrade(version: &str) -> Markup {
+    let is_placeholder = version == "latest";
+    html! {
+        div .card {
+            h2 { "This instance is running as a binary on the host" }
+            div .card-body {
+                p {
+                    "Download the release archive, verify it, and replace the \
+                     binaries. Nothing under the data directory is touched."
+                }
+                pre .code {
+                    @if is_placeholder {
+                        "version=X.Y.Z   # the release you are upgrading to\n"
+                    } @else {
+                        "version=" (version) "\n"
+                    }
+                    r#"target=x86_64-unknown-linux-musl   # or -gnu"# "\n"
+                    r#"base=https://github.com/loa212/nudo/releases/download/v$version"# "\n"
+                    "\n"
+                    r#"curl -fLO "$base/nudo-v$version-$target.tar.gz""# "\n"
+                    r#"curl -fLO "$base/nudo-v$version-$target.tar.gz.sha256""# "\n"
+                    r#"sha256sum -c "nudo-v$version-$target.tar.gz.sha256""# "\n"
+                    "\n"
+                    r#"tar -xzf "nudo-v$version-$target.tar.gz""# "\n"
+                    r#"sudo systemctl stop nudo"# "\n"
+                    r#"sudo install "nudo-v$version-$target"/nudo* /usr/local/bin/"# "\n"
+                    r#"sudo systemctl start nudo"# "\n"
+                }
+                p {
+                    "The checksum step is not optional decoration: it is what \
+                     distinguishes the release you meant to install from whatever \
+                     the network handed you."
+                }
+                p .small.muted {
+                    "Keep the old binaries until the new version has started and you \
+                     have loaded a page — " code { "sudo cp /usr/local/bin/nudo-all-in-one /tmp/nudo.previous" }
+                    " before installing makes going back a single command."
+                }
+            }
+        }
+    }
+}
+
+/// What the upgrade page needs.
+#[derive(Debug, Clone)]
+pub struct UpgradeView {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+    pub breaking: bool,
+    pub install: UpgradeInstall,
+}
+
+/// How this instance is installed, and anything the instructions need with it.
+#[derive(Debug, Clone)]
+pub enum UpgradeInstall {
+    Container { image: &'static str },
+    Binary,
 }
 
 /// What the banner needs to render, flattened out of the control plane's

@@ -315,6 +315,36 @@ pub async fn changelog(State(state): State<AppState>, _user: CurrentUser) -> Res
     )
 }
 
+/// How to upgrade this instance, for the way it is actually installed.
+pub async fn upgrade(State(state): State<AppState>, _user: CurrentUser) -> Response {
+    use nudo_server::updates::InstallKind;
+
+    let status = state.updates.cached_status().await;
+    let install = match InstallKind::detect() {
+        InstallKind::Container => render::UpgradeInstall::Container { image: NUDO_IMAGE },
+        InstallKind::Binary => render::UpgradeInstall::Binary,
+    };
+
+    page(
+        "Upgrading nudo",
+        Nav::Settings,
+        render::upgrade_page(&render::UpgradeView {
+            current: status.current,
+            latest: if status.latest.is_empty() {
+                nudo_server::updates::current_version().to_string()
+            } else {
+                status.latest
+            },
+            available: status.available,
+            breaking: status.breaking,
+            install,
+        }),
+    )
+}
+
+/// Where the published image lives. Used only to print an exact `docker pull`.
+const NUDO_IMAGE: &str = "ghcr.io/loa212/nudo";
+
 /// Dismisses the support banner until the following calendar month.
 pub async fn support_dismiss(
     State(state): State<AppState>,

@@ -303,11 +303,23 @@ telemetry in this codebase and no setting to disable it, because there is nothin
 to disable. A test asserts that the module has no network client, so that stays
 true.
 
-Nothing is ever installed automatically. The banner links to the notes; upgrading
-is a deliberate act on the host. This is the one place nudo deliberately does
-less than the tools it borrowed from: an updater that downloads a script and runs
-it as root is a large amount of trust to place in a URL, for a tool that holds
-every target's SSH keys.
+Nothing is ever installed automatically. The banner links to **Upgrading nudo**
+(`/upgrade`), which prints the exact commands for the way this instance is
+actually installed — detected, not configured, so a container is told to pull an
+image and a host install is told to verify a checksum and replace binaries.
+Neither is shown the other's instructions.
+
+Upgrading replaces executables and touches nothing else: the database, the data
+directory and your configuration all live outside them, and schema changes are
+applied automatically the first time the new version opens the database. The page
+says this, along with the one real trap — if you never set `NUDO_SECRET_KEY`, the
+generated key lives in the data directory, and every stored secret is unreadable
+without it.
+
+This is the one place nudo deliberately does less than the tools it borrowed
+from: an updater that downloads a script and runs it as root is a large amount of
+trust to place in a URL, for a tool that holds every target's SSH keys. A test
+asserts the upgrade page has no form and pipes nothing into a shell.
 
 Release notes are rendered in-app under **What's new**, from the manifest the last
 check recorded — so an instance that has lost network access still shows the

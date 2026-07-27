@@ -76,7 +76,12 @@ ENV NUDO_DB=/var/lib/nudo/nudo.db \
     NUDO_DATA_DIR=/var/lib/nudo/data \
     NUDO_WEB_ADDR=0.0.0.0:3000 \
     NUDO_GRPC_ADDR=127.0.0.1:50051 \
-    RUST_LOG=info
+    RUST_LOG=info \
+    # Tells the update banner to print `docker pull` instructions rather than
+    # ones for replacing a binary on a host. Detected without this too, but
+    # stating it plainly means the right instructions on runtimes that hide
+    # the usual signals.
+    NUDO_IN_CONTAINER=1
 
 EXPOSE 3000
 

@@ -255,10 +255,32 @@ asked should be able to say so once, and have it stick.
 
 **Not kept: the self-updater.** Coolify's update path downloads a shell script
 from a CDN and executes it as root on the host. For a tool that holds every
-target's SSH keys, that is a large amount of trust to place in a URL. nudo's
-banner is a link to the notes; upgrading is a deliberate act on the host. A test
-asserts the banner offers no `curl`, no `install.sh` and no `/upgrade` route, so
-this cannot be reintroduced without someone noticing.
+target's SSH keys, that is a large amount of trust to place in a URL.
+
+What replaced it is an instructions page rather than a button. `/upgrade` detects
+how the instance is installed — `/.dockerenv`, the image's own environment
+marker, or `/proc/1/cgroup` — and prints the exact commands for that case only: a
+`docker pull` and recreate for a container, a download-verify-replace-restart
+sequence for a binary under systemd. Showing a container operator how to restart
+a systemd unit would be worse than showing nothing, so each kind sees only its
+own, and tests assert the other's instructions are absent.
+
+The page leads with what upgrading does to your data, because that is the first
+question anyone has: it replaces executables and nothing else, since the
+database, the data directory and the configuration all live outside them, and
+migrations run automatically when the new version opens the database. Verified by
+building an instance with an account and an encrypted secret, then doing the full
+`docker stop` / `rm` / `run` cycle and confirming the session, the account and the
+secret all survived.
+
+Two tests keep this a page rather than a button: one asserts the banner submits
+nothing and contains no shell command, the other that the upgrade page has no
+`<form>` and pipes nothing into a shell.
+
+A self-updating binary — fetch the release, verify the checksum and a signature,
+then use the same atomic swap and rollback nudo already performs for services,
+pointed at itself — is deferred rather than rejected. It can only work for the
+binary install, since a process cannot replace its own container image.
 
 **Not kept: the telemetry.** A Coolify instance pings `undead.coolify.io` on
 every boot, on by default. nudo sends nothing, ever. There is no setting to
@@ -420,6 +442,16 @@ a git-backed service does not, even though the SHA is known.
 **Metrics and alerting.** No Prometheus endpoint, no notification channels. The
 audit log and deployment history cover "what happened"; "tell me when it
 happens" is a separate concern.
+
+**A self-updating binary.** `/upgrade` prints the commands; it does not run them.
+Doing it properly means fetching the release, verifying both the checksum and a
+signature, and then performing the same staged-swap-and-rollback nudo already
+does for the services it deploys — pointed at itself, which is harder, because
+the thing performing the upgrade is the thing being replaced. It also only
+applies to the binary install: a process cannot swap its own container image, so
+the containerised path stays `docker pull` regardless. Deferred as a deliberate
+scope call rather than a rejection; the detection and the instructions it would
+build on are already in place.
 
 **arm64 release artifacts.** CI builds `x86_64-unknown-linux-gnu` and
 `x86_64-unknown-linux-musl`, as specified. Adding aarch64 is a matrix entry and a
