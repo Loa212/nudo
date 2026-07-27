@@ -7,7 +7,7 @@ down.
 Also rendered inside the dashboard under "What's new" — see `releases.json`,
 which is the manifest a running instance fetches.
 
-## 0.1.0 — 2026-07-27
+## 0.1.1 — 2026-07-27
 
 ### Added
 
@@ -35,8 +35,20 @@ which is the manifest a running instance fetches.
 - Correct the test count in the README
 - Fix the remaining audit findings
 
+### Changed
+
+- Make first-run setup work from the browser
+
 ### Other
 
+- Release 0.1.1
+- Fingerprint asset URLs so a rebuild is never served stale
+- Space stacked cards wherever they are nested
+- Let the demo scripts run without a compiled CLI
+- Say why the demo scripts could not sign in
+- Set up sponsorship, and fix the links that pointed nowhere
+- Tell git-cliff which tag it is generating for
+- Publish v0.1.0
 - Publish v0.1.0
 - Publish v0.1.0
 - Use commit subjects, not full bodies, in the changelog
