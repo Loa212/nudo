@@ -173,6 +173,17 @@ jobs:
           # ghcr.io/Loa212/nudo is a 404 while ghcr.io/loa212/nudo is the image.
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+          # The tag before this one, so the changelog covers this release only.
+          # Empty for the first ever release, which is the whole history — and
+          # correct.
+          previous=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          if [ -n "$previous" ]; then
+            echo "range=${previous}..${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "previous tag: ${previous:-none}"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -223,13 +234,17 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          # --tag is required, not decorative. This job checks out `main`, where
-          # the tag being released is not the tip — the manifest commit from a
-          # previous run may sit above it. Without --tag, git-cliff files every
-          # commit under "Unreleased", so CHANGELOG.md never grows a `## 1.2.3`
-          # heading and the notes extracted for the manifest fall back to a bare
-          # "see the release page".
-          args: --verbose --tag ${{ github.ref_name }}
+          # This job checks out `main`, because it has to push the manifest
+          # back there — but `main` has moved on since the tag: every release
+          # adds its own "Publish vX.Y.Z" commit. Generating against main's tip
+          # put those commits inside the new release's notes and left the real
+          # changes outside them entirely.
+          #
+          # So the range is explicit: previous tag to this one. `--tag` names
+          # the version the section is headed with. Without both, CHANGELOG.md
+          # either files everything under "Unreleased" or attributes the wrong
+          # commits to the release.
+          args: --verbose --tag ${{ github.ref_name }} ${{ steps.version.outputs.range }}
         env:
           OUTPUT: CHANGELOG.md
 
