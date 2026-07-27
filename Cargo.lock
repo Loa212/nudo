@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-allinone"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "prost",
@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "nudo-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-stream",
