@@ -9,6 +9,12 @@ which is the manifest a running instance fetches.
 
 ## 0.1.1 — 2026-07-27
 
+### Other
+
+- Publish v0.1.0
+
+## 0.1.1 — 2026-07-27
+
 ### Changed
 
 - Make first-run setup work from the browser
