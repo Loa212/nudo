@@ -15,11 +15,8 @@ which is the manifest a running instance fetches.
 
 ### Other
 
+- Keep the release workflow's own commits out of the changelog
 - Generate release notes from the tag, not from main's tip
-- Publish v0.1.1
-- Publish v0.1.1
-- Publish v0.1.0
-- Publish v0.1.1
 - Release 0.1.1
 - Fingerprint asset URLs so a rebuild is never served stale
 - Space stacked cards wherever they are nested
