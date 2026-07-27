@@ -16,7 +16,7 @@
       "published_at": "2026-07-27",
       "url": "https://github.com/Loa212/nudo/releases/tag/v0.1.1",
       "breaking": false,
-      "notes": "### Other\n\n- Publish v0.1.1\n- Publish v0.1.0\n- Publish v0.1.1"
+      "notes": "### Changed\n\n- Make first-run setup work from the browser\n\n### Other\n\n- Generate release notes from the tag, not from main's tip\n- Publish v0.1.1\n- Publish v0.1.1\n- Publish v0.1.0\n- Publish v0.1.1\n- Release 0.1.1\n- Fingerprint asset URLs so a rebuild is never served stale\n- Space stacked cards wherever they are nested\n- Let the demo scripts run without a compiled CLI\n- Say why the demo scripts could not sign in\n- Set up sponsorship, and fix the links that pointed nowhere"
     },
     {
       "version": "0.1.0",
