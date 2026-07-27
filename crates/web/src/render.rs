@@ -4556,6 +4556,44 @@ mod tests {
         assert!(rendered.contains("svc_gone"));
     }
 
+    // -- layout ------------------------------------------------------------
+
+    #[test]
+    fn stacked_cards_are_spaced_wherever_they_are_nested() {
+        // The bug this pins: `.content > * + *` only reaches direct children of
+        // `.content`, so pages that wrap their cards — the service form puts
+        // six inside one `<form>`, settings nests them under `.split > div` —
+        // rendered them butted together with no gap at all.
+        //
+        // The stylesheet is what fixes it, so the stylesheet is what is
+        // asserted: without a rule keyed on the cards themselves, every one of
+        // those pages regresses at once and nothing else would notice.
+        let css = include_str!("assets/app.css");
+        assert!(
+            css.contains(".card + .card"),
+            "nothing spaces one card from the next, so nested cards touch"
+        );
+    }
+
+    #[test]
+    fn the_pages_that_stack_cards_still_do() {
+        // Guards the other half: the rule above is only useful while these
+        // pages actually render adjacent cards. If one is restructured, this
+        // says so rather than leaving a stylesheet rule for a shape that no
+        // longer exists.
+        let form = s(service_form(None, &[a_target()], &[], &[], "t"));
+        assert!(
+            form.matches(r#"class="card""#).count() >= 2,
+            "the service form no longer stacks cards"
+        );
+
+        let settings = s(settings_page(&[], "a@b.c", &SettingsPrefs::default(), "t"));
+        assert!(
+            settings.matches(r#"class="card""#).count() >= 2,
+            "settings no longer stacks cards"
+        );
+    }
+
     // -- upgrading ---------------------------------------------------------
 
     fn an_upgrade(install: UpgradeInstall) -> UpgradeView {

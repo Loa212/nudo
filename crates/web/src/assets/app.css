@@ -121,6 +121,25 @@ code, pre, .mono { font-family: var(--mono); }
 .content { padding: 24px; flex: 1; min-width: 0; }
 .content > * + * { margin-top: 20px; }
 
+/* Stacked cards need the same gap wherever they sit.
+ *
+ * The rule above only reaches direct children of `.content`, so pages that
+ * wrap their cards — the service form puts six inside one `<form>`, settings
+ * nests them under `.split > div` — rendered them butted together with no
+ * space at all. Spacing the cards themselves rather than the wrapper means it
+ * holds however deeply they are nested, and does not depend on each page
+ * remembering to ask for it.
+ *
+ * Adjacent-sibling selectors, so the first card in a section is untouched and
+ * does not push itself away from the heading above it. */
+.card + .card,
+.card + .grid,
+.grid + .card,
+.card + .callout,
+.callout + .card,
+.card + .table-scroll,
+.table-scroll + .card { margin-top: 20px; }
+
 /* ---- tabs ---- */
 
 .tabs {
