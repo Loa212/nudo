@@ -165,6 +165,12 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          # Only the archives this workflow uploaded. Without a pattern the
+          # action also tries to pull the `.dockerbuild` build record that
+          # docker/build-push-action uploads on its own, which fails to download
+          # and takes the whole publish step with it — after both real artifacts
+          # had already arrived intact.
+          pattern: nudo-*
 
       - name: Attach the assets
         uses: softprops/action-gh-release@v2
