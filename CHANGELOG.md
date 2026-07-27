@@ -7,6 +7,16 @@ down.
 Also rendered inside the dashboard under "What's new" — see `releases.json`,
 which is the manifest a running instance fetches.
 
+## Unreleased
+
+### Other
+
+- Publish v0.1.0
+
+Adds the release to releases.json, which running instances fetch to
+tell their operator a new version is out, and regenerates CHANGELOG.md.
+Made by the release workflow.
+
 ## 0.1.0 — 2026-07-27
 
 ### Added
