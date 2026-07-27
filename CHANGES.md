@@ -390,6 +390,13 @@ who are, by definition, already running it. The notes now come from the
 generated `CHANGELOG.md` section for that version, via a script with its own
 tests.
 
+A fourth surfaced the same way: `git-cliff` was invoked without `--tag`, and
+because the publish job checks out `main` — where the tag is not the tip, since
+a previous run's manifest commit sits above it — every commit was filed under
+"Unreleased". `CHANGELOG.md` never grew a `## 0.1.0` heading, so the notes
+extracted for the manifest fell back to "see the release page". The fallback
+behaved correctly; it was just covering for a missing argument.
+
 One was in the demo rather than the product: `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key

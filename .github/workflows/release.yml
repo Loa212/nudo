@@ -223,7 +223,13 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --verbose
+          # --tag is required, not decorative. This job checks out `main`, where
+          # the tag being released is not the tip — the manifest commit from a
+          # previous run may sit above it. Without --tag, git-cliff files every
+          # commit under "Unreleased", so CHANGELOG.md never grows a `## 1.2.3`
+          # heading and the notes extracted for the manifest fall back to a bare
+          # "see the release page".
+          args: --verbose --tag ${{ github.ref_name }}
         env:
           OUTPUT: CHANGELOG.md
 
