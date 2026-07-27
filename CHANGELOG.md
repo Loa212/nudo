@@ -329,6 +329,30 @@ the rest of the workspace needs, with tests.
 
 ### Fixed
 
+- Fix three things the first real release exposed
+
+None of these could show up before, because nothing tags on an ordinary push
+and the release workflow only runs on a tag.
+
+download-artifact with no pattern also tried to fetch the .dockerbuild build
+record that docker/build-push-action uploads on its own. It failed on that
+one after five retries and took the publish step with it — after both real
+archives had already downloaded and verified their digests. Now restricted
+to the nudo-* archives this workflow uploads.
+
+The release body told people to pull ghcr.io/Loa212/nudo:v0.1.0, which is
+wrong twice: GHCR paths are lowercase, and metadata-action's semver pattern
+strips the leading v, so the published tags are 0.1.0, 0.1 and latest. That
+instruction was uncopyable — verified both failure modes against the real
+registry before fixing.
+
+The manifest's notes were the entire GitHub release body, so the dashboard's
+"What's new" showed tar and docker run install instructions to people who are
+by definition already running nudo. They now come from the generated
+CHANGELOG.md section for that version. That extraction is a script rather
+than inline YAML because a greedy match would splice every older release into
+one entry, which is worth a test rather than a careful read — nine of them,
+wired into make test-scripts.
 - Fix the static-linking check that failed every correct build
 
 The release job verified the musl binaries were static by grepping `ldd`
@@ -374,6 +398,11 @@ a service, and commit statuses only for push-triggered deploys.
 
 ### Other
 
+- Publish v0.1.0
+
+Adds the release to releases.json, which running instances fetch to
+tell their operator a new version is out, and regenerates CHANGELOG.md.
+Made by the release workflow.
 - Download only the release archives when publishing
 
 docker/build-push-action uploads a .dockerbuild build record of its own.
