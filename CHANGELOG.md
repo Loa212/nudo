@@ -7,7 +7,7 @@ down.
 Also rendered inside the dashboard under "What's new" — see `releases.json`,
 which is the manifest a running instance fetches.
 
-## Unreleased
+## 0.1.0 — 2026-07-27
 
 ### Added
 
@@ -37,6 +37,7 @@ which is the manifest a running instance fetches.
 
 ### Other
 
+- Publish v0.1.0
 - Publish v0.1.0
 - Use commit subjects, not full bodies, in the changelog
 - Publish v0.1.0
