@@ -1056,6 +1056,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_caller_that_omits_the_confirmation_is_not_treated_as_a_typo() {
+        // The regression this pins: adding the confirmation check broke every
+        // script that posts /setup directly, including this repository's own
+        // demo. A browser always sends the field because the form renders it,
+        // so a *disagreeing* pair is a real typo — but an absent one has
+        // nothing to disagree with, and rejecting it makes the endpoint
+        // unusable without a second copy of the password.
+        let app_state = state().await;
+        let store = app_state.store.clone();
+
+        let response = post(
+            app_state,
+            "/setup",
+            concat!(
+                "email=someone@example.com",
+                "&password=correct+horse+battery+staple",
+                "&csrf=nudo-pre-auth",
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        assert!(store.has_users().await.expect("read"));
+    }
+
+    #[tokio::test]
     async fn a_mistyped_password_does_not_create_an_account() {
         // Setup closes itself once an account exists, so a typo here would lock
         // someone out of an instance they cannot re-run setup on. The form asks

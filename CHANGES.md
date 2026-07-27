@@ -412,7 +412,18 @@ behaved correctly; it was just covering for a missing argument.
    covered by a test that submits exactly the fields the rendered page contains,
    rather than a request an author remembered to assemble.
 
-One was in the demo rather than the product: `make demo-restart` recreates the
+9. **The confirmation check broke every non-browser caller.** Requiring
+   `password_confirm` to equal `password` also rejected callers that sent no
+   confirmation at all — including this repository's own demo scripts, so
+   `make demo` stopped being able to create its account. An absent confirmation
+   is not a mismatch: the form always renders the field, so a disagreeing pair
+   is a real typo, but nothing to compare against is not. Found by running
+   `make demo` after the fix rather than only the test suite.
+
+Two were in the demo rather than the product: `service_id_by_name` shelled out
+to the CLI purely to look up an id, so `make demo-examples` failed on a fresh
+checkout — before reaching the one step that genuinely needs a compiled binary.
+It now reads the services page over HTTP, like `target_id` beside it. And the `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key
 authentication. The setup script now reinstalls the key even when the target is

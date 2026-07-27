@@ -205,7 +205,13 @@ pub async fn setup(
     // Checked here rather than only in the browser: setup closes itself once an
     // account exists, so a mistyped password would leave someone locked out of
     // an instance they cannot re-run setup on.
-    if form.password_confirm != form.password {
+    //
+    // An *omitted* confirmation is not a mismatch. The form always sends the
+    // field, so a browser that disagrees with itself is a real typo; a script
+    // posting this endpoint directly has nothing to confirm against, and
+    // rejecting it would make the endpoint unusable without a second copy of
+    // the password.
+    if !form.password_confirm.is_empty() && form.password_confirm != form.password {
         return Html(
             render::setup_page(Some("Those passwords do not match."), crate::PRE_AUTH_CSRF)
                 .into_string(),

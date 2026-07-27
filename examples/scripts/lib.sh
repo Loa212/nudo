@@ -43,7 +43,13 @@ nudo_cli() {
         fi
     done
     command -v nudo 2>/dev/null || {
-        echo "the nudo CLI is not built; run: cargo build --release -p nudo-cli" >&2
+        # Only deploying needs the CLI — it streams the deployment over gRPC,
+        # which the dashboard's forms cannot do. Everything up to here is HTTP.
+        printf '\n' >&2
+        printf 'The nudo CLI is not built, and deploying needs it.\n\n' >&2
+        printf '    make build          # debug, ~1 min after a clean\n' >&2
+        printf '    make release        # optimised, slower to build\n\n' >&2
+        printf 'Then re-run this command.\n\n' >&2
         exit 1
     }
 }
@@ -93,7 +99,7 @@ ensure_signed_in() {
     curl -fsS -c "${COOKIE_JAR}" -o /dev/null -X POST "${NUDO_URL}/setup" \
         --data-urlencode "email=${DEMO_EMAIL}" \
         --data-urlencode "password=${DEMO_PASSWORD}" \
-        --data-urlencode "display_name=Demo admin" \
+        --data-urlencode "password_confirm=${DEMO_PASSWORD}" \
         --data-urlencode "csrf=nudo-pre-auth" 2>/dev/null || true
 
     if curl -fsS -b "${COOKIE_JAR}" -o /dev/null -w '%{http_code}' "${NUDO_URL}/targets" 2>/dev/null | grep -q 200; then
@@ -142,19 +148,31 @@ target_id() {
 # A service's id by name, or empty.
 service_id_by_name() {
     local name="$1"
-    # Same reasoning as target_id: absent is a normal answer, not an error.
-    "$(nudo_cli)" --endpoint "${NUDO_GRPC}" services list --output json 2>/dev/null \
-        | python3 -c "
-import json, sys
-try:
-    services = json.load(sys.stdin)['services']
-except Exception:
-    sys.exit(0)
-for service in services:
-    if service['name'] == '$name':
-        print(service['id'])
+    # Over HTTP, like target_id, rather than through the CLI. Creating a service
+    # is a form post the dashboard already serves, so needing a compiled binary
+    # just to look up an id meant `make demo-examples` failed on a fresh
+    # checkout — well before the one step that genuinely needs the CLI.
+    #
+    # Absent is a normal answer here, not an error.
+    #
+    # The services page renders each row as `<a href="/services/{id}">{name}</a>`,
+    # which is the pairing this reads.
+    # The name goes through the environment rather than being interpolated into
+    # the script, so a service name containing a quote cannot break it. Exported
+    # for the whole pipeline: a `VAR=x` prefix would apply only to `curl`.
+    export NAME="${name}"
+    curl -fsS -b "${COOKIE_JAR}" "${NUDO_URL}/services" 2>/dev/null \
+        | python3 -c '
+import html, os, re, sys
+
+wanted = os.environ["NAME"]
+page = sys.stdin.read()
+pattern = r"href=\"/services/(svc_[a-f0-9]+)\"[^>]*>([^<]*)<"
+for service_id, label in re.findall(pattern, page):
+    if html.unescape(label).strip() == wanted:
+        print(service_id)
         break
-" || true
+' || true
 }
 
 # Serves a file to the control plane for the length of a deploy.
