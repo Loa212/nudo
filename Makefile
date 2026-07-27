@@ -105,8 +105,9 @@ lint: ## Check formatting and run clippy, as CI does
 	cargo clippy --workspace --all-targets -- -D warnings
 
 .PHONY: test-scripts
-test-scripts: ## Test the release-publishing script
+test-scripts: ## Test the release-publishing scripts
 	python3 scripts/add_release_test.py
+	python3 scripts/changelog_section_test.py
 
 .PHONY: check
 check: lint test test-scripts ## Everything CI runs, short of the e2e suite

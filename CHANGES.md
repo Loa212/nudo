@@ -376,6 +376,20 @@ violation.
    and testing for that would reject every binary the job produces. Verified
    against both a static musl build and a dynamic gnu one.
 
+Three more surfaced only when the first real release ran, because nothing tags
+on an ordinary push: `actions/download-artifact` with no pattern also tried to
+fetch the `.dockerbuild` build record that `docker/build-push-action` uploads on
+its own, failed on it, and took the publish step down *after* both real archives
+had already downloaded and verified; the release body told people to
+`docker pull ghcr.io/Loa212/nudo:v0.1.0`, which is wrong twice over, since GHCR
+paths are lowercase and `docker/metadata-action`'s semver pattern strips the
+leading `v` (the published tags are `0.1.0`, `0.1` and `latest`); and the
+manifest's release notes were the whole GitHub release body, so the dashboard's
+"What's new" showed `tar -xzf` and `docker run` install instructions to people
+who are, by definition, already running it. The notes now come from the
+generated `CHANGELOG.md` section for that version, via a script with its own
+tests.
+
 One was in the demo rather than the product: `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key

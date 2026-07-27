@@ -161,6 +161,18 @@ jobs:
           fetch-depth: 0
           ref: main
 
+      # The tag is v1.2.3; the image tags and the manifest use 1.2.3. Derived
+      # once here rather than stripping the prefix at each use.
+      - name: Derive the version number and image path
+        id: version
+        run: |
+          # The tag is v1.2.3; the image tags and the manifest use 1.2.3.
+          echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          # GHCR paths are lowercase, and the owner here is not. Without this
+          # the release body prints a `docker run` that cannot be copied:
+          # ghcr.io/Loa212/nudo is a 404 while ghcr.io/loa212/nudo is the image.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -197,7 +209,7 @@ jobs:
             docker run -d --name nudo -p 3000:3000 \
               -e NUDO_SECRET_KEY="$(openssl rand -hex 32)" \
               -v nudo-state:/var/lib/nudo \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+              ${{ steps.version.outputs.image }}:${{ steps.version.outputs.number }}
             ```
 
             Then open <http://localhost:3000> and create the first account.
@@ -219,10 +231,14 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
 
-          # The notes come from the release body GitHub generated, so the
-          # dashboard shows the same text as the release page rather than a
-          # second, drifting copy.
-          gh release view "${GITHUB_REF_NAME}" --json body --jq .body > notes.md
+          # What changed, not how to install. The release page carries the
+          # install instructions because that is where someone arrives to
+          # download; the dashboard's "What's new" is read by people who are
+          # already running it, for whom install steps are noise.
+          #
+          # git-cliff has already written CHANGELOG.md for this tag, so this
+          # pulls that version's section out of it.
+          python3 scripts/changelog-section.py "${version}" > notes.md
 
           python3 scripts/add-release.py \
             --version "${version}" \
