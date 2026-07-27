@@ -82,7 +82,7 @@ release: ## Build all binaries (release)
 
 .PHONY: test
 test: ## Run the unit and integration tests
-	cargo test --workspace
+	cargo test --workspace --all-targets
 
 .PHONY: test-e2e
 test-e2e: ## Run the end-to-end deployment tests (needs Docker, ~1 min)

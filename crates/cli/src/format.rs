@@ -2,6 +2,8 @@
 
 use nudo_proto::{Deployment, Release, Secret, Service, Target, UnitStatus, deployment, target};
 
+pub use nudo_format::{ago, artifact_summary, bytes, duration, scope_label, truncate};
+
 /// How to render results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Output {
@@ -66,71 +68,6 @@ fn pad(value: &str, width: usize, last: bool) -> String {
     format!("{value}{}", " ".repeat(width.saturating_sub(len)))
 }
 
-/// A relative time, for list output. Absolute timestamps are the wrong default
-/// when the question is usually "how long ago".
-pub fn ago(timestamp: Option<&nudo_proto::Timestamp>) -> String {
-    let Some(when) = timestamp.and_then(nudo_proto::from_timestamp) else {
-        return "-".to_string();
-    };
-
-    let elapsed = chrono::Utc::now().signed_duration_since(when);
-    let seconds = elapsed.num_seconds();
-
-    // A negative value means the other side's clock is ahead; showing "in 3s"
-    // would be confusing, so clamp to "just now".
-    if seconds < 60 {
-        return "just now".to_string();
-    }
-    if seconds < 3600 {
-        return format!("{}m ago", seconds / 60);
-    }
-    if seconds < 86_400 {
-        return format!("{}h ago", seconds / 3600);
-    }
-    format!("{}d ago", seconds / 86_400)
-}
-
-/// A duration between two timestamps, for deployment history.
-pub fn duration(
-    started: Option<&nudo_proto::Timestamp>,
-    finished: Option<&nudo_proto::Timestamp>,
-) -> String {
-    let Some(started) = started.and_then(nudo_proto::from_timestamp) else {
-        return "-".to_string();
-    };
-    let Some(finished) = finished.and_then(nudo_proto::from_timestamp) else {
-        return "running".to_string();
-    };
-
-    let seconds = finished.signed_duration_since(started).num_seconds().max(0);
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else {
-        format!("{}m{}s", seconds / 60, seconds % 60)
-    }
-}
-
-/// Renders a byte count in the largest unit that keeps it readable.
-pub fn bytes(count: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    if count == 0 {
-        return "0 B".to_string();
-    }
-
-    let mut value = count as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-
-    if unit == 0 {
-        format!("{count} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 pub fn targets_table(targets: &[Target]) -> String {
     let rows: Vec<Vec<String>> = targets
         .iter()
@@ -190,22 +127,6 @@ pub fn services_table(services: &[Service]) -> String {
         &["id", "name", "target", "source", "current release"],
         &rows,
     )
-}
-
-/// A one-word description of where a service's binary comes from.
-pub fn artifact_summary(service: &Service) -> String {
-    use nudo_proto::artifact_source::Kind;
-    match service.artifact.as_ref().and_then(|a| a.kind.as_ref()) {
-        Some(Kind::Url(url)) if !url.is_empty() => "url".to_string(),
-        Some(Kind::Git(git)) => {
-            if git.branch.is_empty() {
-                format!("git:{}", git.repo)
-            } else {
-                format!("git:{}@{}", git.repo, git.branch)
-            }
-        }
-        _ => "upload".to_string(),
-    }
 }
 
 pub fn deployments_table(deployments: &[Deployment]) -> String {
@@ -281,20 +202,6 @@ pub fn secrets_table(secrets: &[Secret]) -> String {
     table(&["id", "name", "scope", "digest", "updated"], &rows)
 }
 
-/// Describes a secret's scope for display.
-pub fn scope_label(secret: &Secret) -> String {
-    match (
-        secret.scope_target_id.is_empty(),
-        secret.scope_service_id.is_empty(),
-    ) {
-        (true, true) => "global".to_string(),
-        (false, true) => format!("target {}", secret.scope_target_id),
-        (true, false) => format!("service {}", secret.scope_service_id),
-        // The proto allows both; narrower wins for display.
-        (false, false) => format!("service {}", secret.scope_service_id),
-    }
-}
-
 /// Renders a unit's live state as a single line.
 pub fn unit_status_line(status: &UnitStatus) -> String {
     let mut line = format!(
@@ -317,19 +224,6 @@ pub fn unit_status_line(status: &UnitStatus) -> String {
     }
 
     line
-}
-
-/// Shortens a string for a table cell, collapsing newlines.
-pub fn truncate(value: &str, limit: usize) -> String {
-    let single_line = value.replace('\n', " ").trim().to_string();
-    if single_line.is_empty() {
-        return "-".to_string();
-    }
-    if single_line.chars().count() <= limit {
-        return single_line;
-    }
-    let kept: String = single_line.chars().take(limit.saturating_sub(1)).collect();
-    format!("{kept}…")
 }
 
 #[cfg(test)]
@@ -370,72 +264,6 @@ mod tests {
     fn an_empty_table_renders_nothing_rather_than_a_lone_header() {
         // A bare header row reads as though something was found.
         assert!(table(&["id", "name"], &[]).is_empty());
-    }
-
-    #[test]
-    fn relative_times_read_naturally_at_each_scale() {
-        let now = chrono::Utc::now();
-        let at = |seconds: i64| nudo_proto::to_timestamp(now - chrono::Duration::seconds(seconds));
-
-        assert_eq!(ago(Some(&at(5))), "just now");
-        assert_eq!(ago(Some(&at(59))), "just now");
-        assert_eq!(ago(Some(&at(120))), "2m ago");
-        assert_eq!(ago(Some(&at(7200))), "2h ago");
-        assert_eq!(ago(Some(&at(172_800))), "2d ago");
-    }
-
-    #[test]
-    fn a_missing_timestamp_renders_as_a_dash() {
-        assert_eq!(ago(None), "-");
-    }
-
-    #[test]
-    fn a_future_timestamp_reads_as_just_now_rather_than_negative() {
-        // Clock skew between the CLI and the server must not print "in -3s".
-        let future = nudo_proto::to_timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
-        assert_eq!(ago(Some(&future)), "just now");
-    }
-
-    #[test]
-    fn durations_distinguish_running_from_finished() {
-        let start = chrono::Utc::now();
-        let started = nudo_proto::to_timestamp(start);
-        let finished = nudo_proto::to_timestamp(start + chrono::Duration::seconds(95));
-
-        assert_eq!(duration(Some(&started), Some(&finished)), "1m35s");
-        assert_eq!(duration(Some(&started), None), "running");
-        assert_eq!(duration(None, None), "-");
-    }
-
-    #[test]
-    fn a_sub_minute_duration_is_shown_in_seconds() {
-        let start = chrono::Utc::now();
-        let started = nudo_proto::to_timestamp(start);
-        let finished = nudo_proto::to_timestamp(start + chrono::Duration::seconds(42));
-        assert_eq!(duration(Some(&started), Some(&finished)), "42s");
-    }
-
-    #[test]
-    fn byte_counts_use_the_largest_readable_unit() {
-        assert_eq!(bytes(0), "0 B");
-        assert_eq!(bytes(512), "512 B");
-        assert_eq!(bytes(2048), "2.0 KiB");
-        assert_eq!(bytes(5 * 1024 * 1024), "5.0 MiB");
-        assert_eq!(bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-    }
-
-    #[test]
-    fn long_and_multi_line_errors_are_reduced_to_one_cell() {
-        // A build error containing newlines would otherwise destroy the table.
-        let multi = "line one\nline two\nline three";
-        let rendered = truncate(multi, 20);
-        assert!(!rendered.contains('\n'));
-        assert!(rendered.chars().count() <= 20);
-        assert!(rendered.ends_with('…'));
-
-        assert_eq!(truncate("short", 20), "short");
-        assert_eq!(truncate("", 20), "-");
-        assert_eq!(truncate("   ", 20), "-");
     }
 
     #[test]
@@ -493,31 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn each_artifact_kind_has_a_readable_summary() {
-        use nudo_proto::{ArtifactSource, GitSource, artifact_source::Kind};
-
-        let with = |kind: Kind| {
-            artifact_summary(&Service {
-                artifact: Some(ArtifactSource { kind: Some(kind) }),
-                ..Default::default()
-            })
-        };
-
-        assert_eq!(with(Kind::Url("https://x/bot".to_string())), "url");
-        assert_eq!(
-            with(Kind::Git(GitSource {
-                repo: "owner/bot".to_string(),
-                branch: "main".to_string(),
-                ..Default::default()
-            })),
-            "git:owner/bot@main"
-        );
-        assert_eq!(with(Kind::DirectUpload(true)), "upload");
-        // A service with no artifact set will be pushed to by the CLI.
-        assert_eq!(artifact_summary(&Service::default()), "upload");
-    }
-
-    #[test]
     fn a_secrets_scope_is_described_and_the_value_never_appears() {
         let rendered = secrets_table(&[
             Secret {
@@ -540,23 +343,6 @@ mod tests {
         // Only a digest prefix, and no column that could hold a value.
         assert!(rendered.contains("abcdef012345"));
         assert!(!rendered.to_lowercase().contains("value"));
-    }
-
-    #[test]
-    fn scope_labels_cover_every_combination() {
-        let scoped = |target: &str, service: &str| {
-            scope_label(&Secret {
-                scope_target_id: target.to_string(),
-                scope_service_id: service.to_string(),
-                ..Default::default()
-            })
-        };
-
-        assert_eq!(scoped("", ""), "global");
-        assert_eq!(scoped("tgt_1", ""), "target tgt_1");
-        assert_eq!(scoped("", "svc_1"), "service svc_1");
-        // Both set: the narrower scope is what matters.
-        assert_eq!(scoped("tgt_1", "svc_1"), "service svc_1");
     }
 
     #[test]

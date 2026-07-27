@@ -1,0 +1,10 @@
+[package]
+name = "nudo-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canonical human-readable presentation semantics for nudo clients"
+
+[dependencies]
+nudo-proto.workspace = true
+chrono.workspace = true

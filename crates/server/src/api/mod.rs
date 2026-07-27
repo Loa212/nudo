@@ -12,6 +12,8 @@ mod services;
 mod sources;
 mod targets;
 mod terminals;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use audit::AuditService;
 pub use deployments::DeploymentsService;

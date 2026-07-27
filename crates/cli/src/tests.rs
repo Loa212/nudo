@@ -1,0 +1,353 @@
+use super::*;
+
+#[test]
+fn the_command_tree_is_well_formed() {
+    // Catches duplicate flags, conflicting shorts and bad defaults at test
+    // time rather than on a user's first run.
+    use clap::CommandFactory;
+    Cli::command().debug_assert();
+}
+
+#[test]
+fn labels_parse_from_key_equals_value() {
+    let parsed =
+        parse_labels(&["env=prod".to_string(), " role = indexer ".to_string()]).expect("parse");
+    assert_eq!(parsed.get("env").map(String::as_str), Some("prod"));
+    assert_eq!(parsed.get("role").map(String::as_str), Some("indexer"));
+}
+
+#[test]
+fn a_label_without_an_equals_sign_is_rejected_with_advice() {
+    let error = parse_labels(&["justakey".to_string()]).expect_err("must fail");
+    assert!(error.to_string().contains("key=value"), "got: {error}");
+    assert!(parse_labels(&["=value".to_string()]).is_err());
+}
+
+#[test]
+fn a_mutation_carries_a_human_actor_and_the_global_flags() {
+    let cli = Cli::parse_from([
+        "nudo",
+        "--dry-run",
+        "--allow-latency-critical",
+        "--idempotency-key",
+        "ci-42",
+        "targets",
+        "list",
+    ]);
+    let mutation = mutation(&cli);
+
+    assert!(mutation.dry_run);
+    assert!(mutation.allow_latency_critical);
+    assert_eq!(mutation.idempotency_key, "ci-42");
+
+    let actor = mutation.actor.expect("actor");
+    assert_eq!(actor.kind, actor::Kind::Human as i32);
+    // The label identifies who and from where, for the audit log.
+    assert!(actor.label.contains("(cli)"));
+}
+
+#[test]
+fn the_guardrail_flags_default_to_off() {
+    // A deploy must not touch a latency-critical box unless asked.
+    let cli = Cli::parse_from(["nudo", "targets", "list"]);
+    let mutation = mutation(&cli);
+    assert!(!mutation.dry_run);
+    assert!(!mutation.allow_latency_critical);
+    assert!(mutation.idempotency_key.is_empty());
+}
+
+#[test]
+fn a_token_becomes_a_bearer_authorization_header() {
+    let cli = Cli::parse_from(["nudo", "--token", "nudo_secret", "targets", "list"]);
+    let request = authenticated(&cli, ListTargetsRequest::default());
+    assert_eq!(
+        request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer nudo_secret")
+    );
+}
+
+#[test]
+fn no_authorization_header_is_sent_without_a_token() {
+    let cli = Cli::parse_from(["nudo", "targets", "list"]);
+    let request = authenticated(&cli, ListTargetsRequest::default());
+    assert!(request.metadata().get("authorization").is_none());
+}
+
+#[test]
+fn the_dry_run_prefix_marks_output_that_did_not_happen() {
+    let dry = Cli::parse_from(["nudo", "--dry-run", "targets", "list"]);
+    assert!(dry_run_prefix(&dry).contains("would"));
+
+    let real = Cli::parse_from(["nudo", "targets", "list"]);
+    assert!(dry_run_prefix(&real).is_empty());
+}
+
+#[test]
+fn terminal_size_falls_back_to_a_conventional_default() {
+    // Read from the environment, so an unset COLUMNS must not yield zero.
+    let (cols, rows) = terminal_size();
+    assert!(cols > 0);
+    assert!(rows > 0);
+}
+
+#[test]
+fn unit_states_get_a_badge_and_a_label() {
+    let status = |active: &str, sub: &str| UnitStatus {
+        active_state: active.to_string(),
+        sub_state: sub.to_string(),
+        ..Default::default()
+    };
+
+    assert_eq!(format_status_badge(&status("active", "running")), "[ok]");
+    assert_eq!(format_status_badge(&status("failed", "failed")), "[!!]");
+    assert_eq!(format_status_badge(&status("inactive", "dead")), "[--]");
+    assert_eq!(format_status_badge(&status("unknown", "")), "[??]");
+
+    assert_eq!(units_label(&status("active", "running")), "running");
+    assert_eq!(units_label(&status("unknown", "")), "unreachable");
+}
+
+#[test]
+fn a_unit_status_line_includes_the_operational_numbers() {
+    let line = format::unit_status_line(&UnitStatus {
+        active_state: "active".to_string(),
+        sub_state: "running".to_string(),
+        pid: 4242,
+        memory_bytes: 52_428_800,
+        restart_count: 3,
+        ..Default::default()
+    });
+
+    assert!(line.contains("[ok]"));
+    assert!(line.contains("running"));
+    assert!(line.contains("pid 4242"));
+    assert!(line.contains("50.0 MiB"));
+    assert!(line.contains("restarts 3"));
+}
+
+#[test]
+fn a_stopped_unit_omits_the_numbers_that_do_not_apply() {
+    let line = format::unit_status_line(&UnitStatus {
+        active_state: "inactive".to_string(),
+        sub_state: "dead".to_string(),
+        ..Default::default()
+    });
+    assert!(line.contains("stopped"));
+    assert!(!line.contains("pid"));
+    assert!(!line.contains("mem"));
+}
+
+#[test]
+fn the_json_shape_for_secrets_has_no_field_that_could_hold_a_value() {
+    let json = serde_json::to_value(JsonSecrets::from(&vec![Secret {
+        id: "sec_1".to_string(),
+        name: "API_KEY".to_string(),
+        digest: "abc".to_string(),
+        ..Default::default()
+    }]))
+    .expect("serialize");
+
+    let secret = &json["secrets"][0];
+    assert!(secret.get("value").is_none());
+    assert!(secret.get("digest").is_some());
+    let keys: Vec<&String> = secret.as_object().expect("object").keys().collect();
+    assert_eq!(keys.len(), 4, "id, name, scope, digest — and nothing else");
+}
+
+#[test]
+fn json_output_renders_enums_as_names_rather_than_numbers() {
+    // A script should not have to know that 2 means reachable.
+    let json = serde_json::to_value(JsonTargets::from(&vec![Target {
+        id: "tgt_1".to_string(),
+        status: target::Status::Reachable as i32,
+        ..Default::default()
+    }]))
+    .expect("serialize");
+    assert_eq!(json["targets"][0]["status"], "reachable");
+}
+
+#[tokio::test]
+async fn a_local_artifact_is_served_over_loopback_at_an_unguessable_path() {
+    // This is how `--artifact` reaches the control plane: no upload RPC, and
+    // the binary is never staged anywhere on the way.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bot");
+    std::fs::write(&path, b"ELF fake binary").expect("write");
+
+    let server = ArtifactServer::start(&path).await.expect("start");
+    assert_eq!(server.size, 15);
+    assert_eq!(server.name, "bot");
+    // Loopback only, so nothing off this machine can reach it.
+    assert!(
+        server.url.starts_with("http://127.0.0.1:"),
+        "got: {}",
+        server.url
+    );
+
+    let fetched = reqwest::get(&server.url).await.expect("fetch");
+    assert!(fetched.status().is_success());
+    assert_eq!(
+        fetched.bytes().await.expect("body").as_ref(),
+        b"ELF fake binary"
+    );
+
+    // Another local process cannot guess the path.
+    let base = server.url.rsplit_once('/').expect("split").0;
+    let guessed = reqwest::get(format!("{base}/artifact"))
+        .await
+        .expect("fetch");
+    assert_eq!(guessed.status().as_u16(), 404);
+}
+
+#[tokio::test]
+async fn an_empty_or_missing_artifact_is_refused_before_a_deploy_is_queued() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let empty = dir.path().join("empty");
+    std::fs::write(&empty, b"").expect("write");
+    assert!(ArtifactServer::start(&empty).await.is_err());
+
+    assert!(
+        ArtifactServer::start(&dir.path().join("nonexistent"))
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn the_two_artifact_sources_are_mutually_exclusive() {
+    // Passing both would leave which one wins ambiguous.
+    assert!(
+        Cli::try_parse_from([
+            "nudo",
+            "deploy",
+            "svc_1",
+            "--artifact",
+            "./bot",
+            "--artifact-url",
+            "https://example.com/bot",
+        ])
+        .is_err()
+    );
+
+    // Either alone parses.
+    assert!(Cli::try_parse_from(["nudo", "deploy", "svc_1", "--artifact", "./bot"]).is_ok());
+    assert!(
+        Cli::try_parse_from(["nudo", "deploy", "svc_1", "--artifact-url", "https://x/bot"]).is_ok()
+    );
+}
+
+#[test]
+fn deploy_defaults_to_rolling_back_on_a_failed_health_check() {
+    // Parsing check: the flag that makes unattended CI deploys safe is not
+    // something the user has to remember.
+    let cli = Cli::parse_from(["nudo", "deploy", "svc_1"]);
+    match cli.command {
+        Command::Deploy {
+            skip_health_check,
+            wait,
+            ..
+        } => {
+            assert!(!skip_health_check);
+            assert!(!wait, "--wait is opt-in");
+        }
+        _ => panic!("expected deploy"),
+    }
+}
+
+#[test]
+fn every_subcommand_group_parses() {
+    // A smoke test over the surface the README documents.
+    for args in [
+        vec!["nudo", "init"],
+        vec!["nudo", "targets", "list"],
+        vec![
+            "nudo",
+            "targets",
+            "add",
+            "box",
+            "--host",
+            "h",
+            "--ssh-key",
+            "sec_1",
+        ],
+        vec!["nudo", "targets", "check", "tgt_1"],
+        vec!["nudo", "services", "list"],
+        vec!["nudo", "services", "unit", "svc_1"],
+        vec!["nudo", "services", "restart", "svc_1"],
+        vec!["nudo", "services", "releases", "svc_1"],
+        vec!["nudo", "deploy", "svc_1", "--wait"],
+        vec!["nudo", "rollback", "svc_1"],
+        vec!["nudo", "logs", "svc_1", "-f"],
+        vec!["nudo", "exec", "tgt_1", "uptime"],
+        vec!["nudo", "terminal", "tgt_1"],
+        vec!["nudo", "secrets", "list"],
+        vec!["nudo", "secrets", "set", "KEY", "--value", "v"],
+        vec!["nudo", "audit"],
+        vec!["nudo", "sources"],
+    ] {
+        Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?} failed to parse: {e}"));
+    }
+}
+
+#[test]
+fn global_flags_apply_to_exec_when_given_before_the_subcommand() {
+    // `exec` takes trailing var args, so anything after the target belongs
+    // to the remote command — including `--allow-latency-critical`. This is
+    // the command where that flag matters most, so the position dependence
+    // is pinned here rather than discovered against a production host.
+    let cli = Cli::parse_from([
+        "nudo",
+        "--allow-latency-critical",
+        "exec",
+        "tgt_1",
+        "systemctl",
+        "restart",
+        "bot",
+    ]);
+    assert!(mutation(&cli).allow_latency_critical);
+    match cli.command {
+        Command::Exec { command, .. } => {
+            assert_eq!(command, vec!["systemctl", "restart", "bot"]);
+        }
+        _ => panic!("expected exec"),
+    }
+
+    // After the target, the same text is part of the remote command.
+    let swallowed = Cli::parse_from([
+        "nudo",
+        "exec",
+        "tgt_1",
+        "uptime",
+        "--allow-latency-critical",
+    ]);
+    assert!(
+        !mutation(&swallowed).allow_latency_critical,
+        "a flag after the target is part of the remote command, not nudo's"
+    );
+    match swallowed.command {
+        Command::Exec { command, .. } => {
+            assert_eq!(command, vec!["uptime", "--allow-latency-critical"]);
+        }
+        _ => panic!("expected exec"),
+    }
+}
+
+#[test]
+fn exec_captures_trailing_arguments_including_flags() {
+    // `nudo exec tgt systemctl status --no-pager` must not have --no-pager
+    // interpreted as a nudo flag.
+    let cli = Cli::parse_from(["nudo", "exec", "tgt_1", "systemctl", "status", "--no-pager"]);
+    match cli.command {
+        Command::Exec {
+            target, command, ..
+        } => {
+            assert_eq!(target, "tgt_1");
+            assert_eq!(command, vec!["systemctl", "status", "--no-pager"]);
+        }
+        _ => panic!("expected exec"),
+    }
+}

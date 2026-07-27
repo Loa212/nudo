@@ -15,6 +15,7 @@ WORKDIR /src
 # layer. The dummy sources exist only to make `cargo fetch` resolvable.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proto/Cargo.toml     crates/proto/
+COPY crates/format/Cargo.toml    crates/format/
 COPY crates/server/Cargo.toml    crates/server/
 COPY crates/web/Cargo.toml       crates/web/
 COPY crates/cli/Cargo.toml       crates/cli/
@@ -23,12 +24,12 @@ COPY crates/allinone/Cargo.toml  crates/allinone/
 COPY controlplane.proto ./
 COPY crates/proto/include crates/proto/include
 COPY crates/proto/build.rs crates/proto/
-RUN mkdir -p crates/proto/src crates/server/src crates/web/src crates/cli/src \
+RUN mkdir -p crates/proto/src crates/format/src crates/server/src crates/web/src crates/cli/src \
              crates/mcp/src crates/allinone/src \
     && echo 'fn main() {}' | tee crates/server/src/main.rs \
          crates/web/src/main.rs crates/cli/src/main.rs \
          crates/mcp/src/main.rs crates/allinone/src/main.rs > /dev/null \
-    && touch crates/proto/src/lib.rs crates/server/src/lib.rs \
+    && touch crates/proto/src/lib.rs crates/format/src/lib.rs crates/server/src/lib.rs \
              crates/web/src/lib.rs crates/mcp/src/lib.rs \
     && cargo fetch --locked
 

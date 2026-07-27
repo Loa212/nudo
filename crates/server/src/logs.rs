@@ -205,17 +205,7 @@ pub async fn tail_into_buffer(
 
 /// Maps a journald numeric priority to a level name for display.
 pub fn priority_label(priority: &str) -> &'static str {
-    match priority.trim() {
-        "0" => "emerg",
-        "1" => "alert",
-        "2" => "crit",
-        "3" => "err",
-        "4" => "warning",
-        "5" => "notice",
-        "6" => "info",
-        "7" => "debug",
-        _ => "info",
-    }
+    nudo_format::journal_priority_label(priority)
 }
 
 /// Whether a priority is at or above warning, for the log viewer's level filter.

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 nudo-proto.workspace = true
+nudo-format.workspace = true
 # The web tier is a gRPC client of the control plane, but it shares the auth
 # store, the secret key and the webhook verifier with it — the dashboard's
 # session cookies and GitHub's deliveries are not part of the gRPC surface.

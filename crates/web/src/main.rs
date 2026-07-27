@@ -26,36 +26,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(nudo_server::serve::shutdown_signal())
         .await?;
 
     tracing::info!("shut down cleanly");
     Ok(())
-}
-
-/// Resolves on SIGINT or SIGTERM, so a container stop is not a hard kill.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not install the SIGTERM handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received SIGINT, shutting down"),
-        _ = terminate => tracing::info!("received SIGTERM, shutting down"),
-    }
 }

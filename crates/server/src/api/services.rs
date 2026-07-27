@@ -380,26 +380,10 @@ impl ServicesApi for ServicesApiService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Bus;
-    use crate::store::{Store, TargetInput};
-    use std::sync::Arc;
+    use crate::api::test_support;
 
     async fn fixture() -> (ServicesApiService, String) {
-        let context = Context::new(
-            Store::open_in_memory().await.expect("store"),
-            Bus::default(),
-            crate::crypto::SecretKey::generate(),
-            Arc::new(crate::Config::default()),
-        );
-        let target = context
-            .store
-            .create_target(&TargetInput {
-                name: "box".to_string(),
-                host: "10.0.0.1".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let (context, target) = test_support::context_with_target().await;
         (ServicesApiService::new(context), target.id)
     }
 
@@ -467,17 +451,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_service_on_a_latency_critical_target_needs_the_opt_in() {
         let (service, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
 
         let status = service
             .create(Request::new(create(&hot.id, "hft")))
@@ -549,16 +523,7 @@ mod tests {
     #[tokio::test]
     async fn listing_filters_by_target_and_paginates() {
         let (service, target_id) = fixture().await;
-        let other = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "other".to_string(),
-                host: "10.0.0.3".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let other = test_support::create_target(&service.context, "other", "10.0.0.3", false).await;
 
         service
             .create(Request::new(create(&target_id, "a")))
@@ -660,27 +625,8 @@ mod tests {
     async fn a_unit_action_against_a_latency_critical_target_needs_the_opt_in() {
         // Checked before any SSH connection is attempted.
         let (service, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
-        let created = service
-            .context
-            .store
-            .create_service(&Service {
-                target_id: hot.id,
-                name: "hft".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("service");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
+        let created = test_support::create_service(&service.context, &hot.id, "hft").await;
 
         let status = service
             .unit_action(Request::new(UnitActionRequest {
