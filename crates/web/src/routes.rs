@@ -98,6 +98,16 @@ pub struct LoginForm {
 pub struct SetupForm {
     pub email: String,
     pub password: String,
+    /// Typed twice, and the two must match. The form has rendered this field
+    /// since the beginning, but the handler used to discard it — so a typo
+    /// created an account whose password nobody knew, on an instance where
+    /// setup had just closed itself behind them.
+    #[serde(default)]
+    pub password_confirm: String,
+    /// Optional. The form does not ask for it: one more box between someone and
+    /// a working instance, to set a value they can change later in settings.
+    /// Defaults to the local part of the email.
+    #[serde(default)]
     pub display_name: String,
     pub csrf: String,
 }
@@ -192,9 +202,33 @@ pub async fn setup(
         ));
     }
 
+    // Checked here rather than only in the browser: setup closes itself once an
+    // account exists, so a mistyped password would leave someone locked out of
+    // an instance they cannot re-run setup on.
+    if form.password_confirm != form.password {
+        return Html(
+            render::setup_page(Some("Those passwords do not match."), crate::PRE_AUTH_CSRF)
+                .into_string(),
+        )
+        .into_response();
+    }
+
+    // The email's local part is a better default than "Admin", and it is
+    // editable in settings afterwards.
+    let display_name = if form.display_name.trim().is_empty() {
+        form.email
+            .split('@')
+            .next()
+            .unwrap_or("admin")
+            .trim()
+            .to_string()
+    } else {
+        form.display_name.trim().to_string()
+    };
+
     let user = match state
         .store
-        .create_user(&form.email, &form.password, &form.display_name)
+        .create_user(&form.email, &form.password, &display_name)
         .await
     {
         Ok(user) => user,

@@ -397,6 +397,21 @@ a previous run's manifest commit sits above it — every commit was filed under
 extracted for the manifest fell back to "see the release page". The fallback
 behaved correctly; it was just covering for a missing argument.
 
+8. **First-run setup could not be completed from the browser.** The handler
+   required a `display_name` field the form has never rendered, so every real
+   signup failed with `Failed to deserialize form body: missing field
+   display_name`. Nothing caught it because every test — and every demo script —
+   built the request by hand and happened to include the field, so the one path
+   nobody exercised was the one every new user takes first. The form now decides:
+   `display_name` is optional and defaults to the email's local part.
+
+   The same handler also discarded `password_confirm`, which the form has always
+   rendered and asked people to type. A mismatch was accepted silently, creating
+   an account with a password nobody knew — on an instance where setup closes
+   itself immediately afterwards, so there is no second attempt. Both are now
+   covered by a test that submits exactly the fields the rendered page contains,
+   rather than a request an author remembered to assemble.
+
 One was in the demo rather than the product: `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key
