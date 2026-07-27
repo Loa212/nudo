@@ -73,6 +73,11 @@ commit_parsers = [
   # Housekeeping that nobody upgrading needs to read about. These are the only
   # commits skipped, and each is skipped because it changes nothing about how
   # nudo behaves.
+  # The release workflow's own commits. They record that a release happened,
+  # which is not news to anyone reading that release's notes, and they pile up:
+  # each release adds one, so every subsequent changelog carried the previous
+  # runs' bookkeeping alongside the actual changes.
+  { message = "^Publish v?[0-9]", skip = true },
   { message = "^(?i)(bump|release) (the )?version", skip = true },
   { message = "^(?i)update (the )?lockfile", skip = true },
   { message = "^(?i)merge (branch|pull request)", skip = true },
