@@ -9,6 +9,22 @@ which is the manifest a running instance fetches.
 
 ## 0.1.1 — 2026-07-27
 
+### Changed
+
+- Make first-run setup work from the browser
+
+### Other
+
+- Publish v0.1.1
+- Release 0.1.1
+- Fingerprint asset URLs so a rebuild is never served stale
+- Space stacked cards wherever they are nested
+- Let the demo scripts run without a compiled CLI
+- Say why the demo scripts could not sign in
+- Set up sponsorship, and fix the links that pointed nowhere
+
+## 0.1.0 — 2026-07-27
+
 ### Added
 
 - Add the release check, changelog and support prompt
@@ -35,18 +51,8 @@ which is the manifest a running instance fetches.
 - Correct the test count in the README
 - Fix the remaining audit findings
 
-### Changed
-
-- Make first-run setup work from the browser
-
 ### Other
 
-- Release 0.1.1
-- Fingerprint asset URLs so a rebuild is never served stale
-- Space stacked cards wherever they are nested
-- Let the demo scripts run without a compiled CLI
-- Say why the demo scripts could not sign in
-- Set up sponsorship, and fix the links that pointed nowhere
 - Tell git-cliff which tag it is generating for
 - Publish v0.1.0
 - Publish v0.1.0
