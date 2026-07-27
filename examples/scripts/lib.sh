@@ -106,8 +106,26 @@ ensure_signed_in() {
         --data-urlencode "password=${DEMO_PASSWORD}" \
         --data-urlencode "csrf=nudo-pre-auth"
 
-    curl -fsS -b "${COOKIE_JAR}" -o /dev/null -w '%{http_code}' "${NUDO_URL}/targets" 2>/dev/null | grep -q 200 \
-        || die "could not sign in to ${NUDO_URL}"
+    if curl -fsS -b "${COOKIE_JAR}" -o /dev/null -w '%{http_code}' "${NUDO_URL}/targets" 2>/dev/null | grep -q 200; then
+        return 0
+    fi
+
+    # Sign-in failed. The overwhelmingly likely cause is an account that already
+    # exists under a different email — someone completed setup in the browser
+    # with their own address, so the demo's credentials were never valid here.
+    # Saying only "could not sign in" sends people looking for a bug in nudo.
+    if ! curl -fsS "${NUDO_URL}/login" 2>/dev/null | grep -q "Create the first account"; then
+        warn "this instance already has an account, and it is not ${DEMO_EMAIL}"
+        printf '\n'
+        printf '  The demo scripts sign in as %s. If you created the\n' "${DEMO_EMAIL}"
+        printf '  account yourself in the browser, tell them which account to use:\n\n'
+        printf '      DEMO_EMAIL=you@example.com DEMO_PASSWORD=... make demo-target\n\n'
+        printf '  Or start over with the demo account:\n\n'
+        printf '      make demo-clean && make demo\n\n'
+        exit 1
+    fi
+
+    die "could not sign in to ${NUDO_URL} (the instance reports no account exists)"
 }
 
 # The demo target's id, or empty when it does not exist yet.
