@@ -364,6 +364,18 @@ violation.
    asserts the login and setup pages carry no rail and exactly one document,
    verified to fail against the old code.
 
+7. **The "is the musl build static?" check failed every correct build.** It
+   grepped `ldd` output for "not a dynamic executable" with `grep -qv`, which
+   matches *any* other line — and a static musl binary makes `ldd` print
+   "statically linked" instead, so the check rejected exactly the binaries it
+   was meant to pass. It only surfaced on the first real release, because
+   nothing tags on an ordinary push. Now it reads the ELF dynamic section for
+   `NEEDED` entries, which is the actual property: depends on no shared library
+   at run time. Deliberately not INTERP — Rust links musl targets as
+   `-static-pie`, so a genuinely static binary still has an interpreter segment,
+   and testing for that would reject every binary the job produces. Verified
+   against both a static musl build and a dynamic gnu one.
+
 One was in the demo rather than the product: `make demo-restart` recreates the
 target container while keeping nudo's database, so the registered target outlived
 the `authorized_keys` it depended on and every subsequent deploy failed public-key

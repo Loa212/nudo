@@ -61,14 +61,36 @@ jobs:
         run: |
           # A dynamically linked "static" binary would fail on the hosts people
           # reach for musl to support, so this is checked rather than assumed.
+          #
+          # Asks the ELF header rather than parsing `ldd` output.
+          #
+          # The previous version grepped `ldd` for "not a dynamic executable"
+          # with `grep -qv`, which matches *any* other line — including the
+          # blank one `ldd` prints, and including the "statically linked" that
+          # a correctly static musl binary actually produces. So the check
+          # failed the release on binaries that were exactly right.
+          #
+          # The property being tested is "depends on no shared library at run
+          # time", which is NEEDED entries in the dynamic section. Not INTERP:
+          # Rust links musl targets as `-static-pie`, so a genuinely static
+          # binary still carries an interpreter segment. Testing for that would
+          # reject every binary this job produces.
+          sudo apt-get install --no-install-recommends -y binutils
+          failed=0
           for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one; do
             path="target/${{ matrix.target }}/release/$binary"
-            if ldd "$path" 2>&1 | grep -qv "not a dynamic executable"; then
-              echo "$binary is not statically linked:"
-              ldd "$path" || true
-              exit 1
+
+            needed=$(readelf -d "$path" 2>/dev/null | grep -c "(NEEDED)" || true)
+
+            if [ "$needed" -ne 0 ]; then
+              echo "::error::$binary links against shared libraries at run time"
+              readelf -d "$path" | grep "(NEEDED)" || true
+              failed=1
+            else
+              echo "$binary: static (no shared library dependencies)"
             fi
           done
+          [ "$failed" -eq 0 ] || exit 1
           echo "all binaries are statically linked"
 
       - name: Package
