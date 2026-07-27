@@ -1,0 +1,11 @@
+# What GitHub puts behind the "Sponsor" button at the top of the repository.
+#
+# Only GitHub Sponsors is listed. Every other platform this file supports is a
+# second account to maintain, a second payout to reconcile, and a second thing
+# to remove when it lapses — and none of them is where someone looking at a
+# GitHub repository expects to land.
+#
+# The dashboard's own support banner points at the same place; see
+# `SupportLinks` in crates/web/src/support.rs, which is the one list of URLs.
+
+github: Loa212

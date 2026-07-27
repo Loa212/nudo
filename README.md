@@ -1,5 +1,9 @@
 # nudo
 
+[![release](https://img.shields.io/github/v/release/Loa212/nudo?sort=semver)](https://github.com/Loa212/nudo/releases)
+[![CI](https://github.com/Loa212/nudo/actions/workflows/test.yml/badge.svg)](https://github.com/Loa212/nudo/actions/workflows/test.yml)
+[![sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2)](https://github.com/sponsors/Loa212)
+
 A self-hostable control plane for deploying **bare-metal binaries**. The Coolify
 experience — dashboard, GitHub CD, live logs, terminal, secrets — with SSH and
 systemd as the deployment backend instead of Docker.
@@ -76,7 +80,7 @@ NUDO_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 ### Binaries
 
 Download the archive for your platform from the
-[releases](https://github.com/loa212/nudo/releases) page and verify it against its
+[releases](https://github.com/Loa212/nudo/releases) page and verify it against its
 `.sha256`. The `musl` build is fully static and runs anywhere.
 
 ```sh
@@ -396,6 +400,26 @@ cliff.toml                changelog generation from the commit log
 
 `CHANGES.md` records the design decisions, the bugs testing found, and what is
 deliberately out of scope.
+
+---
+
+## Supporting nudo
+
+nudo is free and built by one person. If it is saving you the cost of a
+platform, [sponsoring](https://github.com/sponsors/Loa212) keeps it maintained.
+
+If money is not on the table, these help as much:
+
+- **Star the repository** — it is most of how anyone finds a project like this
+- **Report what breaks** — a [bug report](https://github.com/Loa212/nudo/issues/new/choose)
+  with the version, the target's OS and what you expected is worth more than a
+  vague one, and more than silence
+- **Say what you deployed with it** — [Discussions](https://github.com/Loa212/nudo/discussions)
+  is the place; knowing what people actually run decides what gets built next
+
+The dashboard mentions this too, at most once a month and never before you have
+deployed something. It can be turned off for good in **Settings → This
+instance**, and there is no telemetry to turn off, because there is none.
 
 ---
 

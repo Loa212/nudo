@@ -21,10 +21,10 @@ use nudo_server::store::Store;
 pub struct SupportLinks;
 
 impl SupportLinks {
-    pub const SPONSOR: &'static str = "https://github.com/sponsors/loa212";
-    pub const REPOSITORY: &'static str = "https://github.com/loa212/nudo";
-    pub const ISSUES: &'static str = "https://github.com/loa212/nudo/issues/new/choose";
-    pub const DISCUSSIONS: &'static str = "https://github.com/loa212/nudo/discussions";
+    pub const SPONSOR: &'static str = "https://github.com/sponsors/Loa212";
+    pub const REPOSITORY: &'static str = "https://github.com/Loa212/nudo";
+    pub const ISSUES: &'static str = "https://github.com/Loa212/nudo/issues/new/choose";
+    pub const DISCUSSIONS: &'static str = "https://github.com/Loa212/nudo/discussions";
 }
 
 /// Whether the banner should be shown to this user right now.
@@ -179,11 +179,35 @@ mod tests {
             SupportLinks::DISCUSSIONS,
         ] {
             assert!(link.starts_with("https://"), "{link} is not https");
+            // Case-insensitive: GitHub resolves either spelling, so pinning one
+            // would fail the next time the owner's casing is corrected rather
+            // than catching a link that points somewhere else.
             assert!(
-                link.contains("loa212"),
+                link.to_lowercase().contains("loa212"),
                 "{link} does not point at this project"
             );
         }
+    }
+
+    #[test]
+    fn every_link_is_a_page_that_has_to_exist_on_the_repository() {
+        // These are checked by hand against the live repository when they
+        // change, because a unit test cannot fetch them — the module has no
+        // network client, which is the point of the test below.
+        //
+        // What this pins is the *shape*, so a typo or a path that was never
+        // enabled is visible here. Discussions shipped as a 404 for exactly
+        // this reason: the link was written before the feature was turned on.
+        assert_eq!(SupportLinks::SPONSOR, "https://github.com/sponsors/Loa212");
+        assert_eq!(SupportLinks::REPOSITORY, "https://github.com/Loa212/nudo");
+        assert_eq!(
+            SupportLinks::ISSUES,
+            "https://github.com/Loa212/nudo/issues/new/choose"
+        );
+        assert_eq!(
+            SupportLinks::DISCUSSIONS,
+            "https://github.com/Loa212/nudo/discussions"
+        );
     }
 
     #[test]

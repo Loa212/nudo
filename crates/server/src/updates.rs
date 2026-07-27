@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// Deliberately a plain file in the repository rather than a bespoke service: it
 /// is served by GitHub, it is diffable, and publishing a release is a commit.
 pub const DEFAULT_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/loa212/nudo/main/releases.json";
+    "https://raw.githubusercontent.com/Loa212/nudo/main/releases.json";
 
 /// The version this binary was built as.
 pub fn current_version() -> &'static str {
@@ -528,7 +528,7 @@ mod tests {
                     "version": "1.2.0",
                     "published_at": "2026-07-26",
                     "notes": "Added a thing",
-                    "url": "https://github.com/loa212/nudo/releases/tag/v1.2.0",
+                    "url": "https://github.com/Loa212/nudo/releases/tag/v1.2.0",
                     "breaking": true
                 }
             ]
