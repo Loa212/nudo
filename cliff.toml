@@ -11,6 +11,13 @@
 # generated changelog that quietly omits a commit is worse than a noisy one:
 # the omission is invisible, and someone reading it to decide whether to upgrade
 # would never know.
+#
+# Only the subject line of each commit is used, not the full message. This
+# repository writes long explanatory commit bodies — which belong in the log,
+# where someone is asking "why is this code like this" — but splicing them into
+# a changelog produced 30,000 characters of prose for one release, rendered
+# inside a dashboard banner. The subject is the summary; the body is available
+# one click away in the commit itself.
 
 [changelog]
 header = """
@@ -35,7 +42,7 @@ body = """
     ### {{ group | striptags | trim | upper_first }}
     {% for commit in commits %}
         - {% if commit.breaking %}**Breaking:** {% endif %}\
-            {{ commit.message | upper_first }}\
+            {{ commit.message | split(pat="\n") | first | upper_first }}\
     {% endfor %}
 {% endfor %}
 
