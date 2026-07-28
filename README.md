@@ -515,7 +515,10 @@ make a health check fail and assert the rollback restored a *working* service.
 The build-host half of the suite clones from a git repository seeded inside the
 container, builds there, and asserts the binary reached the target, that the
 deploy log does not say where the build ran, and that the workspace is gone
-afterwards — on the failing path as well as the succeeding one:
+afterwards — on the failing path as well as the succeeding one. It also pushes a
+second commit whose build produces a service that never becomes ready, and
+asserts the rollback restored the *previously built* release and that it is
+serving again:
 
 ```sh
 cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1
