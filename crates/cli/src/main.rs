@@ -354,7 +354,9 @@ enum SecretCommand {
         #[arg(long)]
         service: Option<String>,
     },
-    /// Store a secret. The value is read from stdin unless --value is given.
+    /// Store a new secret. The value is read from stdin unless --value is given.
+    ///
+    /// A name that already exists is refused — use `rotate` to replace one.
     Set {
         name: String,
         /// The value. Prefer stdin so it does not reach your shell history.
@@ -364,13 +366,21 @@ enum SecretCommand {
         target: Option<String>,
         #[arg(long)]
         service: Option<String>,
-        /// Rotate a name that already exists, replacing its value.
-        ///
-        /// Without this, writing a name that is taken is refused. A value
-        /// cannot be read back, so overwriting one destroys something
-        /// unrecoverable — that should be asked for, not assumed.
+    },
+    /// Replace the value of a secret that already exists.
+    ///
+    /// The old value cannot be read back and is gone once this succeeds.
+    /// Separate from `set` so an ordinary write can never destroy one by
+    /// accident — including a `set` re-run from shell history.
+    Rotate {
+        name: String,
+        /// The new value. Prefer stdin so it does not reach your shell history.
         #[arg(long)]
-        replace: bool,
+        value: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        service: Option<String>,
     },
     Remove {
         id: String,

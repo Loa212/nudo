@@ -129,7 +129,7 @@ A name that is already taken is refused rather than overwritten — a stored val
 cannot be read back, so replacing one by accident destroys something
 unrecoverable and leaves nothing to say what was lost. Replacing is still
 possible, just deliberate: **Rotate** on the secret's row in the dashboard, or
-`nudo secrets set NAME --replace`.
+`nudo secrets rotate NAME`.
 
 **2. Add the target.** Under **Targets → Add**, give it a name, a host, the SSH
 user, and select the key you just stored. Then hit **Run checks** — it verifies

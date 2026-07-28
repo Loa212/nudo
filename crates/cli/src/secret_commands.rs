@@ -27,29 +27,15 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
             value,
             target,
             service,
-            replace,
+        }
+        | SecretCommand::Rotate {
+            name,
+            value,
+            target,
+            service,
         } => {
-            // Reading from stdin by default keeps the value out of shell history
-            // and out of the process table.
-            let value = match value {
-                Some(value) => value.clone(),
-                None => {
-                    use tokio::io::AsyncReadExt;
-                    let mut buffer = String::new();
-                    tokio::io::stdin()
-                        .read_to_string(&mut buffer)
-                        .await
-                        .context("reading the secret value from stdin")?;
-                    let trimmed = buffer.trim_end_matches('\n').to_string();
-                    if trimmed.is_empty() {
-                        bail!(
-                            "no value given: pass --value or pipe one in, \
-                             e.g. `printf %s \"$TOKEN\" | nudo secrets set NAME`"
-                        );
-                    }
-                    trimmed
-                }
-            };
+            let rotating = matches!(command, SecretCommand::Rotate { .. });
+            let value = read_value(value, if rotating { "rotate" } else { "set" }).await?;
 
             let secret = client
                 .put(authenticated(
@@ -60,15 +46,16 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
                         value,
                         scope_target_id: target.clone().unwrap_or_default(),
                         scope_service_id: service.clone().unwrap_or_default(),
-                        replace: *replace,
+                        replace: rotating,
                     },
                 ))
                 .await?
                 .into_inner();
 
             println!(
-                "{}stored {} ({}) digest {}",
+                "{}{} {} ({}) digest {}",
                 dry_run_prefix(cli),
+                if rotating { "rotated" } else { "stored" },
                 secret.name,
                 format::scope_label(&secret),
                 secret.digest.chars().take(12).collect::<String>()
@@ -90,4 +77,30 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
     }
 
     Ok(())
+}
+
+/// The value to store, from `--value` or stdin.
+///
+/// Reading from stdin by default keeps the value out of shell history and out
+/// of the process table, which is why it is the documented path for a key.
+async fn read_value(value: &Option<String>, verb: &str) -> anyhow::Result<String> {
+    if let Some(value) = value {
+        return Ok(value.clone());
+    }
+
+    use tokio::io::AsyncReadExt;
+    let mut buffer = String::new();
+    tokio::io::stdin()
+        .read_to_string(&mut buffer)
+        .await
+        .context("reading the secret value from stdin")?;
+
+    let trimmed = buffer.trim_end_matches('\n').to_string();
+    if trimmed.is_empty() {
+        bail!(
+            "no value given: pass --value or pipe one in, \
+             e.g. `printf %s \"$TOKEN\" | nudo secrets {verb} NAME`"
+        );
+    }
+    Ok(trimmed)
 }

@@ -380,6 +380,7 @@ fn every_subcommand_group_parses() {
         vec!["nudo", "terminal", "tgt_1"],
         vec!["nudo", "secrets", "list"],
         vec!["nudo", "secrets", "set", "KEY", "--value", "v"],
+        vec!["nudo", "secrets", "rotate", "KEY", "--value", "v"],
         vec!["nudo", "audit"],
         vec!["nudo", "sources"],
     ] {
@@ -447,28 +448,35 @@ fn exec_captures_trailing_arguments_including_flags() {
 }
 
 #[test]
-fn storing_a_secret_does_not_replace_unless_asked() {
-    // A stored value cannot be read back, so overwriting one by accident
-    // destroys something unrecoverable. The default has to be the safe one.
+fn storing_and_rotating_a_secret_are_different_commands() {
+    // A stored value cannot be read back, so replacing one destroys something
+    // unrecoverable. Separate verbs mean a `set` re-run from shell history
+    // cannot do it — there is no flag to leave behind.
     let cli = Cli::parse_from(["nudo", "secrets", "set", "API_KEY", "--value", "v"]);
-    match &cli.command {
-        Command::Secrets(SecretCommand::Set { replace, .. }) => {
-            assert!(!replace, "replacing must be opt-in")
-        }
-        _ => panic!("expected secrets set"),
-    }
+    assert!(matches!(
+        cli.command,
+        Command::Secrets(SecretCommand::Set { .. })
+    ));
 
-    let cli = Cli::parse_from([
-        "nudo",
-        "secrets",
-        "set",
-        "API_KEY",
-        "--value",
-        "v",
-        "--replace",
-    ]);
-    match &cli.command {
-        Command::Secrets(SecretCommand::Set { replace, .. }) => assert!(replace),
-        _ => panic!("expected secrets set"),
-    }
+    let cli = Cli::parse_from(["nudo", "secrets", "rotate", "API_KEY", "--value", "v"]);
+    assert!(matches!(
+        cli.command,
+        Command::Secrets(SecretCommand::Rotate { .. })
+    ));
+
+    // The flag that used to do this is gone, so a script carrying it fails
+    // loudly rather than silently doing nothing.
+    assert!(
+        Cli::try_parse_from([
+            "nudo",
+            "secrets",
+            "set",
+            "API_KEY",
+            "--value",
+            "v",
+            "--replace"
+        ])
+        .is_err(),
+        "--replace must not be silently accepted"
+    );
 }

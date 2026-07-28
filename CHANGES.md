@@ -323,7 +323,9 @@ an existing client sends, so nothing that predates this can overwrite by
 accident. The dashboard exposes it as a **Rotate** action on the secret's row
 rather than as a flag on the add form: opening it says what the replacement
 costs before there is anything to submit, and the ordinary write can never reach
-it. The CLI spells it `--replace`.
+it. The CLI spells it as its own verb, `nudo secrets rotate`, rather than a flag
+on `set`: a flag left behind in a shell-history line would quietly restore the
+behaviour this changed, and a separate command cannot be reached by accident.
 
 A rotation is audited as `rotated secret X` rather than `stored secret X`.
 Storing something new and destroying something unrecoverable are different
