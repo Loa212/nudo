@@ -117,8 +117,10 @@ nudo secrets set DEPLOY_KEY < ~/.ssh/id_ed25519
 
 **2. Add the target.** Under **Targets → Add**, give it a name, a host, the SSH
 user, and select the key you just stored. Then hit **Run checks** — it verifies
-SSH, sudo, systemd, and a writable release directory *separately*, so if
-something is wrong you find out which thing.
+the host key, SSH, sudo, systemd, and a writable release directory *separately*,
+so if something is wrong you find out which thing. The first successful
+connection also pins the target's SSH host key; see
+[Host keys](#host-keys) below.
 
 ```sh
 nudo targets add edge-1 --host 10.0.0.5 --user root --ssh-key sec_abc123
@@ -184,7 +186,57 @@ a GitHub push. A push to a branch wired to such a target does not deploy — it 
 refused and recorded. Refusals are audited, so you can see when an agent tried.
 
 Read-only operations (`targets check`, `logs`, `services status`) are always
-allowed: the host you most want to inspect should not be the one you cannot.
+allowed: the host you most want to inspect should not be the one you cannot. A
+changed host key is the one exception — see below.
+
+---
+
+## Host keys
+
+nudo pins a target's SSH host key on the first successful connection and verifies
+it on every connection after that. This matters because nudo holds the private
+key for each target it manages: without verification, anything that can answer
+for a target's address gets an authentication attempt with that key.
+
+A mismatch fails closed, before authentication, with both fingerprints:
+
+```
+the host key for 10.0.0.5:22 has changed — refusing to connect.
+pinned: SHA256:YDKOP3XHL0…; presented: SHA256:YWnilawiH+…
+```
+
+Unlike the latency-critical guardrail, this blocks **read-only operations too** —
+logs and checks included. A mismatch may mean it is not that host at all, and
+reading logs from the wrong machine is its own problem.
+
+A rebuilt host legitimately has a new key. Review it and accept it:
+
+```sh
+nudo targets host-key tgt_abc123                              # show what changed
+nudo targets host-key tgt_abc123 --accept SHA256:YWnilawiH+…  # accept it
+```
+
+or from the target's page in the dashboard, which shows both fingerprints and the
+key itself. Acceptances are audited with the fingerprint and who accepted it.
+
+Verify on the machine itself before accepting, over a console or some channel
+that does not depend on that address being the right host:
+
+```sh
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+`ssh-keyscan` asks the same address nudo is being redirected away from, so it
+confirms nothing on its own.
+
+For a host rebuilt while nobody was watching, whose old key is of no further
+interest, `nudo targets host-key <id> --forget` reopens the first-use window. It
+is the weaker option — prefer `--accept` whenever there is a fingerprint to
+compare against.
+
+Targets that existed before this was added have no pinned key, so their next
+connection records one rather than refusing. Upgrading does not break a working
+fleet.
 
 ---
 

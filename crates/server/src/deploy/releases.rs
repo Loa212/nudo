@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail};
 use nudo_proto::Service;
 
-use crate::ssh::{SshSession, SshTarget, quote};
+use crate::ssh::{HostKeyChanged, HostKeyOutcome, SshSession, SshTarget, quote};
 use crate::systemd::{self, BINARY_NAME, ReleasePaths};
 
 use super::Engine;
@@ -71,8 +71,7 @@ impl Engine {
         let release_dir = paths.release_dir(release_id);
         let link = paths.current_link();
 
-        let ssh_target = self.ssh_target_for(&target).await?;
-        let session = SshSession::connect(&ssh_target).await?;
+        let session = self.connect(&target).await?;
 
         // Refuse to point the symlink at a directory that is not there — that
         // would leave the service unable to start with no obvious cause.
@@ -186,6 +185,89 @@ impl Engine {
             },
             private_key,
             passphrase: None,
+            host_key: target
+                .host_key
+                .as_ref()
+                .map(|k| k.key.clone())
+                .unwrap_or_default(),
         })
+    }
+
+    /// Connects to a target and persists what the connection learned about its
+    /// host key.
+    ///
+    /// Every path that reaches a target goes through here rather than calling
+    /// [`SshSession::connect`] directly, so first-use pinning happens wherever
+    /// the first connection happens — a deploy, a probe, a terminal — and not
+    /// only where someone remembered to record it.
+    pub async fn connect(&self, target: &nudo_proto::Target) -> anyhow::Result<SshSession> {
+        let ssh_target = self.ssh_target_for(target).await?;
+        self.connect_ssh(&target.id, &ssh_target).await
+    }
+
+    /// Connects to already-assembled SSH details, recording the host-key
+    /// outcome against `target_id`.
+    ///
+    /// Split from [`Engine::connect`] for the callers that have an [`SshTarget`]
+    /// in hand already — the preflight check builds one to probe with.
+    pub async fn connect_ssh(
+        &self,
+        target_id: &str,
+        ssh_target: &SshTarget,
+    ) -> anyhow::Result<SshSession> {
+        match SshSession::connect(ssh_target).await {
+            Ok(session) => {
+                self.record_host_key(target_id, session.host_key()).await;
+                Ok(session)
+            }
+            Err(error) => {
+                // A changed key is held for review rather than only reported, so
+                // it can be accepted from the dashboard or the CLI.
+                if let Some(changed) = error.downcast_ref::<HostKeyChanged>() {
+                    tracing::warn!(
+                        target = %target_id,
+                        expected = %changed.expected_fingerprint,
+                        presented = %changed.fingerprint,
+                        "refused a connection: the ssh host key has changed"
+                    );
+                    if let Err(error) = self
+                        .store
+                        .record_pending_host_key(target_id, &changed.key, &changed.fingerprint)
+                        .await
+                    {
+                        tracing::warn!(%error, target = %target_id, "recording the changed host key failed");
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Writes back the outcome of a successful host-key check.
+    ///
+    /// Failures are logged rather than propagated: the connection has already
+    /// been made and verified, and failing the operation because the bookkeeping
+    /// write failed would be worse than re-pinning on the next connection.
+    async fn record_host_key(&self, target_id: &str, outcome: &HostKeyOutcome) {
+        let result = match outcome {
+            HostKeyOutcome::Pinned { key, fingerprint } => {
+                tracing::info!(
+                    target = %target_id,
+                    %fingerprint,
+                    "pinned this target's ssh host key on first use"
+                );
+                self.store.pin_host_key(target_id, key, fingerprint).await
+            }
+            // A host presenting the key it should clears any change that was
+            // waiting to be reviewed — there is nothing left to review.
+            HostKeyOutcome::Matched { .. } => self.store.clear_pending_host_key(target_id).await,
+            // Unreachable: a change fails the connect, so there is no session to
+            // ask. Handled on the error path in `connect_ssh`.
+            HostKeyOutcome::Changed { .. } => Ok(()),
+        };
+
+        if let Err(error) = result {
+            tracing::warn!(%error, target = %target_id, "recording the host key failed");
+        }
     }
 }

@@ -156,7 +156,45 @@ masking it.
 not from the request. A reverse proxy terminates TLS, so the request itself looks
 plain and cannot be used to decide.
 
-**Host keys are accepted on first use.** See "Deferred" below.
+**SSH host keys are pinned on first use and verified on every connection after
+that.** The first successful connection to a target records the key it presented;
+every later one compares against it and fails closed on a mismatch, with an error
+naming both fingerprints. This matters because nudo holds the private key for
+every target it manages: without verification, a man-in-the-middle on a
+re-addressed or re-registered host is handed an authentication attempt with that
+key, and nothing in the protocol notices. The check happens in
+`check_server_key`, during the handshake — so a host that is not the one we
+pinned is refused *before* authentication, which is the only ordering that
+actually protects the key.
+
+**A changed host key blocks read-only operations too.** `targets check` and
+`logs` are otherwise allowed against latency-critical hosts on the principle that
+the host you most want to inspect should not be the one you cannot. A host-key
+mismatch is a different situation: it may not be that host at all, and reading
+logs from the wrong machine is its own problem. So everything is refused —
+deploys, logs, terminals, checks — until the change is reviewed.
+
+**A changed key is held for review rather than only reported.** The presented key
+is recorded alongside the pinned one, so the dashboard can show what changed and
+an operator can accept it in one click; the CLI equivalent is `nudo targets
+host-key <id> --accept <fingerprint>`. Accepting names the fingerprint being
+accepted, which must match what is pending — otherwise a key that changed again
+between the review and the click would be accepted unseen. Acceptance is audited
+with the fingerprint and the actor, and is subject to the latency-critical
+guardrail like any other mutation.
+
+**Trust on first use rather than confirmation at registration.** Showing the
+fingerprint when a target is created and asking for confirmation would be
+stronger, but it adds a step to a flow that is currently one form, and an
+operator who has not yet reached the machine has nothing to compare against.
+First use is what most tools do and is the weaker half of the guarantee: it
+cannot tell you the first key was the right one, but it will not let the key
+change behind your back. `nudo targets host-key <id> --forget` reopens the
+window for a host rebuilt while nobody was watching.
+
+**Existing targets pin on their next connection rather than being refused.** The
+migration leaves the column empty, which is exactly the state a new target is in,
+so upgrading a working fleet does not break it.
 
 ### GitHub
 
@@ -442,6 +480,27 @@ behaved correctly; it was just covering for a missing argument.
    is a real typo, but nothing to compare against is not. Found by running
    `make demo` after the fix rather than only the test suite.
 
+10. **Host-key pinning would have refused every host whose key carried a
+    comment.** `ssh-key`'s `PartialEq` for a public key includes the comment,
+    and both `ssh-keygen` and `ssh-keyscan` emit one — so a pinned key and the
+    identical key presented by the host compared unequal, with matching
+    fingerprints, and read as *changed*. That is the worst shape a security
+    check can fail in: it would have blocked a working fleet while reporting a
+    compromise that had not happened, and the fingerprints printed side by side
+    in the error would have been the same string. Comparison is now on the key
+    material alone, and keys are stored re-encoded without the comment so what
+    is pinned, compared and displayed is one canonical form. Caught by a unit
+    test written to pin the round trip through a text field.
+
+11. **A pinned key that would not parse silently re-pinned whatever answered.**
+    The verdict matched on `parse_host_key` returning `None`, which conflates
+    "nothing pinned yet" with "the pinned value is corrupt" — so a damaged
+    column downgraded that target from verification to trust-on-first-use, with
+    no error and nothing in the UI to show it had happened. An unparseable
+    pinned value is now a mismatch, not an absence: it fails closed and
+    surfaces as a change to review. Found while writing the test for the empty
+    case and asking what the other way into that branch was.
+
 Two were in the demo rather than the product: `service_id_by_name` shelled out
 to the CLI purely to look up an id, so `make demo-examples` failed on a fresh
 checkout — before reaching the one step that genuinely needs a compiled binary.
@@ -458,13 +517,6 @@ already registered, and `demo-restart` runs it.
 Everything below is deliberately out of scope, not stubbed. There are no
 `todo!()`, `unimplemented!()`, mocked internals or placeholder handlers in the
 delivered code.
-
-**SSH host-key pinning.** Host keys are accepted on first use. Recording a
-target's key on first connect and refusing a change would defend against a
-man-in-the-middle on a re-registered host. It needs a UI for reviewing and
-accepting a legitimate change (a rebuilt host has a new key), which is a feature
-in itself rather than a line of code. The exposure is bounded: an operator
-registers targets explicitly, by address.
 
 **Pull-request preview environments.** `pull_request` deliveries are
 authenticated, acknowledged with 200 so GitHub does not retry and disable the

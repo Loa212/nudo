@@ -281,6 +281,20 @@ fn each_result_shape_names_its_enums_rather_than_exposing_wire_integers() {
 }
 
 #[test]
+fn a_target_summary_says_when_its_host_key_is_waiting_for_review() {
+    // Every operation against such a host is refused, including read-only ones,
+    // so an agent that cannot see this just retries into an opaque failure.
+    let schema = serde_json::to_value(schemars::schema_for!(TargetSummary)).expect("schema");
+    let field = schema["properties"]
+        .get("host_key_change_pending")
+        .expect("a target summary must surface a pending host-key change");
+    assert_eq!(field["type"], "boolean");
+    // And the description has to say that accepting one is not an agent's call.
+    let description = field["description"].as_str().unwrap_or_default();
+    assert!(description.contains("refused"), "got: {description}");
+}
+
+#[test]
 fn a_service_summary_mirrors_its_targets_guardrail_flag() {
     // Otherwise the agent must cross-reference two calls to know whether a
     // deploy needs the opt-in.

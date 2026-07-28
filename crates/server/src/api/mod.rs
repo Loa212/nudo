@@ -155,17 +155,16 @@ impl Context {
         Ok((service, target))
     }
 
-    /// Opens an SSH session to a target.
+    /// Opens an SSH session to a target, verifying its host key.
     pub async fn connect(&self, target: &Target) -> Result<crate::ssh::SshSession, Status> {
-        let ssh_target = self
-            .engine
-            .ssh_target_for(target)
-            .await
-            .map_err(|e| Status::failed_precondition(format!("{e:#}")))?;
-
-        crate::ssh::SshSession::connect(&ssh_target)
-            .await
-            .map_err(|e| Status::unavailable(format!("connecting to {}: {e:#}", target.host)))
+        self.engine.connect(target).await.map_err(|error| {
+            // A changed host key is a refusal, not an outage: `UNAVAILABLE`
+            // would tell a client to retry, and retrying is exactly wrong here.
+            if error.is::<crate::ssh::HostKeyChanged>() {
+                return Status::failed_precondition(format!("{error:#}"));
+            }
+            Status::unavailable(format!("connecting to {}: {error:#}", target.host))
+        })
     }
 }
 

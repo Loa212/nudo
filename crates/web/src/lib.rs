@@ -188,6 +188,10 @@ pub fn router(state: AppState) -> Router {
         .route("/targets", post(routes::target_create))
         .route("/targets/{id}", get(routes::target_detail))
         .route("/targets/{id}/check", post(routes::target_check))
+        .route(
+            "/targets/{id}/host-key/accept",
+            post(routes::target_accept_host_key),
+        )
         .route("/targets/{id}/delete", post(routes::target_delete))
         // ---- services ----
         .route("/services", get(routes::services_list))

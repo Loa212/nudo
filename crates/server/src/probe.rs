@@ -2,42 +2,56 @@
 //!
 //! `CheckTarget` answers the question an operator actually has when a deploy
 //! fails: which part is broken? So it reports each prerequisite separately —
-//! SSH, sudo, systemd, and a writable release directory — rather than one
-//! pass/fail.
+//! the host key, SSH, sudo, systemd, and a writable release directory — rather
+//! than one pass/fail.
 
 use nudo_proto::check_target_response::Check;
 
-use crate::ssh::{SshSession, SshTarget, quote};
+use crate::ssh::{HostKeyChanged, HostKeyOutcome, SshSession, quote};
 
 /// The names of the checks, in the order they are reported.
-pub const CHECK_NAMES: [&str; 4] = ["ssh", "sudo", "systemd", "release_dir"];
+pub const CHECK_NAMES: [&str; 5] = ["host_key", "ssh", "sudo", "systemd", "release_dir"];
 
-/// Runs every prerequisite check against a target.
+/// Runs every prerequisite check against an already-open session.
 ///
-/// A failed SSH connection short-circuits the rest: without a connection the
-/// other three cannot be evaluated, and reporting them as "failed" would imply
-/// we looked.
-pub async fn check_target(ssh_target: &SshTarget, release_root: &str) -> (bool, Vec<Check>) {
-    let session = match SshSession::connect(ssh_target).await {
+/// The connection is made by the caller rather than here so that whichever
+/// layer owns the store records the host-key outcome; this function is handed
+/// the result either way. A failed connection short-circuits the rest: without
+/// one the others cannot be evaluated, and reporting them as "failed" would
+/// imply we looked.
+pub async fn check_target(
+    connection: anyhow::Result<SshSession>,
+    release_root: &str,
+) -> (bool, Vec<Check>) {
+    let session = match connection {
         Ok(session) => session,
-        Err(error) => {
-            let mut checks = vec![Check {
-                name: "ssh".to_string(),
-                ok: false,
-                detail: format!("{error:#}"),
-            }];
-            for name in &CHECK_NAMES[1..] {
-                checks.push(Check {
-                    name: (*name).to_string(),
-                    ok: false,
-                    detail: "not checked: no SSH connection".to_string(),
-                });
-            }
-            return (false, checks);
-        }
+        Err(error) => return (false, unreachable_checks(&error)),
     };
 
     let mut checks = Vec::with_capacity(CHECK_NAMES.len());
+
+    // ---- host key ----
+    // First, because it is the check that decides whether the rest are even
+    // being run against the machine we think they are.
+    checks.push(match session.host_key() {
+        HostKeyOutcome::Pinned { fingerprint, .. } => Check {
+            name: "host_key".to_string(),
+            ok: true,
+            detail: format!("pinned on first use: {fingerprint}"),
+        },
+        HostKeyOutcome::Matched { fingerprint } => Check {
+            name: "host_key".to_string(),
+            ok: true,
+            detail: format!("matches the pinned key: {fingerprint}"),
+        },
+        // Not reachable through a live session — a change fails the connect —
+        // but reported honestly rather than asserted away.
+        HostKeyOutcome::Changed { fingerprint, .. } => Check {
+            name: "host_key".to_string(),
+            ok: false,
+            detail: format!("the host key has changed: {fingerprint}"),
+        },
+    });
 
     // ---- ssh ----
     let whoami = session.exec("id -un").await;
@@ -163,6 +177,38 @@ pub async fn check_target(ssh_target: &SshTarget, release_root: &str) -> (bool, 
     (ok, checks)
 }
 
+/// The checks reported when no session could be opened.
+///
+/// A refused host key is called out as the host-key check failing rather than
+/// as SSH being down: the difference is the difference between "the box is
+/// off" and "something else is answering for that address", and an operator
+/// sent to debug the wrong one of those wastes the time that matters most.
+fn unreachable_checks(error: &anyhow::Error) -> Vec<Check> {
+    let host_key_changed = error.is::<HostKeyChanged>();
+    // The check that actually failed carries the error; the rest say they were
+    // not reached, and why.
+    let blamed = if host_key_changed { "host_key" } else { "ssh" };
+    let unchecked = if host_key_changed {
+        "not checked: the host key was refused"
+    } else {
+        "not checked: no SSH connection"
+    };
+    let detail = format!("{error:#}");
+
+    CHECK_NAMES
+        .iter()
+        .map(|name| Check {
+            name: (*name).to_string(),
+            ok: false,
+            detail: if *name == blamed {
+                detail.clone()
+            } else {
+                unchecked.to_string()
+            },
+        })
+        .collect()
+}
+
 /// The first non-empty line of stderr, or of stdout when stderr is empty.
 ///
 /// Commands here are run with `2>&1` in places, so the useful message can be on
@@ -193,27 +239,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_target_reports_ssh_as_the_cause_and_the_rest_as_unchecked() {
-        // Reporting the other three as plain failures would imply we looked at
-        // them, sending an operator to debug sudo when the host is simply down.
-        let unreachable = SshTarget {
-            // Reserved for documentation, so it never resolves to a real host.
-            host: "192.0.2.1".to_string(),
-            port: 22,
-            user: "root".to_string(),
-            private_key: "-----BEGIN OPENSSH PRIVATE KEY-----\ninvalid\n".to_string(),
-            passphrase: None,
-        };
+        // Reporting the others as plain failures would imply we looked at them,
+        // sending an operator to debug sudo when the host is simply down.
+        let (ok, checks) =
+            check_target(Err(anyhow::anyhow!("connection refused")), "/opt/bot").await;
 
-        let (ok, checks) = check_target(&unreachable, "/opt/bot").await;
         assert!(!ok);
-        assert_eq!(checks.len(), CHECK_NAMES.len());
-
         let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, CHECK_NAMES.to_vec());
 
-        assert!(!checks[0].ok);
-        assert!(!checks[0].detail.is_empty());
-        for check in &checks[1..] {
+        let ssh = find(&checks, "ssh");
+        assert!(!ssh.ok);
+        assert!(ssh.detail.contains("connection refused"));
+
+        for check in checks.iter().filter(|c| c.name != "ssh") {
             assert!(!check.ok);
             assert!(
                 check.detail.contains("no SSH connection"),
@@ -223,8 +262,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_changed_host_key_is_blamed_on_the_host_key_rather_than_on_ssh() {
+        // The difference between "the box is off" and "something else is
+        // answering for that address" is the whole reason this check exists;
+        // reporting the second as the first sends an operator to debug the
+        // wrong thing entirely.
+        let (ok, checks) = check_target(
+            Err(HostKeyChanged {
+                host: "10.0.0.5".to_string(),
+                port: 22,
+                expected_fingerprint: "SHA256:old".to_string(),
+                key: "ssh-ed25519 AAAA".to_string(),
+                fingerprint: "SHA256:new".to_string(),
+            }
+            .into()),
+            "/opt/bot",
+        )
+        .await;
+
+        assert!(!ok);
+        let host_key = find(&checks, "host_key");
+        assert!(!host_key.ok);
+        assert!(
+            host_key.detail.contains("SHA256:old"),
+            "{}",
+            host_key.detail
+        );
+        assert!(
+            host_key.detail.contains("SHA256:new"),
+            "{}",
+            host_key.detail
+        );
+
+        // SSH is not blamed: the connection was refused deliberately.
+        let ssh = find(&checks, "ssh");
+        assert!(!ssh.ok);
+        assert!(
+            ssh.detail.contains("host key was refused"),
+            "got: {}",
+            ssh.detail
+        );
+    }
+
     #[test]
     fn the_reported_checks_are_exactly_the_ones_the_proto_documents() {
-        assert_eq!(CHECK_NAMES, ["ssh", "sudo", "systemd", "release_dir"]);
+        assert_eq!(
+            CHECK_NAMES,
+            ["host_key", "ssh", "sudo", "systemd", "release_dir"]
+        );
+    }
+
+    /// The check with this name, which every path is expected to report.
+    fn find<'a>(checks: &'a [Check], name: &str) -> &'a Check {
+        checks
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
     }
 }

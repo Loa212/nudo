@@ -1,7 +1,7 @@
 //! Target persistence — the machines we deploy to.
 
 use anyhow::bail;
-use nudo_proto::{Target, target};
+use nudo_proto::{HostKey, Target, target};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
@@ -237,13 +237,118 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Pins a host key, clearing any pending change.
+    ///
+    /// Used for the first-use recording and for accepting a reviewed change;
+    /// both end in the same state, which is why they are one method.
+    pub async fn pin_host_key(&self, id: &str, key: &str, fingerprint: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE targets
+                SET host_key = ?1,
+                    host_key_fingerprint = ?2,
+                    host_key_pinned_at = ?3,
+                    pending_host_key = '',
+                    pending_host_key_fingerprint = '',
+                    pending_host_key_seen_at = NULL
+              WHERE id = ?4",
+        )
+        .bind(key)
+        .bind(fingerprint)
+        .bind(now_string())
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Records a key that did not match the pinned one, for review.
+    ///
+    /// Nothing is trusted here — the connection that saw this key was refused.
+    /// The point is that the operator can see *what* the host presented rather
+    /// than only that it differed, and can accept it without touching the
+    /// database.
+    ///
+    /// The first sighting's timestamp is kept when the same key is seen again,
+    /// so "this has been failing since 09:14" survives a probe loop that
+    /// re-sees it every minute.
+    pub async fn record_pending_host_key(
+        &self,
+        id: &str,
+        key: &str,
+        fingerprint: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE targets
+                SET pending_host_key = ?1,
+                    pending_host_key_fingerprint = ?2,
+                    pending_host_key_seen_at =
+                        CASE WHEN pending_host_key = ?1 AND pending_host_key_seen_at IS NOT NULL
+                             THEN pending_host_key_seen_at
+                             ELSE ?3
+                        END
+              WHERE id = ?4",
+        )
+        .bind(key)
+        .bind(fingerprint)
+        .bind(now_string())
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Drops a pending change without accepting it.
+    ///
+    /// Called when a connection presents the pinned key again: whatever was
+    /// offered before is no longer outstanding, and leaving it would keep
+    /// showing a warning about a host that is now presenting exactly what it
+    /// should.
+    pub async fn clear_pending_host_key(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE targets
+                SET pending_host_key = '',
+                    pending_host_key_fingerprint = '',
+                    pending_host_key_seen_at = NULL
+              WHERE id = ?1 AND pending_host_key <> ''",
+        )
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Forgets a target's pinned key, reopening the first-use window.
+    pub async fn forget_host_key(&self, id: &str) -> anyhow::Result<()> {
+        let result = sqlx::query(
+            "UPDATE targets
+                SET host_key = '',
+                    host_key_fingerprint = '',
+                    host_key_pinned_at = NULL,
+                    pending_host_key = '',
+                    pending_host_key_fingerprint = '',
+                    pending_host_key_seen_at = NULL
+              WHERE id = ?1",
+        )
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        if result.rows_affected() == 0 {
+            bail!("no such target: {id}");
+        }
+        Ok(())
+    }
 }
 
 const TARGET_SELECT: &str = "SELECT id, name, host, port, user, ssh_key_id, latency_critical, \
-     labels, status, last_seen_at, created_at FROM targets";
+     labels, status, last_seen_at, created_at, host_key, host_key_fingerprint, \
+     host_key_pinned_at, pending_host_key, pending_host_key_fingerprint, \
+     pending_host_key_seen_at FROM targets";
 
 const TARGET_SELECT_BY_ID: &str = "SELECT id, name, host, port, user, ssh_key_id, \
-     latency_critical, labels, status, last_seen_at, created_at FROM targets WHERE id = ?1";
+     latency_critical, labels, status, last_seen_at, created_at, host_key, \
+     host_key_fingerprint, host_key_pinned_at, pending_host_key, \
+     pending_host_key_fingerprint, pending_host_key_seen_at FROM targets WHERE id = ?1";
 
 fn row_to_target(row: &SqliteRow) -> Target {
     Target {
@@ -264,7 +369,36 @@ fn row_to_target(row: &SqliteRow) -> Target {
         created_at: nudo_proto::to_timestamp_opt(super::from_db_time(
             &row.get::<String, _>("created_at"),
         )),
+        host_key: row_to_host_key(row),
     }
+}
+
+/// The host-key half of a target row.
+///
+/// `None` when nothing is pinned and nothing is pending, so a target that has
+/// never connected reads as having no host key rather than as having an empty
+/// one. Public key material throughout — safe to hand to any client.
+fn row_to_host_key(row: &SqliteRow) -> Option<HostKey> {
+    let key: String = row.get("host_key");
+    let pending: String = row.get("pending_host_key");
+    if key.is_empty() && pending.is_empty() {
+        return None;
+    }
+
+    Some(HostKey {
+        key,
+        fingerprint: row.get("host_key_fingerprint"),
+        pinned_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
+            row.get::<Option<String>, _>("host_key_pinned_at")
+                .as_deref(),
+        )),
+        pending_key: pending,
+        pending_fingerprint: row.get("pending_host_key_fingerprint"),
+        pending_seen_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
+            row.get::<Option<String>, _>("pending_host_key_seen_at")
+                .as_deref(),
+        )),
+    })
 }
 
 /// Turns a unique-constraint violation into a message an operator can act on.
@@ -636,6 +770,277 @@ mod tests {
         assert!(first.iter().all(|a| second.iter().all(|b| a.id != b.id)));
 
         assert_eq!(store.count_targets().await.expect("count"), 5);
+    }
+
+    // ---- host keys ----
+
+    const KEY_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q+Nfu9w3X2agJ+IDHXR";
+    const KEY_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwpYjPDsSOQR3dD30dkum4PseIZzCiIqleJEkpyKBfu";
+
+    #[tokio::test]
+    async fn a_fresh_target_has_no_host_key_at_all() {
+        // Not an empty one: "never connected" and "connected and presented
+        // nothing" are different states, and the API should not conflate them.
+        let store = store().await;
+        let created = store
+            .create_target(&input("unpinned"))
+            .await
+            .expect("create");
+        assert!(created.host_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pinned_key_is_read_back_with_its_fingerprint_and_a_timestamp() {
+        let store = store().await;
+        let created = store.create_target(&input("pinned")).await.expect("create");
+
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        let host_key = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("a pinned key");
+        assert_eq!(host_key.key, KEY_A);
+        assert_eq!(host_key.fingerprint, "SHA256:aaa");
+        assert!(host_key.pinned_at.is_some());
+        assert!(host_key.pending_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_changed_key_is_held_for_review_without_touching_the_pinned_one() {
+        // The pinned key must survive: it is what every connection is still
+        // checked against while the change is unreviewed.
+        let store = store().await;
+        let created = store
+            .create_target(&input("changed"))
+            .await
+            .expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+
+        let host_key = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key");
+        assert_eq!(host_key.key, KEY_A, "the pinned key must not be replaced");
+        assert_eq!(host_key.fingerprint, "SHA256:aaa");
+        assert_eq!(host_key.pending_key, KEY_B);
+        assert_eq!(host_key.pending_fingerprint, "SHA256:bbb");
+        assert!(host_key.pending_seen_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn re_seeing_the_same_changed_key_keeps_when_it_was_first_seen() {
+        // The probe loop re-sees it every minute; "failing since 09:14" is the
+        // useful fact, and it would be lost by overwriting on each sighting.
+        let store = store().await;
+        let created = store.create_target(&input("reseen")).await.expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("first sighting");
+        let first = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key")
+            .pending_seen_at;
+
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("second sighting");
+        let second = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key")
+            .pending_seen_at;
+
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn a_second_different_key_restarts_the_clock() {
+        // A new key is a new thing to review, so its own first-seen time is
+        // the honest one.
+        let store = store().await;
+        let created = store.create_target(&input("twice")).await.expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("first");
+        store
+            .record_pending_host_key(&created.id, KEY_A, "SHA256:ccc")
+            .await
+            .expect("second");
+
+        let host_key = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key");
+        assert_eq!(host_key.pending_fingerprint, "SHA256:ccc");
+    }
+
+    #[tokio::test]
+    async fn accepting_a_change_makes_it_the_pinned_key_and_clears_the_review() {
+        let store = store().await;
+        let created = store.create_target(&input("accept")).await.expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+
+        store
+            .pin_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("accept");
+
+        let host_key = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key");
+        assert_eq!(host_key.key, KEY_B);
+        assert_eq!(host_key.fingerprint, "SHA256:bbb");
+        assert!(host_key.pending_key.is_empty());
+        assert!(host_key.pending_seen_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_host_presenting_the_pinned_key_again_drops_the_pending_change() {
+        // A transient misdirection that resolves itself should not leave a
+        // warning about a host that is now presenting exactly what it should.
+        let store = store().await;
+        let created = store
+            .create_target(&input("resolved"))
+            .await
+            .expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+
+        store
+            .clear_pending_host_key(&created.id)
+            .await
+            .expect("clear");
+
+        let host_key = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target")
+            .host_key
+            .expect("host key");
+        assert_eq!(host_key.key, KEY_A, "the pinned key is untouched");
+        assert!(host_key.pending_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_key_reopens_the_first_use_window() {
+        let store = store().await;
+        let created = store.create_target(&input("forget")).await.expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+        store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+
+        store.forget_host_key(&created.id).await.expect("forget");
+
+        // Back to the state a newly created target is in, pending change and
+        // all — otherwise a stale review would block the fresh pinning.
+        let target = store
+            .get_target(&created.id)
+            .await
+            .expect("get")
+            .expect("target");
+        assert!(target.host_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_key_of_a_missing_target_fails() {
+        let store = store().await;
+        assert!(store.forget_host_key("tgt_nope").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_update_leaves_the_host_key_alone() {
+        // The update mask covers connection details; re-pointing a target at a
+        // different host must not silently carry the old host's key over, and
+        // must not blank it either — the next connection is what decides.
+        let store = store().await;
+        let created = store.create_target(&input("edited")).await.expect("create");
+        store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        let updated = store
+            .update_target(
+                &created.id,
+                &Target {
+                    name: "renamed".to_string(),
+                    ..Default::default()
+                },
+                &[],
+            )
+            .await
+            .expect("update");
+
+        assert_eq!(
+            updated.host_key.expect("host key").fingerprint,
+            "SHA256:aaa"
+        );
     }
 
     #[test]

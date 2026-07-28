@@ -200,9 +200,14 @@ impl Targets for TargetsService {
             .await?;
 
         // A check is read-only, so it is allowed against a latency-critical box
-        // without an opt-in: it opens one SSH connection and runs four trivial
-        // commands. Refusing would mean the one host you most want to verify is
-        // the one you cannot.
+        // without an opt-in: it opens one SSH connection and runs a handful of
+        // trivial commands. Refusing would mean the one host you most want to
+        // verify is the one you cannot.
+        //
+        // Assembling the SSH details is a precondition failure (no key
+        // configured), which is a different thing from the target being
+        // unreachable, so it is reported as an error rather than as a failed
+        // check.
         let ssh_target = self
             .context
             .engine
@@ -210,9 +215,20 @@ impl Targets for TargetsService {
             .await
             .map_err(|error| Status::failed_precondition(format!("{error:#}")))?;
 
+        // This is where a target is deliberately pinned: `targets check` is what
+        // an operator runs after registering a host, so it is the natural place
+        // for first use to happen and be reported. A refused connection — a
+        // changed host key — is a check result rather than an error, since
+        // showing which part is broken is the whole point of this RPC.
+        let connection = self
+            .context
+            .engine
+            .connect_ssh(&target.id, &ssh_target)
+            .await;
+
         // Probe the conventional release root; a service's own root is checked
         // when it deploys.
-        let (ok, checks) = crate::probe::check_target(&ssh_target, "/opt").await;
+        let (ok, checks) = crate::probe::check_target(connection, "/opt").await;
 
         let status = if ok {
             target::Status::Reachable
@@ -229,6 +245,134 @@ impl Targets for TargetsService {
         }
 
         Ok(Response::new(CheckTargetResponse { ok, checks }))
+    }
+
+    /// Accepts a target's pending host key, making it the pinned one.
+    ///
+    /// The flow for a legitimately rebuilt host. Guarded and audited like any
+    /// other mutation — accepting a key is a security decision, and the audit
+    /// entry records which fingerprint was accepted and by whom.
+    async fn accept_host_key(
+        &self,
+        request: Request<AcceptHostKeyRequest>,
+    ) -> Result<Response<Target>, Status> {
+        let request = request.into_inner();
+        let existing = self.context.require_target(&request.id).await?;
+
+        let host_key = existing.host_key.clone().unwrap_or_default();
+        if host_key.pending_key.trim().is_empty() {
+            return Err(Status::failed_precondition(format!(
+                "target {} has no pending host-key change to accept",
+                existing.name
+            )));
+        }
+
+        // The operator accepts a fingerprint they have looked at, not "whatever
+        // is pending" — otherwise a key that changed again between the review
+        // and the click would be accepted unseen.
+        let offered = request.fingerprint.trim();
+        if offered.is_empty() {
+            return Err(Status::invalid_argument(
+                "accepting a host key requires the fingerprint being accepted",
+            ));
+        }
+        if offered != host_key.pending_fingerprint {
+            return Err(Status::failed_precondition(format!(
+                "that is not the key waiting for review: pending is {}, you sent {offered}",
+                host_key.pending_fingerprint
+            )));
+        }
+
+        let authorized = self
+            .context
+            .authorize(
+                request.mutation.as_ref(),
+                "Targets.AcceptHostKey",
+                &request.id,
+                Some(&existing),
+                format!(
+                    "accepted a new ssh host key for {}: {} replaces {}",
+                    existing.name,
+                    host_key.pending_fingerprint,
+                    if host_key.fingerprint.is_empty() {
+                        "no previously pinned key"
+                    } else {
+                        &host_key.fingerprint
+                    }
+                ),
+            )
+            .await?;
+
+        if authorized.dry_run {
+            return Ok(Response::new(existing));
+        }
+
+        self.context
+            .store
+            .pin_host_key(
+                &request.id,
+                &host_key.pending_key,
+                &host_key.pending_fingerprint,
+            )
+            .await
+            .map_err(internal)?;
+
+        Ok(Response::new(
+            self.context.require_target(&request.id).await?,
+        ))
+    }
+
+    /// Forgets a target's pinned host key, so the next connection pins afresh.
+    ///
+    /// For a host rebuilt while nobody was watching, whose old key is of no
+    /// further interest. This reopens the first-use window, which is a weaker
+    /// position than accepting a reviewed key, so it is audited as its own
+    /// action rather than folded into acceptance.
+    async fn forget_host_key(
+        &self,
+        request: Request<ForgetHostKeyRequest>,
+    ) -> Result<Response<Target>, Status> {
+        let request = request.into_inner();
+        let existing = self.context.require_target(&request.id).await?;
+
+        let previous = existing
+            .host_key
+            .as_ref()
+            .map(|k| k.fingerprint.clone())
+            .unwrap_or_default();
+
+        let authorized = self
+            .context
+            .authorize(
+                request.mutation.as_ref(),
+                "Targets.ForgetHostKey",
+                &request.id,
+                Some(&existing),
+                format!(
+                    "forgot the pinned ssh host key for {} ({}); the next connection will pin afresh",
+                    existing.name,
+                    if previous.is_empty() {
+                        "none was pinned"
+                    } else {
+                        &previous
+                    }
+                ),
+            )
+            .await?;
+
+        if authorized.dry_run {
+            return Ok(Response::new(existing));
+        }
+
+        self.context
+            .store
+            .forget_host_key(&request.id)
+            .await
+            .map_err(super::invalid)?;
+
+        Ok(Response::new(
+            self.context.require_target(&request.id).await?,
+        ))
     }
 }
 
@@ -645,6 +789,265 @@ mod tests {
             .expect_err("err");
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert!(status.message().contains("SSH key"));
+    }
+
+    // ---- host keys ----
+
+    const KEY_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q+Nfu9w3X2agJ+IDHXR";
+    const KEY_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwpYjPDsSOQR3dD30dkum4PseIZzCiIqleJEkpyKBfu";
+
+    /// A target with a pinned key and a change waiting to be reviewed.
+    async fn target_with_a_pending_change(service: &TargetsService, name: &str) -> Target {
+        let created = service
+            .create(Request::new(create(name, false)))
+            .await
+            .expect("create")
+            .into_inner();
+        service
+            .context
+            .store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+        service
+            .context
+            .store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+        service
+            .context
+            .require_target(&created.id)
+            .await
+            .expect("get")
+    }
+
+    fn accept(id: &str, fingerprint: &str) -> AcceptHostKeyRequest {
+        AcceptHostKeyRequest {
+            mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+            id: id.to_string(),
+            fingerprint: fingerprint.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn accepting_a_reviewed_change_pins_it_and_is_audited_with_the_fingerprint() {
+        let service = service().await;
+        let target = target_with_a_pending_change(&service, "rebuilt").await;
+
+        let updated = service
+            .accept_host_key(Request::new(accept(&target.id, "SHA256:bbb")))
+            .await
+            .expect("accept")
+            .into_inner();
+
+        let host_key = updated.host_key.expect("host key");
+        assert_eq!(host_key.key, KEY_B);
+        assert_eq!(host_key.fingerprint, "SHA256:bbb");
+        assert!(host_key.pending_key.is_empty());
+
+        // Accepting a host key is a security decision, so the audit line has to
+        // say which fingerprint was accepted and what it replaced.
+        let audit = service
+            .context
+            .store
+            .list_audit(&target.id, actor::Kind::Unspecified, 50, 0)
+            .await
+            .expect("audit");
+        let entry = audit
+            .iter()
+            .find(|e| e.action == "Targets.AcceptHostKey")
+            .expect("an audit entry");
+        assert!(
+            entry.summary.contains("SHA256:bbb"),
+            "got: {}",
+            entry.summary
+        );
+        assert!(
+            entry.summary.contains("SHA256:aaa"),
+            "got: {}",
+            entry.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_a_fingerprint_that_is_not_the_pending_one_is_refused() {
+        // The operator accepts the key they looked at. If it changed again
+        // between the review and the click, accepting it unseen is exactly the
+        // outcome this whole feature exists to prevent.
+        let service = service().await;
+        let target = target_with_a_pending_change(&service, "moving").await;
+
+        let status = service
+            .accept_host_key(Request::new(accept(&target.id, "SHA256:something-else")))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+        // And nothing was pinned.
+        let unchanged = service
+            .context
+            .require_target(&target.id)
+            .await
+            .expect("get")
+            .host_key
+            .expect("host key");
+        assert_eq!(unchanged.key, KEY_A);
+        assert_eq!(unchanged.pending_fingerprint, "SHA256:bbb");
+    }
+
+    #[tokio::test]
+    async fn accepting_without_naming_a_fingerprint_is_an_invalid_argument() {
+        let service = service().await;
+        let target = target_with_a_pending_change(&service, "unnamed").await;
+
+        let status = service
+            .accept_host_key(Request::new(accept(&target.id, "  ")))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn accepting_when_nothing_is_pending_explains_that_rather_than_pinning() {
+        let service = service().await;
+        let created = service
+            .create(Request::new(create("settled", false)))
+            .await
+            .expect("create")
+            .into_inner();
+        service
+            .context
+            .store
+            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .await
+            .expect("pin");
+
+        let status = service
+            .accept_host_key(Request::new(accept(&created.id, "SHA256:aaa")))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            status.message().contains("no pending"),
+            "{}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_a_key_on_a_latency_critical_host_needs_the_opt_in() {
+        // Same guardrail as every other mutation: accepting a key is what lets
+        // nudo talk to that box again, so it is not exempt.
+        let service = service().await;
+        let created = service
+            .create(Request::new(CreateTargetRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::human("u", "alice")),
+                    allow_latency_critical: true,
+                    ..Default::default()
+                }),
+                ..create("hot-box", true)
+            }))
+            .await
+            .expect("create")
+            .into_inner();
+        service
+            .context
+            .store
+            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .await
+            .expect("record");
+
+        let status = service
+            .accept_host_key(Request::new(accept(&created.id, "SHA256:bbb")))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_acceptance_changes_nothing() {
+        let service = service().await;
+        let target = target_with_a_pending_change(&service, "planned").await;
+
+        service
+            .accept_host_key(Request::new(AcceptHostKeyRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::agent("sess_1", "claude")),
+                    dry_run: true,
+                    ..Default::default()
+                }),
+                ..accept(&target.id, "SHA256:bbb")
+            }))
+            .await
+            .expect("dry run");
+
+        let unchanged = service
+            .context
+            .require_target(&target.id)
+            .await
+            .expect("get")
+            .host_key
+            .expect("host key");
+        assert_eq!(unchanged.key, KEY_A);
+        assert_eq!(unchanged.pending_fingerprint, "SHA256:bbb");
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_key_clears_it_and_says_so_in_the_audit() {
+        let service = service().await;
+        let target = target_with_a_pending_change(&service, "wiped").await;
+
+        let updated = service
+            .forget_host_key(Request::new(ForgetHostKeyRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                id: target.id.clone(),
+            }))
+            .await
+            .expect("forget")
+            .into_inner();
+        assert!(updated.host_key.is_none());
+
+        let audit = service
+            .context
+            .store
+            .list_audit(&target.id, actor::Kind::Unspecified, 50, 0)
+            .await
+            .expect("audit");
+        let entry = audit
+            .iter()
+            .find(|e| e.action == "Targets.ForgetHostKey")
+            .expect("an audit entry");
+        // The old fingerprint, since after this it is the only record there was
+        // one.
+        assert!(
+            entry.summary.contains("SHA256:aaa"),
+            "got: {}",
+            entry.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn host_key_operations_on_a_missing_target_are_not_found() {
+        let service = service().await;
+        for status in [
+            service
+                .accept_host_key(Request::new(accept("tgt_nope", "SHA256:x")))
+                .await
+                .expect_err("accept"),
+            service
+                .forget_host_key(Request::new(ForgetHostKeyRequest {
+                    mutation: Some(Mutation::by(Actor::human("u", "alice"))),
+                    id: "tgt_nope".to_string(),
+                }))
+                .await
+                .expect_err("forget"),
+        ] {
+            assert_eq!(status.code(), tonic::Code::NotFound);
+        }
     }
 
     #[tokio::test]

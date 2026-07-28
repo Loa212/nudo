@@ -10,11 +10,12 @@
 //! against it, and SSH handshake cost is irrelevant next to the work each
 //! operation does.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use russh::keys::PrivateKeyWithHashAlg;
+use russh::keys::ssh_key::{self, HashAlg, PublicKey};
 use russh::{ChannelMsg, client};
 use tokio::sync::mpsc;
 
@@ -33,6 +34,10 @@ pub struct SshTarget {
     pub private_key: String,
     /// Passphrase for the key, if it is encrypted.
     pub passphrase: Option<String>,
+    /// The host key this target is pinned to, in OpenSSH one-line form. Empty
+    /// means nothing is pinned yet, and the first connection records what the
+    /// host presents.
+    pub host_key: String,
 }
 
 impl std::fmt::Debug for SshTarget {
@@ -43,9 +48,66 @@ impl std::fmt::Debug for SshTarget {
             .field("port", &self.port)
             .field("user", &self.user)
             .field("private_key", &"<redacted>")
+            .field("host_key", &fingerprint_of(&self.host_key))
             .finish()
     }
 }
+
+/// What a connection concluded about the host key it was presented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostKeyOutcome {
+    /// Nothing was pinned, so this key was trusted on first use. The caller
+    /// records it; every later connection is then verified against it.
+    Pinned { key: String, fingerprint: String },
+    /// The key matched the pinned one, which is the ordinary case.
+    Matched { fingerprint: String },
+    /// The key did not match. The connection was refused before
+    /// authentication, so the target never saw our private key.
+    Changed {
+        expected_fingerprint: String,
+        key: String,
+        fingerprint: String,
+    },
+}
+
+/// The host key a connection saw, published by the handler for the caller.
+///
+/// `check_server_key` runs inside the handshake with no route back to the
+/// store, so it records its verdict here and [`SshSession::connect`] returns it
+/// for the caller to persist.
+type HostKeySlot = Arc<Mutex<Option<HostKeyOutcome>>>;
+
+/// A connection refused because the host key changed.
+///
+/// A distinct error type rather than a string, because the caller has to do
+/// something with it beyond reporting it: record the key for review, so it can
+/// be accepted without editing the database.
+#[derive(Debug, Clone)]
+pub struct HostKeyChanged {
+    pub host: String,
+    pub port: u16,
+    pub expected_fingerprint: String,
+    /// The key the host presented, in OpenSSH form. Untrusted — this is what is
+    /// held for review, not what is pinned.
+    pub key: String,
+    pub fingerprint: String,
+}
+
+impl std::fmt::Display for HostKeyChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the host key for {}:{} has changed — refusing to connect. \
+             pinned: {}; presented: {}. If this host was legitimately rebuilt, \
+             review and accept the new key (`nudo targets host-key <id> --accept \
+             <fingerprint>`, or the target's page in the dashboard). If it was not, \
+             something is answering for that address that should not be.",
+            self.host, self.port, self.expected_fingerprint, self.fingerprint
+        )
+    }
+}
+
+impl std::error::Error for HostKeyChanged {}
 
 /// Result of a one-shot command.
 #[derive(Debug, Clone)]
@@ -82,32 +144,103 @@ impl CommandResult {
     }
 }
 
-/// A `russh` client handler.
+/// A `russh` client handler that verifies the host key.
 ///
-/// Host keys are accepted on first use. The control plane reaches targets the
-/// operator has explicitly registered, and there is no interactive prompt to
-/// approve a fingerprint; recording and pinning host keys is noted as deferred
-/// in CHANGES.md.
-struct Handler;
+/// Trust on first use: with nothing pinned, whatever the host presents is
+/// recorded and becomes the expectation. With a key pinned, anything else is
+/// refused — and refused *here*, during the handshake, so a host that is not the
+/// one we pinned never gets an authentication attempt with the private key nudo
+/// holds for it. That ordering is the entire point of the check.
+struct Handler {
+    /// The pinned key in OpenSSH form, or empty for first use.
+    expected: String,
+    /// Where the verdict is published for [`SshSession::connect`].
+    outcome: HostKeySlot,
+}
 
 impl client::Handler for Handler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let verdict = verdict_for(&self.expected, server_public_key)
+            .map_err(|_| russh::Error::Inconsistent)?;
+
+        let accepted = !matches!(verdict, HostKeyOutcome::Changed { .. });
+        if let Ok(mut slot) = self.outcome.lock() {
+            *slot = Some(verdict);
+        }
+        Ok(accepted)
     }
+}
+
+/// Decides what a presented host key means given what is pinned.
+///
+/// Separated from the handler so the rule can be tested directly: this is the
+/// function that decides whether nudo talks to a machine, and it should not
+/// need an SSH server to exercise.
+fn verdict_for(expected: &str, presented: &PublicKey) -> Result<HostKeyOutcome, ssh_key::Error> {
+    let fingerprint = presented.fingerprint(HashAlg::Sha256).to_string();
+    // Re-encoded from the key material alone, so what gets stored is one
+    // canonical form: no leading whitespace, no trailing comment, nothing that
+    // a later comparison or a display could differ on.
+    let presented_openssh = PublicKey::new(presented.key_data().clone(), "").to_openssh()?;
+
+    Ok(match parse_host_key(expected) {
+        // Compared on the key material alone. `PublicKey`'s own equality
+        // includes the comment, so a pinned key carrying one — which is what
+        // ssh-keygen and ssh-keyscan produce — would read as changed against
+        // the identical key presented by the host, and refuse a connection to
+        // a host that never changed anything.
+        Some(pinned) if pinned.key_data() == presented.key_data() => {
+            HostKeyOutcome::Matched { fingerprint }
+        }
+        Some(pinned) => HostKeyOutcome::Changed {
+            expected_fingerprint: pinned.fingerprint(HashAlg::Sha256).to_string(),
+            key: presented_openssh,
+            fingerprint,
+        },
+        // A pinned value that will not parse is a mismatch, not an absence.
+        // Falling through to first use here would let a corrupted column
+        // silently re-pin whatever answered.
+        None if host_key_is_pinned(expected) => HostKeyOutcome::Changed {
+            expected_fingerprint: "<unparseable pinned key>".to_string(),
+            key: presented_openssh,
+            fingerprint,
+        },
+        // Nothing pinned yet: trust this one and let the caller record it.
+        None => HostKeyOutcome::Pinned {
+            key: presented_openssh,
+            fingerprint,
+        },
+    })
 }
 
 /// An authenticated SSH session against one target.
 pub struct SshSession {
     handle: client::Handle<Handler>,
+    host_key: HostKeyOutcome,
+}
+
+impl std::fmt::Debug for SshSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The handle holds no printable state worth showing; what the session
+        // concluded about the host key is the part worth seeing.
+        f.debug_struct("SshSession")
+            .field("host_key", &self.host_key)
+            .finish()
+    }
 }
 
 impl SshSession {
-    /// Connects and authenticates with the target's private key.
+    /// Connects and authenticates with the target's private key, verifying the
+    /// host key first.
+    ///
+    /// A changed host key fails here rather than anywhere later: read-only
+    /// operations are not exempt, because a mismatch may mean this is not the
+    /// host at all, and reading logs from the wrong machine is its own problem.
     pub async fn connect(target: &SshTarget) -> anyhow::Result<Self> {
         let config = Arc::new(client::Config {
             inactivity_timeout: Some(Duration::from_secs(3600)),
@@ -119,9 +252,15 @@ impl SshSession {
                 "decoding the target's SSH private key — it must be an OpenSSH or PEM private key",
             )?;
 
+        let outcome: HostKeySlot = Arc::default();
+        let handler = Handler {
+            expected: target.host_key.clone(),
+            outcome: outcome.clone(),
+        };
+
         let addr = (target.host.as_str(), target.port);
-        let mut handle =
-            tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, Handler))
+        let connected =
+            tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
                 .await
                 .map_err(|_| {
                     anyhow!(
@@ -130,8 +269,40 @@ impl SshSession {
                         target.port,
                         CONNECT_TIMEOUT.as_secs()
                     )
-                })?
-                .with_context(|| format!("connecting to {}:{}", target.host, target.port))?;
+                })?;
+
+        // Read the verdict before the error, so a refused connection reports the
+        // fingerprints rather than russh's generic rejection message.
+        let verdict = outcome.lock().ok().and_then(|slot| slot.clone());
+        if let Some(HostKeyOutcome::Changed {
+            expected_fingerprint,
+            key,
+            fingerprint,
+        }) = verdict.clone()
+        {
+            return Err(HostKeyChanged {
+                host: target.host.clone(),
+                port: target.port,
+                expected_fingerprint,
+                key,
+                fingerprint,
+            }
+            .into());
+        }
+
+        let mut handle =
+            connected.with_context(|| format!("connecting to {}:{}", target.host, target.port))?;
+
+        // A connection that completed the handshake always ran the check, so a
+        // missing verdict would mean the invariant this whole path rests on is
+        // broken. Refuse rather than proceed unverified.
+        let host_key = verdict.ok_or_else(|| {
+            anyhow!(
+                "connected to {}:{} without the host key being checked",
+                target.host,
+                target.port
+            )
+        })?;
 
         let best_hash = handle.best_supported_rsa_hash().await?.flatten();
         let auth = handle
@@ -150,7 +321,15 @@ impl SshSession {
             );
         }
 
-        Ok(Self { handle })
+        Ok(Self { handle, host_key })
+    }
+
+    /// What this connection concluded about the target's host key.
+    ///
+    /// Only [`HostKeyOutcome::Pinned`] and [`HostKeyOutcome::Matched`] can be
+    /// observed here: a change fails the connect, so there is no session to ask.
+    pub fn host_key(&self) -> &HostKeyOutcome {
+        &self.host_key
     }
 
     /// Runs a command to completion, collecting stdout and stderr.
@@ -498,6 +677,38 @@ async fn flush_remainder(buf: Vec<u8>, stderr: bool, sink: &mpsc::Sender<OutputL
     let _ = sink.send(line).await;
 }
 
+/// Parses a stored host key in OpenSSH one-line form.
+///
+/// `None` for an empty value — nothing pinned — and also for an unparseable one.
+/// Treating corruption as "not pinned" would silently downgrade to first use, so
+/// callers must distinguish the two; [`host_key_is_pinned`] is what they use to
+/// tell a blank column from a broken one.
+fn parse_host_key(raw: &str) -> Option<PublicKey> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    PublicKey::from_openssh(raw).ok()
+}
+
+/// Whether a stored value names a host key at all, parseable or not.
+pub fn host_key_is_pinned(raw: &str) -> bool {
+    !raw.trim().is_empty()
+}
+
+/// The SHA-256 fingerprint of a host key in OpenSSH form, for display.
+///
+/// Unparseable input yields a marker rather than an error: this is only ever
+/// used to describe a key in a message, and failing to format one should not
+/// fail the operation being described.
+pub fn fingerprint_of(raw: &str) -> String {
+    match parse_host_key(raw) {
+        Some(key) => key.fingerprint(HashAlg::Sha256).to_string(),
+        None if raw.trim().is_empty() => "<none>".to_string(),
+        None => "<unparseable>".to_string(),
+    }
+}
+
 /// The directory portion of an absolute path.
 fn parent_dir(path: &str) -> String {
     match path.rfind('/') {
@@ -699,6 +910,171 @@ mod tests {
         assert!(!result.ok());
     }
 
+    // ---- host-key verification ----
+    //
+    // Two real ed25519 public keys, fixed rather than generated, so a test that
+    // fails names the same fingerprints every time.
+
+    const KEY_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q+Nfu9w3X2agJ+IDHXR";
+    const FINGERPRINT_A: &str = "SHA256:YDKOP3XHL0C4Ib51j2RJjuZhmu8rexWKe7IVDDOurMI";
+
+    const KEY_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwpYjPDsSOQR3dD30dkum4PseIZzCiIqleJEkpyKBfu";
+    const FINGERPRINT_B: &str = "SHA256:YWnilawiH+UPKWl5LfNJH4a2YHBRRXkqVxVpE40NZNk";
+
+    fn public_key(openssh: &str) -> PublicKey {
+        PublicKey::from_openssh(openssh).expect("a valid test key")
+    }
+
+    #[test]
+    fn the_test_keys_are_what_ssh_keygen_says_they_are() {
+        // If this drifts, every assertion below is comparing nudo against
+        // itself rather than against the tool operators actually use.
+        assert_eq!(fingerprint_of(KEY_A), FINGERPRINT_A);
+        assert_eq!(fingerprint_of(KEY_B), FINGERPRINT_B);
+        assert_ne!(FINGERPRINT_A, FINGERPRINT_B);
+    }
+
+    #[test]
+    fn nothing_pinned_means_the_first_key_seen_is_trusted_and_recorded() {
+        let verdict = verdict_for("", &public_key(KEY_A)).expect("verdict");
+        match verdict {
+            HostKeyOutcome::Pinned { key, fingerprint } => {
+                assert_eq!(fingerprint, FINGERPRINT_A);
+                // The recorded key must be usable as the next expectation.
+                assert_eq!(fingerprint_of(&key), FINGERPRINT_A);
+            }
+            other => panic!("expected first-use pinning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_pinned_key_presented_again_matches() {
+        let verdict = verdict_for(KEY_A, &public_key(KEY_A)).expect("verdict");
+        assert_eq!(
+            verdict,
+            HostKeyOutcome::Matched {
+                fingerprint: FINGERPRINT_A.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_different_key_is_a_change_carrying_both_fingerprints() {
+        // The whole point: this is what stops nudo authenticating to a host
+        // that is not the one it pinned.
+        let verdict = verdict_for(KEY_A, &public_key(KEY_B)).expect("verdict");
+        match verdict {
+            HostKeyOutcome::Changed {
+                expected_fingerprint,
+                key,
+                fingerprint,
+            } => {
+                assert_eq!(expected_fingerprint, FINGERPRINT_A);
+                assert_eq!(fingerprint, FINGERPRINT_B);
+                // The presented key is carried so the change can be reviewed
+                // rather than only reported.
+                assert_eq!(fingerprint_of(&key), FINGERPRINT_B);
+            }
+            other => panic!("a changed key must not be accepted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pinned_key_that_will_not_parse_is_a_change_rather_than_an_absence() {
+        // The dangerous failure mode: treating a corrupt column as "nothing
+        // pinned" would silently re-pin whatever answered, turning a database
+        // problem into a security downgrade with no signal.
+        let verdict =
+            verdict_for("ssh-ed25519 not-actually-base64", &public_key(KEY_A)).expect("verdict");
+        assert!(
+            matches!(verdict, HostKeyOutcome::Changed { .. }),
+            "got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn whitespace_and_a_trailing_comment_do_not_make_a_key_look_changed() {
+        // ssh-keyscan and ssh-keygen emit comments and trailing newlines; a
+        // pinned key differing only in those must still match, or every host
+        // would look compromised after a round-trip through a text field.
+        let decorated = format!("  {KEY_A} operator@laptop\n");
+        assert_eq!(
+            verdict_for(&decorated, &public_key(KEY_A)).expect("verdict"),
+            HostKeyOutcome::Matched {
+                fingerprint: FINGERPRINT_A.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_recorded_key_is_stored_without_the_comment_it_arrived_with() {
+        // Stored canonically so what is pinned, what is compared and what is
+        // shown are the same string. A comment riding along would make the
+        // stored value differ from host to host for the same key material.
+        let mut commented = public_key(KEY_A);
+        commented.set_comment("root@rebuilt-host");
+
+        let HostKeyOutcome::Pinned { key, .. } = verdict_for("", &commented).expect("verdict")
+        else {
+            panic!("expected first-use pinning");
+        };
+        assert_eq!(key, KEY_A);
+        assert!(!key.contains("root@rebuilt-host"));
+    }
+
+    #[test]
+    fn a_pinned_value_is_recognised_as_pinned_even_when_it_is_unparseable() {
+        assert!(host_key_is_pinned(KEY_A));
+        assert!(host_key_is_pinned("garbage"));
+        // Only genuinely empty values are "not pinned".
+        assert!(!host_key_is_pinned(""));
+        assert!(!host_key_is_pinned("   \n "));
+    }
+
+    #[test]
+    fn fingerprints_are_formatted_for_display_without_failing_on_junk() {
+        assert_eq!(fingerprint_of(KEY_A), FINGERPRINT_A);
+        assert_eq!(fingerprint_of(""), "<none>");
+        assert_eq!(fingerprint_of("nonsense"), "<unparseable>");
+    }
+
+    #[test]
+    fn a_changed_host_key_error_says_what_changed_and_what_to_do() {
+        let message = HostKeyChanged {
+            host: "10.0.0.5".to_string(),
+            port: 22,
+            expected_fingerprint: FINGERPRINT_A.to_string(),
+            key: KEY_B.to_string(),
+            fingerprint: FINGERPRINT_B.to_string(),
+        }
+        .to_string();
+
+        // Both fingerprints, so the operator can compare them.
+        assert!(message.contains(FINGERPRINT_A), "got: {message}");
+        assert!(message.contains(FINGERPRINT_B), "got: {message}");
+        assert!(message.contains("10.0.0.5:22"), "got: {message}");
+        // And the way out, since refusing without one is just a wall.
+        assert!(message.contains("host-key"), "got: {message}");
+    }
+
+    #[test]
+    fn an_ssh_target_debug_shows_the_host_key_fingerprint_not_the_key() {
+        // The fingerprint is the useful thing in a log line; the key itself is
+        // 68 characters of noise.
+        let target = SshTarget {
+            host: "10.0.0.5".into(),
+            port: 22,
+            user: "root".into(),
+            private_key: String::new(),
+            passphrase: None,
+            host_key: KEY_A.into(),
+        };
+        let debug = format!("{target:?}");
+        assert!(debug.contains(FINGERPRINT_A), "got: {debug}");
+    }
+
     #[test]
     fn ssh_targets_never_print_their_key_material() {
         let target = SshTarget {
@@ -707,6 +1083,7 @@ mod tests {
             user: "root".into(),
             private_key: "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n".into(),
             passphrase: Some("hunter2".into()),
+            host_key: String::new(),
         };
         let debug = format!("{target:?}");
         assert!(!debug.contains("secret"));

@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use nudo_proto::{
-    AuditEntry, CheckTargetResponse, Deployment, LogLine, Release, Secret, Service, Source, Target,
-    UnitStatus, deployment, source, target,
+    AuditEntry, CheckTargetResponse, Deployment, HostKey, LogLine, Release, Secret, Service,
+    Source, Target, UnitStatus, deployment, source, target,
 };
 
 // ---------------------------------------------------------------------------
@@ -206,8 +206,8 @@ fn first_run_checklist(has_target: bool, has_service: bool) -> Markup {
         (
             has_target,
             "Add a target",
-            "A machine reachable over SSH. nudo checks SSH, sudo, systemd and the \
-             release directory before you trust it with anything.",
+            "A machine reachable over SSH. nudo checks its host key, SSH, sudo, \
+             systemd and the release directory before you trust it with anything.",
             "/targets/new",
             "Add a target",
         ),

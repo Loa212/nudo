@@ -78,12 +78,14 @@ pub fn target_detail(
     services: &[Service],
     statuses: &HashMap<String, UnitStatus>,
     checks: Option<&CheckTargetResponse>,
+    csrf: &str,
 ) -> Markup {
     let owned: Vec<Service> = services
         .iter()
         .filter(|s| s.target_id == target.id)
         .cloned()
         .collect();
+    let host_key = target.host_key.clone().unwrap_or_default();
 
     html! {
         (topbar(&target.name, Some(&address(target)), html! {
@@ -94,6 +96,13 @@ pub fn target_detail(
             a .btn href=(format!("/targets/{}/edit", target.id)) { "Edit" }
         }))
         div .content {
+            // First on the page, above even the latency-critical warning: while
+            // a key change is unreviewed, nothing else about this target can be
+            // acted on, so nothing else is the first thing to read.
+            @if !host_key.pending_key.is_empty() {
+                (host_key_change(target, &host_key, csrf))
+            }
+
             @if target.latency_critical {
                 (callout("bad", "Latency-critical host", html! {
                     "Unattended mutation is refused for this target. Deploys and unit \
@@ -113,6 +122,7 @@ pub fn target_detail(
                     dt { "User" }         dd .mono { (target.user) }
                     // The reference into the secret store, never the key.
                     dt { "SSH key" }      dd .mono { (or_dash(&target.ssh_key_id)) }
+                    dt { "Host key" }     dd { (host_key_summary(&host_key)) }
                     dt { "Status" }       dd { (target_badge(target.status)) }
                     dt { "Agent" }        dd {
                         @if target.agent_version.is_empty() {
@@ -150,6 +160,97 @@ pub fn target_detail(
                     // A one-element slice; clippy's needless-borrow suggestion here is
                     // wrong, since the parameter is a slice rather than a reference.
                     (services_rows(&owned, std::slice::from_ref(target), statuses, false))
+                }
+            }
+        }
+    }
+}
+
+/// The pinned host key, at a glance.
+///
+/// The fingerprint rather than the key: it is what an operator compares against
+/// `ssh-keyscan`, and the full key would push every other row off the line.
+fn host_key_summary(host_key: &HostKey) -> Markup {
+    html! {
+        @if !host_key.pending_key.is_empty() {
+            div .row {
+                (badge("changed", BadgeKind::Bad))
+                span .small.muted { "connections refused until reviewed" }
+            }
+        } @else if host_key.key.is_empty() {
+            span .muted { "not pinned yet — the first connection records one" }
+        } @else {
+            div .row {
+                (badge("pinned", BadgeKind::Ok))
+                span .mono.small { (host_key.fingerprint) }
+            }
+            div .small.muted { "trusted on first use, " (ago(host_key.pinned_at.as_ref())) }
+        }
+    }
+}
+
+/// The review-and-accept flow for a changed host key.
+///
+/// Deliberately not a one-click "accept": both fingerprints are shown, the
+/// command to verify against the machine itself is spelled out, and the button
+/// carries the fingerprint being accepted so what is accepted is what was
+/// displayed.
+fn host_key_change(target: &Target, host_key: &HostKey, csrf: &str) -> Markup {
+    html! {
+        div .card {
+            (callout("bad", "This target's SSH host key has changed", html! {
+                "Every connection to " (target.name) " is refused until this is resolved — \
+                 deploys, logs, terminals and checks alike. A host that was rebuilt or \
+                 reinstalled legitimately has a new key. A host that was not is something \
+                 else answering for this address, and accepting the key would hand it an \
+                 authentication attempt with this target's private key."
+            }))
+
+            dl .dl style="margin-top:12px" {
+                dt { "Pinned" }
+                dd {
+                    @if host_key.fingerprint.is_empty() {
+                        span .muted { "none" }
+                    } @else {
+                        div .mono.small { (host_key.fingerprint) }
+                    }
+                }
+                dt { "Presented" }
+                dd {
+                    div .mono.small { (host_key.pending_fingerprint) }
+                    div .small.muted { "first seen " (ago(host_key.pending_seen_at.as_ref())) }
+                }
+            }
+
+            p .card-note {
+                "Verify on the machine itself before accepting — over a console, or a \
+                 channel that does not depend on this address being the right host:"
+            }
+            pre .mono.small { "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub" }
+            p .card-note {
+                "That must print the presented fingerprint above. "
+                code { "ssh-keyscan" }
+                " asks the same address nudo is being redirected away from, so it \
+                 confirms nothing on its own."
+            }
+
+            form method="post" action=(format!("/targets/{}/host-key/accept", target.id)) {
+                (csrf_input(csrf))
+                // The fingerprint travels with the acceptance, so a key that
+                // changes again between this page rendering and the click is
+                // refused rather than accepted unseen.
+                input type="hidden" name="fingerprint" value=(host_key.pending_fingerprint);
+                @if target.latency_critical {
+                    input type="hidden" name="allow_latency_critical" value="1";
+                }
+                div .form-actions {
+                    button .btn.danger type="submit"
+                        onclick=(format!(
+                            "return confirm('Accept {} as the host key for {}? Do this only if you have confirmed that fingerprint on the machine itself.')",
+                            host_key.pending_fingerprint, target.name
+                        )) {
+                        "Accept this key"
+                    }
                 }
             }
         }

@@ -55,6 +55,39 @@ pub(super) struct JsonTarget {
     labels: std::collections::BTreeMap<String, String>,
 }
 
+/// A target's host-key state.
+///
+/// Public key material throughout, so the full keys are included: comparing a
+/// fingerprint is the common case, but a script reconciling against
+/// `known_hosts` wants the key itself.
+#[derive(serde::Serialize)]
+pub(super) struct JsonHostKey {
+    target_id: String,
+    pinned: bool,
+    fingerprint: String,
+    key: String,
+    /// Whether a changed key is waiting to be reviewed. While this is true,
+    /// every connection to the target is refused.
+    change_pending: bool,
+    pending_fingerprint: String,
+    pending_key: String,
+}
+
+impl JsonHostKey {
+    pub(super) fn of(target: &Target) -> Self {
+        let host_key = target.host_key.clone().unwrap_or_default();
+        Self {
+            target_id: target.id.clone(),
+            pinned: !host_key.key.is_empty(),
+            fingerprint: host_key.fingerprint,
+            key: host_key.key,
+            change_pending: !host_key.pending_key.is_empty(),
+            pending_fingerprint: host_key.pending_fingerprint,
+            pending_key: host_key.pending_key,
+        }
+    }
+}
+
 impl From<&Vec<Target>> for JsonTargets {
     fn from(targets: &Vec<Target>) -> Self {
         Self {

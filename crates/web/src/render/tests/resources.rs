@@ -102,6 +102,7 @@ fn target_detail_shows_the_key_reference_and_the_check_results() {
         &[],
         &HashMap::new(),
         Some(&checks),
+        "csrf",
     ));
 
     assert!(rendered.contains("Preflight checks"));
@@ -112,9 +113,111 @@ fn target_detail_shows_the_key_reference_and_the_check_results() {
     assert!(rendered.contains("SSH key"));
 }
 
+// -- host keys ---------------------------------------------------------
+
+const PENDING_FINGERPRINT: &str = "SHA256:YWnilawiH+UPKWl5LfNJH4a2YHBRRXkqVxVpE40NZNk";
+const PINNED_FINGERPRINT: &str = "SHA256:YDKOP3XHL0C4Ib51j2RJjuZhmu8rexWKe7IVDDOurMI";
+
+/// A target whose host key has changed and is waiting to be reviewed.
+fn a_target_with_a_changed_host_key() -> Target {
+    Target {
+        host_key: Some(nudo_proto::HostKey {
+            key: "ssh-ed25519 AAAApinned".to_string(),
+            fingerprint: PINNED_FINGERPRINT.to_string(),
+            pinned_at: Some(nudo_proto::to_timestamp(chrono::Utc::now())),
+            pending_key: "ssh-ed25519 AAAApresented".to_string(),
+            pending_fingerprint: PENDING_FINGERPRINT.to_string(),
+            pending_seen_at: Some(nudo_proto::to_timestamp(chrono::Utc::now())),
+        }),
+        ..a_target()
+    }
+}
+
+#[test]
+fn a_pinned_host_key_is_shown_by_fingerprint() {
+    let target = Target {
+        host_key: Some(nudo_proto::HostKey {
+            key: "ssh-ed25519 AAAApinned".to_string(),
+            fingerprint: PINNED_FINGERPRINT.to_string(),
+            pinned_at: Some(nudo_proto::to_timestamp(chrono::Utc::now())),
+            ..Default::default()
+        }),
+        ..a_target()
+    };
+    let rendered = s(target_detail(&target, &[], &HashMap::new(), None, "csrf"));
+
+    assert!(rendered.contains("Host key"));
+    assert!(rendered.contains(PINNED_FINGERPRINT));
+    assert!(rendered.contains("pinned"));
+    // Nothing to review, so no accept form.
+    assert!(!rendered.contains("host-key/accept"));
+}
+
+#[test]
+fn a_target_that_has_never_connected_says_its_key_is_not_pinned_yet() {
+    // Rather than showing an empty field, which reads as a missing value
+    // instead of a state the target is legitimately in.
+    let rendered = s(target_detail(
+        &a_target(),
+        &[],
+        &HashMap::new(),
+        None,
+        "csrf",
+    ));
+    assert!(rendered.contains("not pinned yet"));
+    assert!(!rendered.contains("host-key/accept"));
+}
+
+#[test]
+fn a_changed_host_key_shows_both_fingerprints_and_an_accept_form() {
+    let target = a_target_with_a_changed_host_key();
+    let rendered = s(target_detail(&target, &[], &HashMap::new(), None, "csrf"));
+
+    // Both, so there is something to compare.
+    assert!(rendered.contains(PINNED_FINGERPRINT));
+    assert!(rendered.contains(PENDING_FINGERPRINT));
+    // The consequence, stated rather than implied.
+    assert!(rendered.contains("refused"));
+    // And a way to resolve it that is not editing the database.
+    assert!(rendered.contains("/targets/tgt_1/host-key/accept"));
+    assert!(rendered.contains(r#"name="csrf""#));
+}
+
+#[test]
+fn the_accept_form_carries_the_fingerprint_that_was_displayed() {
+    // So a key that changes again between this page rendering and the click is
+    // refused server-side rather than accepted unseen.
+    let target = a_target_with_a_changed_host_key();
+    let rendered = s(target_detail(&target, &[], &HashMap::new(), None, "csrf"));
+    assert!(
+        rendered.contains(&format!(
+            r#"name="fingerprint" value="{PENDING_FINGERPRINT}""#
+        )),
+        "got: {rendered}"
+    );
+}
+
+#[test]
+fn accepting_a_key_on_a_latency_critical_host_carries_the_override() {
+    // Otherwise the button would always fail the guardrail, and the only host
+    // where this matters most would be the one with no working accept flow.
+    let target = Target {
+        latency_critical: true,
+        ..a_target_with_a_changed_host_key()
+    };
+    let rendered = s(target_detail(&target, &[], &HashMap::new(), None, "csrf"));
+    assert!(rendered.contains(r#"name="allow_latency_critical""#));
+}
+
 #[test]
 fn target_detail_omits_the_check_card_when_no_check_has_run() {
-    let rendered = s(target_detail(&a_target(), &[], &HashMap::new(), None));
+    let rendered = s(target_detail(
+        &a_target(),
+        &[],
+        &HashMap::new(),
+        None,
+        "csrf",
+    ));
     assert!(!rendered.contains("Preflight checks"));
 }
 
@@ -133,6 +236,7 @@ fn a_passing_check_set_reads_as_passing() {
         &[],
         &HashMap::new(),
         Some(&checks),
+        "csrf",
     ));
     assert!(rendered.contains("all passed"));
 }

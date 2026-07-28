@@ -162,6 +162,13 @@ pub struct TargetSummary {
     /// True when this host must not be mutated unattended. Every mutating tool
     /// refuses it unless `allow_latency_critical` is set.
     pub latency_critical: bool,
+    /// True when this target's SSH host key has changed and is waiting for a
+    /// human to review it. Every operation against the host — including
+    /// read-only ones — is refused until then, so there is nothing an agent can
+    /// usefully do here. Accepting a host key is deliberately not an agent
+    /// action: it is a judgement about whether a machine is the one it claims
+    /// to be, which needs someone who can check it out of band.
+    pub host_key_change_pending: bool,
     pub labels: std::collections::BTreeMap<String, String>,
 }
 

@@ -109,6 +109,10 @@ impl NudoTools {
                     .as_str()
                     .to_string(),
                 latency_critical: target.latency_critical,
+                host_key_change_pending: target
+                    .host_key
+                    .as_ref()
+                    .is_some_and(|key| !key.pending_key.is_empty()),
                 labels: target.labels.into_iter().collect(),
             })
             .collect();
