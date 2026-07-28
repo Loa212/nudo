@@ -4,6 +4,162 @@ use super::*;
 // Secrets
 // ---------------------------------------------------------------------------
 
+/// Something to say at the top of the page after a redirect.
+///
+/// Resolved from a key rather than carrying text, so a crafted link cannot put
+/// arbitrary words in a banner on somebody's own dashboard. An unrecognised key
+/// renders nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretNotice {
+    None,
+    /// The name is already taken, and this page does not overwrite.
+    Taken(String),
+    /// A rotation succeeded.
+    Rotated,
+    /// The pasted key was empty, a public key, the wrong shape, or truncated.
+    KeyEmpty,
+    KeyPublic,
+    KeyShape,
+    KeyTruncated,
+    /// A rotation arrived with nothing in the field.
+    EmptyValue(String),
+}
+
+impl SecretNotice {
+    pub fn from_key(key: &str, name: &str) -> Self {
+        match key {
+            "taken" => Self::Taken(name.to_string()),
+            "rotated" => Self::Rotated,
+            "empty" => Self::EmptyValue(name.to_string()),
+            "key-empty" => Self::KeyEmpty,
+            "key-public" => Self::KeyPublic,
+            "key-shape" => Self::KeyShape,
+            "key-truncated" => Self::KeyTruncated,
+            _ => Self::None,
+        }
+    }
+
+    fn render(&self) -> Markup {
+        match self {
+            Self::None => html! {},
+            Self::Taken(name) => callout(
+                "bad",
+                "That name is already taken",
+                html! {
+                    "A secret named " span .mono { (name) } " already exists. Its value "
+                    "cannot be read back, so writing over it would destroy something "
+                    "unrecoverable — nudo will not do that by accident. To replace the "
+                    "value, use " strong { "Rotate" } " on its row below. To get rid of "
+                    "it entirely, delete it first."
+                },
+            ),
+            Self::Rotated => callout(
+                "info",
+                "Value replaced",
+                html! {
+                    "The old value is gone. Any service using this secret picks up the "
+                    "new one on its next deploy — until then it is still running with "
+                    "the old value."
+                },
+            ),
+            Self::EmptyValue(name) => callout(
+                "bad",
+                "Nothing to store",
+                html! {
+                    "The new value for " span .mono { (name) } " was empty. The existing "
+                    "value has been left alone."
+                },
+            ),
+            Self::KeyEmpty => callout(
+                "bad",
+                "No key pasted",
+                html! {
+                    "Paste the private key into the field."
+                },
+            ),
+            Self::KeyPublic => callout(
+                "bad",
+                "That is a public key",
+                html! {
+                    "nudo needs the private half — the file "
+                    em { "without" }
+                    " the "
+                    span .mono { ".pub" }
+                    " extension. A public key here would be stored happily and then "
+                    "fail every connection that used it."
+                },
+            ),
+            Self::KeyShape => callout(
+                "bad",
+                "That does not look like a private key",
+                html! {
+                    "It should start with "
+                    span .mono { "-----BEGIN OPENSSH PRIVATE KEY-----" }
+                    " or a PEM header."
+                },
+            ),
+            Self::KeyTruncated => callout(
+                "bad",
+                "The key looks truncated",
+                html! {
+                    "It should end with an "
+                    span .mono { "-----END ...-----" }
+                    " line. Copy the whole file, including the first and last lines."
+                },
+            ),
+        }
+    }
+}
+
+/// The rotate action on a secret's row.
+///
+/// A `<details>` rather than a modal: it needs no JavaScript, degrades to a
+/// visible form with scripting off, and keeps the new value in a field on the
+/// page the operator is already looking at. The summary is the button; opening
+/// it reveals what rotating actually costs before there is anything to submit.
+///
+/// The scope is carried in hidden fields rather than the id, because that is
+/// what identifies a secret for a write — two secrets can share a name under
+/// different scopes, and rotating the wrong one would be the exact accident this
+/// whole change exists to prevent.
+fn rotate_action(secret: &Secret, csrf: &str) -> Markup {
+    html! {
+        details .rotate {
+            summary .btn.small { "Rotate" }
+            form method="post" action="/secrets/rotate" {
+                (csrf_input(csrf))
+                input type="hidden" name="name" value=(secret.name);
+                input type="hidden" name="scope_target_id" value=(secret.scope_target_id);
+                input type="hidden" name="scope_service_id" value=(secret.scope_service_id);
+
+                p .card-note {
+                    "Replaces the value of "
+                    span .mono { (secret.name) }
+                    ". The current value cannot be read back and is gone once this "
+                    "is saved. Services keep running on the old value until their "
+                    "next deploy."
+                }
+
+                div .field {
+                    label for=(format!("rotate_{}", secret.id)) { "New value" }
+                    textarea id=(format!("rotate_{}", secret.id)) name="value" rows="4"
+                        required spellcheck="false" autocomplete="off" {}
+                }
+
+                div .form-actions {
+                    button .btn.small.danger type="submit"
+                        onclick=(format!(
+                            "return confirm('Replace the value of {}? The current value cannot be recovered.')",
+                            js_text(&secret.name)
+                        )) {
+                        "Replace value"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Storing an SSH private key.
 ///
 /// The same store as an environment secret, asked for in the shape it actually
@@ -80,26 +236,31 @@ pub fn secrets_list(
     secrets: &[Secret],
     targets: &[Target],
     services: &[Service],
+    notice: SecretNotice,
     csrf: &str,
 ) -> Markup {
     html! {
         (topbar("Secrets", Some("Write-only: values are never returned by the API"), html! {}))
         div .content {
+            (notice.render())
+
             (callout("info", "Values cannot be read back", html! {
                 "Once stored, a value is only ever decrypted on the way to a \
-                 target's EnvironmentFile, or used to open an ssh connection. To \
-                 change one, write it again — the digest below tells you whether \
-                 it actually changed."
+                 target's EnvironmentFile, or used to open an ssh connection. \
+                 Nothing here overwrites a name that already exists — replacing \
+                 a value is a deliberate act, and the digest below is how you \
+                 tell whether one actually changed."
             }))
 
             (ssh_key_form(csrf))
 
             form .card method="post" action="/secrets" {
                 (csrf_input(csrf))
-                h2 { "Add or replace an environment secret" }
+                h2 { "Add an environment secret" }
                 p .card-note {
                     "Resolved at deploy time into the unit's EnvironmentFile. \
-                     Writing an existing name replaces its value."
+                     A name that is already taken is refused rather than \
+                     overwritten."
                 }
                 div .fields style="margin-top:12px" {
                     div .field {
@@ -168,11 +329,14 @@ pub fn secrets_list(
                                         td .mono.small.faint { (digest_prefix(&secret.digest)) }
                                         td .nowrap.small.muted { (ago(secret.updated_at.as_ref())) }
                                         td {
-                                            form method="post" action=(format!("/secrets/{}/delete", secret.id)) {
-                                                (csrf_input(csrf))
-                                                button .btn.small.danger type="submit"
-                                                    onclick=(format!("return confirm('Delete {}? Any service using it will fail to start on its next deploy, and the value cannot be recovered.')", js_text(&secret.name))) {
-                                                    "Delete"
+                                            div .row {
+                                                (rotate_action(secret, csrf))
+                                                form method="post" action=(format!("/secrets/{}/delete", secret.id)) {
+                                                    (csrf_input(csrf))
+                                                    button .btn.small.danger type="submit"
+                                                        onclick=(format!("return confirm('Delete {}? Any service using it will fail to start on its next deploy, and the value cannot be recovered.')", js_text(&secret.name))) {
+                                                        "Delete"
+                                                    }
                                                 }
                                             }
                                         }

@@ -41,6 +41,11 @@ service, `BuildHosts`, was added along with:
   builds anywhere new.
 - `BuildDefaults`, and `GetDefaults`/`SetDefaults` on the new service.
 
+One further field: `PutSecretRequest.replace` (field 6), which turns what used
+to be an unconditional upsert into a refusal unless the caller asks to replace.
+Unset is the safe default, so an existing client cannot overwrite a secret by
+accident — see *Secrets* below for why that mattered enough to change.
+
 `CheckBuildHostResponse` carries a `warnings` list alongside `checks`, which
 `CheckTargetResponse` has no equivalent of. A warning must not make `ok` false:
 a latency-critical build host is a choice an operator made, and folding it into
@@ -301,6 +306,44 @@ Coolify offers as an option. Nothing here administers a repository.
 
 **`request_oauth_on_install` is false.** Nothing acts on behalf of a GitHub user,
 so there is no reason to send anyone through an OAuth flow.
+
+### Secrets
+
+**Writing a name that already exists is refused, not an overwrite.** The store
+upserted, so `Secrets.Put` on a taken name silently replaced the value. Every
+other resource here can be inspected after a mistaken write; a secret cannot —
+it is write-only by design, so an accidental overwrite destroys something
+unrecoverable and leaves nothing to say what was lost. The name is the same and
+only the digest moved, which is only noticeable to someone who wrote the old
+digest down.
+
+Rotation is a real operation — a leaked key has to be replaceable — so it stays
+available behind `PutSecretRequest.replace`. Unset is the safe default and what
+an existing client sends, so nothing that predates this can overwrite by
+accident. The dashboard exposes it as a **Rotate** action on the secret's row
+rather than as a flag on the add form: opening it says what the replacement
+costs before there is anything to submit, and the ordinary write can never reach
+it. The CLI spells it `--replace`.
+
+A rotation is audited as `rotated secret X` rather than `stored secret X`.
+Storing something new and destroying something unrecoverable are different
+events, and the second is the one worth finding later.
+
+**The refusal is reported on the page rather than as an error page.** Somebody
+typing a name that is taken is an expected outcome, not a failure of the system,
+and the message belongs where they typed it. It survives the redirect that
+follows the POST as a key in the query string, resolved to text server-side — a
+crafted link cannot put arbitrary words in a banner on an operator's own
+dashboard.
+
+**An SSH key is asked for in the shape an SSH key has.** The same store either
+way, but a key is multi-line, is never an environment variable, and has no
+meaningful target or service scope — so it gets a textarea, no env-var framing,
+and no scope fields. It is also the one value here that can be checked before
+storing: a public key or a truncated paste is otherwise accepted, encrypted, and
+surfaces much later as a failed connection to a host nobody has reason to doubt.
+The check is a shape check rather than a parse, since nudo accepts several key
+formats and refusing an unrecognised one would be worse than storing it.
 
 ### Storage and API
 

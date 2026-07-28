@@ -364,6 +364,13 @@ enum SecretCommand {
         target: Option<String>,
         #[arg(long)]
         service: Option<String>,
+        /// Rotate a name that already exists, replacing its value.
+        ///
+        /// Without this, writing a name that is taken is refused. A value
+        /// cannot be read back, so overwriting one destroys something
+        /// unrecoverable — that should be asked for, not assumed.
+        #[arg(long)]
+        replace: bool,
     },
     Remove {
         id: String,

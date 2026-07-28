@@ -445,3 +445,30 @@ fn exec_captures_trailing_arguments_including_flags() {
         _ => panic!("expected exec"),
     }
 }
+
+#[test]
+fn storing_a_secret_does_not_replace_unless_asked() {
+    // A stored value cannot be read back, so overwriting one by accident
+    // destroys something unrecoverable. The default has to be the safe one.
+    let cli = Cli::parse_from(["nudo", "secrets", "set", "API_KEY", "--value", "v"]);
+    match &cli.command {
+        Command::Secrets(SecretCommand::Set { replace, .. }) => {
+            assert!(!replace, "replacing must be opt-in")
+        }
+        _ => panic!("expected secrets set"),
+    }
+
+    let cli = Cli::parse_from([
+        "nudo",
+        "secrets",
+        "set",
+        "API_KEY",
+        "--value",
+        "v",
+        "--replace",
+    ]);
+    match &cli.command {
+        Command::Secrets(SecretCommand::Set { replace, .. }) => assert!(replace),
+        _ => panic!("expected secrets set"),
+    }
+}

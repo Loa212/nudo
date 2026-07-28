@@ -17,6 +17,7 @@ fn a_secret_listing_shows_a_digest_and_never_the_value() {
         &[secret],
         &[a_target()],
         &[a_service()],
+        SecretNotice::None,
         "tok",
     ));
 
@@ -34,7 +35,7 @@ fn a_secret_listing_shows_a_digest_and_never_the_value() {
 fn the_secret_value_input_never_carries_a_value_attribute() {
     // The add form is the one place a value field exists. It must render
     // empty every time, including when redisplayed after a failed submit.
-    let rendered = s(secrets_list(&[], &[], &[], "tok"));
+    let rendered = s(secrets_list(&[], &[], &[], SecretNotice::None, "tok"));
     let field = rendered
         .split("id=\"value\"")
         .nth(1)
@@ -59,7 +60,7 @@ fn a_secret_row_has_no_element_that_could_reveal_a_value() {
         digest: "deadbeefcafe0000".to_string(),
         ..Default::default()
     };
-    let rendered = s(secrets_list(&[secret], &[], &[], "tok"));
+    let rendered = s(secrets_list(&[secret], &[], &[], SecretNotice::None, "tok"));
     // No "reveal"/"show" affordance to click, and no <code> holding a value.
     assert!(!rendered.to_lowercase().contains("reveal"));
     assert!(!rendered.contains("Show value"));
@@ -239,6 +240,7 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
                 &[secret],
                 std::slice::from_ref(&target),
                 std::slice::from_ref(&service),
+                SecretNotice::None,
                 token,
             )),
         ),
@@ -404,7 +406,7 @@ fn the_ssh_key_textarea_renders_empty_and_is_never_prefilled() {
     // The same write-only property as the value input, in the element a
     // multi-line key needs. A textarea holds its content between its tags
     // rather than in an attribute, so this is a different way to get it wrong.
-    let rendered = s(secrets_list(&[], &[], &[], "tok"));
+    let rendered = s(secrets_list(&[], &[], &[], SecretNotice::None, "tok"));
 
     let textarea = rendered
         .split("id=\"key_value\"")
@@ -425,7 +427,7 @@ fn the_ssh_key_textarea_renders_empty_and_is_never_prefilled() {
 fn the_ssh_key_form_does_not_offer_a_scope() {
     // A key opens the connection, so scoping it to a target it is needed to
     // reach is circular. Offering the field would invite that mistake.
-    let rendered = s(secrets_list(&[], &[], &[], "tok"));
+    let rendered = s(secrets_list(&[], &[], &[], SecretNotice::None, "tok"));
     let form = rendered
         .split("id=\"ssh-key\"")
         .nth(1)
@@ -444,10 +446,89 @@ fn the_ssh_key_form_does_not_offer_a_scope() {
 fn both_secret_forms_carry_a_csrf_token() {
     // Two forms now write to the store, and a new one must not be able to
     // arrive without one.
-    let rendered = s(secrets_list(&[], &[], &[], "tok-abc"));
+    let rendered = s(secrets_list(&[], &[], &[], SecretNotice::None, "tok-abc"));
     assert_eq!(
         rendered.matches("name=\"csrf\" value=\"tok-abc\"").count(),
         2,
         "the env-var form and the ssh key form each need a token"
     );
+}
+
+#[test]
+fn a_taken_name_is_reported_on_the_page_and_points_at_rotate() {
+    // The refusal has to say what to do instead, or it is just a wall.
+    let rendered = s(secrets_list(
+        &[],
+        &[],
+        &[],
+        SecretNotice::from_key("taken", "DEPLOY_KEY"),
+        "tok",
+    ));
+    assert!(rendered.contains("already taken"));
+    assert!(rendered.contains("DEPLOY_KEY"));
+    assert!(rendered.contains("Rotate"), "it must name the way forward");
+}
+
+#[test]
+fn an_unrecognised_notice_key_renders_nothing() {
+    // The key comes from a query string, so a crafted link must not be able to
+    // put words in a banner on somebody's own dashboard.
+    let rendered = s(secrets_list(
+        &[],
+        &[],
+        &[],
+        SecretNotice::from_key("<script>alert(1)</script>", "x"),
+        "tok",
+    ));
+    assert!(!rendered.contains("alert(1)"));
+    assert!(!rendered.contains("callout bad"), "no banner at all");
+}
+
+#[test]
+fn the_page_no_longer_promises_to_replace_an_existing_value() {
+    // The old copy said writing an existing name replaced its value, which was
+    // both true and alarming. Neither should be the case now.
+    let rendered = s(secrets_list(&[], &[], &[], SecretNotice::None, "tok"));
+    assert!(
+        !rendered.contains("replaces its value"),
+        "the overwrite promise must be gone"
+    );
+    assert!(rendered.contains("refused rather than"));
+}
+
+#[test]
+fn every_stored_secret_offers_a_rotate_form_carrying_its_scope() {
+    // The scope identifies which secret a write lands on: two can share a name
+    // under different scopes, and rotating the wrong one is the exact accident
+    // this whole change exists to prevent.
+    let secret = Secret {
+        id: "sec_1".to_string(),
+        name: "DATABASE_URL".to_string(),
+        scope_target_id: "tgt_9".to_string(),
+        digest: "abc123abc123".to_string(),
+        ..Default::default()
+    };
+    let rendered = s(secrets_list(
+        std::slice::from_ref(&secret),
+        &[],
+        &[],
+        SecretNotice::None,
+        "tok",
+    ));
+
+    assert!(rendered.contains("action=\"/secrets/rotate\""));
+    assert!(rendered.contains("name=\"scope_target_id\" value=\"tgt_9\""));
+    // And it still carries no value to prefill, like every other field here.
+    let panel = rendered
+        .split("action=\"/secrets/rotate\"")
+        .nth(1)
+        .expect("the rotate form");
+    let textarea = panel
+        .split("</textarea>")
+        .next()
+        .expect("a textarea")
+        .split('>')
+        .next_back()
+        .unwrap_or("");
+    assert!(textarea.trim().is_empty(), "got: {textarea:?}");
 }

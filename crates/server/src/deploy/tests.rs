@@ -239,6 +239,7 @@ async fn an_ssh_target_reads_its_key_from_the_secret_store() {
             "-----BEGIN OPENSSH PRIVATE KEY-----\nmaterial\n",
             "",
             "",
+            false,
         )
         .await
         .expect("secret");

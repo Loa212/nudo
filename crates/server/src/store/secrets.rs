@@ -12,7 +12,13 @@ use super::{Store, from_db_time, new_id, now_string};
 use crate::crypto::{SecretKey, sha256_hex};
 
 impl Store {
-    /// Creates or replaces a secret within its scope.
+    /// Stores a secret within its scope.
+    ///
+    /// Refuses a name that is already taken unless `replace` is set. A secret's
+    /// value cannot be read back, so an accidental overwrite destroys something
+    /// unrecoverable and leaves no way to tell what was lost — the name is the
+    /// same, and only the digest changed. Rotation is a real operation, so it
+    /// stays possible; it just has to be asked for.
     ///
     /// Returns metadata only — a digest and timestamps. The plaintext leaves the
     /// process exactly once more, when the deploy engine writes the target's
@@ -24,6 +30,7 @@ impl Store {
         value: &str,
         scope_target_id: &str,
         scope_service_id: &str,
+        replace: bool,
     ) -> anyhow::Result<Secret> {
         let name = name.trim();
         if name.is_empty() {
@@ -54,12 +61,30 @@ impl Store {
             bail!("no such service: {service_id}");
         }
 
+        // Checked before the write rather than relying on the unique index, so
+        // the refusal can name the thing that already exists and say what to do
+        // about it. The index still backstops a race.
+        let existing = self
+            .find_secret(name, target_scope.as_deref(), service_scope.as_deref())
+            .await?;
+        if let Some(existing) = &existing
+            && !replace
+        {
+            bail!(
+                "a secret named {name:?} already exists in this scope. Its value \
+                 cannot be read back, so it is not overwritten by accident — \
+                 rotate it deliberately, or delete it first ({})",
+                existing.id
+            );
+        }
+
         let sealed = key.seal(value)?;
         let digest = sha256_hex(value);
         let now = now_string();
 
-        // Upsert on the scoped-name index, so writing the same secret twice
-        // rotates it rather than failing or creating a duplicate.
+        // The upsert stays, but only a caller that asked for it can reach here
+        // with a name already present. `created_at` is left alone on the update
+        // path so a rotated secret keeps the date it was first stored.
         sqlx::query(
             "INSERT INTO secrets
                (id, name, value_enc, digest, scope_target_id, scope_service_id,
@@ -279,7 +304,7 @@ mod tests {
     async fn a_stored_secret_returns_metadata_but_never_its_value() {
         let (store, key, _, _) = fixture().await;
         let secret = store
-            .put_secret(&key, "API_KEY", "super-secret", "", "")
+            .put_secret(&key, "API_KEY", "super-secret", "", "", false)
             .await
             .expect("put");
 
@@ -297,7 +322,7 @@ mod tests {
     async fn the_stored_column_is_ciphertext_not_plaintext() {
         let (store, key, _, _) = fixture().await;
         store
-            .put_secret(&key, "TOKEN", "plaintext-value", "", "")
+            .put_secret(&key, "TOKEN", "plaintext-value", "", "", false)
             .await
             .expect("put");
 
@@ -313,16 +338,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writing_the_same_name_rotates_the_value_rather_than_duplicating() {
+    async fn writing_a_name_that_is_taken_is_refused_and_changes_nothing() {
+        // The value cannot be read back, so an overwrite destroys something
+        // unrecoverable. Refusing is what makes that impossible by accident.
         let (store, key, _, _) = fixture().await;
         let first = store
-            .put_secret(&key, "ROTATE", "v1", "", "")
+            .put_secret(&key, "TAKEN", "v1", "", "", false)
+            .await
+            .expect("put");
+
+        let error = store
+            .put_secret(&key, "TAKEN", "v2", "", "", false)
+            .await
+            .expect_err("the second write must be refused");
+        let message = error.to_string();
+        assert!(message.contains("already exists"), "got: {message}");
+        // The message has to name the row, so it can be dealt with.
+        assert!(message.contains(&first.id), "got: {message}");
+
+        // And the original value survives untouched.
+        assert_eq!(
+            store.reveal_secret(&key, &first.id).await.expect("reveal"),
+            Some("v1".to_string())
+        );
+        assert_eq!(store.list_secrets("", "").await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rotating_replaces_the_value_in_the_same_row() {
+        // Rotation stays available — a leaked key has to be replaceable.
+        let (store, key, _, _) = fixture().await;
+        let first = store
+            .put_secret(&key, "ROTATE", "v1", "", "", false)
             .await
             .expect("put");
         let second = store
-            .put_secret(&key, "ROTATE", "v2", "", "")
+            .put_secret(&key, "ROTATE", "v2", "", "", true)
             .await
-            .expect("put");
+            .expect("rotate");
 
         assert_eq!(first.id, second.id, "the same row is updated");
         assert_ne!(first.digest, second.digest);
@@ -334,19 +387,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_name_taken_in_one_scope_is_still_free_in_another() {
+        // The refusal is per scope, not per name: two targets may each hold a
+        // DATABASE_URL, and neither should block the other.
+        let (store, key, target_id, _) = fixture().await;
+        store
+            .put_secret(&key, "SCOPED", "global", "", "", false)
+            .await
+            .expect("global");
+        store
+            .put_secret(&key, "SCOPED", "per-target", &target_id, "", false)
+            .await
+            .expect("a different scope is a different secret");
+
+        assert_eq!(store.list_secrets("", "").await.expect("list").len(), 2);
+    }
+
+    #[tokio::test]
     async fn the_same_name_can_exist_in_different_scopes() {
         let (store, key, target_id, service_id) = fixture().await;
 
         let global = store
-            .put_secret(&key, "DB_URL", "global", "", "")
+            .put_secret(&key, "DB_URL", "global", "", "", false)
             .await
             .expect("put");
         let per_target = store
-            .put_secret(&key, "DB_URL", "target", &target_id, "")
+            .put_secret(&key, "DB_URL", "target", &target_id, "", false)
             .await
             .expect("put");
         let per_service = store
-            .put_secret(&key, "DB_URL", "service", "", &service_id)
+            .put_secret(&key, "DB_URL", "service", "", &service_id, false)
             .await
             .expect("put");
 
@@ -374,15 +444,15 @@ mod tests {
     async fn listing_can_be_narrowed_to_a_scope() {
         let (store, key, target_id, service_id) = fixture().await;
         store
-            .put_secret(&key, "GLOBAL_ONE", "a", "", "")
+            .put_secret(&key, "GLOBAL_ONE", "a", "", "", false)
             .await
             .expect("put");
         store
-            .put_secret(&key, "TARGET_ONE", "b", &target_id, "")
+            .put_secret(&key, "TARGET_ONE", "b", &target_id, "", false)
             .await
             .expect("put");
         store
-            .put_secret(&key, "SERVICE_ONE", "c", "", &service_id)
+            .put_secret(&key, "SERVICE_ONE", "c", "", &service_id, false)
             .await
             .expect("put");
 
@@ -402,11 +472,17 @@ mod tests {
         let (store, key, _, _) = fixture().await;
 
         for good in ["API_KEY", "_private", "KEY2", "lowercase"] {
-            store.put_secret(&key, good, "v", "", "").await.expect(good);
+            store
+                .put_secret(&key, good, "v", "", "", false)
+                .await
+                .expect(good);
         }
         for bad in ["has space", "has-dash", "2LEADING", "dollar$", "", "  "] {
             assert!(
-                store.put_secret(&key, bad, "v", "", "").await.is_err(),
+                store
+                    .put_secret(&key, bad, "v", "", "", false)
+                    .await
+                    .is_err(),
                 "{bad:?} should be rejected"
             );
         }
@@ -417,13 +493,13 @@ mod tests {
         let (store, key, _, _) = fixture().await;
         assert!(
             store
-                .put_secret(&key, "KEY", "v", "tgt_missing", "")
+                .put_secret(&key, "KEY", "v", "tgt_missing", "", false)
                 .await
                 .is_err()
         );
         assert!(
             store
-                .put_secret(&key, "KEY", "v", "", "svc_missing")
+                .put_secret(&key, "KEY", "v", "", "svc_missing", false)
                 .await
                 .is_err()
         );
@@ -433,11 +509,11 @@ mod tests {
     async fn a_services_secrets_resolve_to_an_ordered_name_value_map() {
         let (store, key, _, _) = fixture().await;
         let b = store
-            .put_secret(&key, "B_KEY", "second", "", "")
+            .put_secret(&key, "B_KEY", "second", "", "", false)
             .await
             .expect("put");
         let a = store
-            .put_secret(&key, "A_KEY", "first", "", "")
+            .put_secret(&key, "A_KEY", "first", "", "", false)
             .await
             .expect("put");
 
@@ -469,7 +545,7 @@ mod tests {
     async fn a_secret_sealed_under_a_different_key_cannot_be_read() {
         let (store, key, _, _) = fixture().await;
         let secret = store
-            .put_secret(&key, "KEY", "v", "", "")
+            .put_secret(&key, "KEY", "v", "", "", false)
             .await
             .expect("put");
         // Simulates an operator losing or rotating the key file.
@@ -497,7 +573,7 @@ mod tests {
     async fn deleting_a_secret_works_once() {
         let (store, key, _, _) = fixture().await;
         let secret = store
-            .put_secret(&key, "GONE", "v", "", "")
+            .put_secret(&key, "GONE", "v", "", "", false)
             .await
             .expect("put");
 
@@ -510,7 +586,7 @@ mod tests {
     async fn references_from_services_are_discoverable_before_a_delete() {
         let (store, key, target_id, _) = fixture().await;
         let secret = store
-            .put_secret(&key, "USED", "v", "", "")
+            .put_secret(&key, "USED", "v", "", "", false)
             .await
             .expect("put");
 
@@ -539,11 +615,11 @@ mod tests {
     async fn deleting_a_scope_deletes_the_secrets_scoped_to_it() {
         let (store, key, target_id, _) = fixture().await;
         store
-            .put_secret(&key, "SCOPED", "v", &target_id, "")
+            .put_secret(&key, "SCOPED", "v", &target_id, "", false)
             .await
             .expect("put");
         store
-            .put_secret(&key, "GLOBAL", "v", "", "")
+            .put_secret(&key, "GLOBAL", "v", "", "", false)
             .await
             .expect("put");
 

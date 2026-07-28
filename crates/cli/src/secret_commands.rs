@@ -27,6 +27,7 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
             value,
             target,
             service,
+            replace,
         } => {
             // Reading from stdin by default keeps the value out of shell history
             // and out of the process table.
@@ -59,6 +60,7 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
                         value,
                         scope_target_id: target.clone().unwrap_or_default(),
                         scope_service_id: service.clone().unwrap_or_default(),
+                        replace: *replace,
                     },
                 ))
                 .await?

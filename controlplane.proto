@@ -747,6 +747,14 @@ message PutSecretRequest {
   string value = 3;
   string scope_target_id = 4;
   string scope_service_id = 5;
+
+  // Rotate a name that already exists, rather than refusing.
+  //
+  // Unset is the safe default and what an existing client sends: a value cannot
+  // be read back, so overwriting one destroys something unrecoverable and leaves
+  // nothing to say what was lost. Rotation is a real operation — a leaked key has
+  // to be replaceable — so it stays available, deliberately.
+  bool replace = 6;
 }
 
 message ListSecretsRequest {

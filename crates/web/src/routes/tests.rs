@@ -301,34 +301,37 @@ fn a_public_key_pasted_as_a_private_one_is_caught_by_name() {
     // The single most likely mistake: id_ed25519.pub instead of id_ed25519.
     // Stored, it is accepted silently and surfaces much later as a failed
     // connection to a host nobody has reason to doubt.
-    let error = looks_like_private_key(
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q operator@laptop",
-    )
-    .expect_err("a public key must be refused");
-    assert!(error.contains("public key"), "got: {error}");
-    // And it has to say what to do instead.
-    assert!(error.contains(".pub"), "got: {error}");
+    assert_eq!(
+        looks_like_private_key(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q operator@laptop",
+        ),
+        Err("key-public")
+    );
 
     // The other key types ssh-keygen emits.
-    assert!(looks_like_private_key("ssh-rsa AAAAB3Nza").is_err());
-    assert!(looks_like_private_key("ecdsa-sha2-nistp256 AAAAE2V").is_err());
+    assert_eq!(
+        looks_like_private_key("ssh-rsa AAAAB3Nza"),
+        Err("key-public")
+    );
+    assert_eq!(
+        looks_like_private_key("ecdsa-sha2-nistp256 AAAAE2V"),
+        Err("key-public")
+    );
 }
 
 #[test]
 fn a_truncated_key_is_caught_rather_than_stored() {
     // A paste that lost its last line looks fine until a deploy fails.
-    let error =
-        looks_like_private_key("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n")
-            .expect_err("a truncated key must be refused");
-    assert!(error.contains("truncated"), "got: {error}");
+    assert_eq!(
+        looks_like_private_key("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n"),
+        Err("key-truncated")
+    );
 }
 
 #[test]
 fn something_that_is_not_a_key_at_all_says_what_was_expected() {
-    let error = looks_like_private_key("hunter2").expect_err("must be refused");
-    assert!(error.contains("BEGIN OPENSSH PRIVATE KEY"), "got: {error}");
-
-    assert!(looks_like_private_key("   ").is_err(), "empty is refused");
+    assert_eq!(looks_like_private_key("hunter2"), Err("key-shape"));
+    assert_eq!(looks_like_private_key("   "), Err("key-empty"));
 }
 
 #[test]

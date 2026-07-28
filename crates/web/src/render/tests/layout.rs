@@ -135,7 +135,10 @@ fn every_destructive_button_confirms_and_names_the_consequence() {
                 "t",
             )),
         ),
-        ("secrets_list", s(secrets_list(&[secret], &[], &[], "t"))),
+        (
+            "secrets_list",
+            s(secrets_list(&[secret], &[], &[], SecretNotice::None, "t")),
+        ),
         ("sources_list", s(sources_list(&[source], "t"))),
         (
             "settings_page",

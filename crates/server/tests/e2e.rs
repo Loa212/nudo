@@ -449,7 +449,14 @@ async fn a_binary_deploys_and_the_unit_becomes_active() {
     // ---- register the target, with its key in the secret store ----
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
 
@@ -613,7 +620,14 @@ async fn a_failed_health_check_rolls_back_to_the_previous_release() {
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
 
@@ -778,7 +792,14 @@ async fn secrets_reach_the_target_as_a_locked_down_environment_file() {
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
 
@@ -800,7 +821,7 @@ async fn secrets_reach_the_target_as_a_locked_down_environment_file() {
     let hostile_value = "p@ss\"word with spaces and $DOLLAR";
     let app_secret = engine
         .store
-        .put_secret(&secret_key, "APP_TOKEN", hostile_value, "", "")
+        .put_secret(&secret_key, "APP_TOKEN", hostile_value, "", "", false)
         .await
         .expect("store the secret");
 
@@ -920,7 +941,14 @@ async fn a_host_key_is_pinned_on_first_use_and_a_change_is_refused_until_accepte
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
 
@@ -1105,6 +1133,7 @@ async fn register_build_host(
             &fixture.private_key,
             "",
             "",
+            false,
         )
         .await
         .expect("store the build host's key");
@@ -1214,7 +1243,14 @@ async fn a_service_builds_on_a_build_host_and_the_artifact_reaches_the_target() 
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
     let target = engine
@@ -1354,7 +1390,14 @@ async fn a_failed_remote_build_reports_it_and_still_cleans_up() {
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
     let target = engine
@@ -1480,7 +1523,14 @@ async fn a_bad_remote_build_rolls_back_to_the_previously_built_release() {
 
     let key_secret = engine
         .store
-        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .put_secret(
+            &secret_key,
+            "E2E_SSH_KEY",
+            &fixture.private_key,
+            "",
+            "",
+            false,
+        )
         .await
         .expect("store the key");
     let target = engine
