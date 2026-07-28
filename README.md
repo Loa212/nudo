@@ -509,10 +509,13 @@ exercises something specific: `hello-http` an HTTP health check,
 never becomes ready — which is what makes the rollback demo real rather than
 simulated.
 
-The end-to-end deployment tests need Docker. They start a systemd-enabled
-container, install an SSH key into it, and deploy a real artifact through the real
-engine — then make a health check fail and assert the rollback restored a
-*working* service:
+The end-to-end tests need Docker. They start a systemd-enabled container, install
+an SSH key into it, and deploy a real artifact through the real engine — then
+make a health check fail and assert the rollback restored a *working* service.
+The build-host half of the suite clones from a git repository seeded inside the
+container, builds there, and asserts the binary reached the target, that the
+deploy log does not say where the build ran, and that the workspace is gone
+afterwards — on the failing path as well as the succeeding one:
 
 ```sh
 cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1
