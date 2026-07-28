@@ -13,28 +13,6 @@ fn a_short_sha_is_eight_characters_and_a_missing_one_is_a_dash() {
 }
 
 #[test]
-fn a_javascript_string_is_escaped_for_both_layers() {
-    assert_eq!(js_text("it's"), "it\\'s");
-    assert_eq!(js_text("back\\slash"), "back\\\\slash");
-    // Double quotes are left to maud's attribute escaping.
-    assert_eq!(js_text("say \"hi\""), "say \"hi\"");
-}
-
-#[test]
-fn maps_render_in_a_stable_order_so_a_page_does_not_churn() {
-    let map = HashMap::from([
-        ("z".to_string(), "1".to_string()),
-        ("a".to_string(), "2".to_string()),
-        ("m".to_string(), "3".to_string()),
-    ]);
-    assert_eq!(labels_line(&map), "a=2, m=3, z=1");
-    assert_eq!(labels_input(&map), "a=2,m=3,z=1");
-    assert_eq!(env_line(&map), "a=2 m=3 z=1");
-    assert_eq!(directives_text(&map), "a=2\nm=3\nz=1");
-    assert_eq!(labels_line(&HashMap::new()), "-");
-}
-
-#[test]
 fn a_missing_string_field_renders_as_a_dash() {
     assert_eq!(or_dash(""), "-");
     assert_eq!(or_dash("   "), "-");

@@ -323,3 +323,21 @@ pub(super) fn labels_input(labels: &HashMap<String, String>) -> String {
     pairs.sort();
     pairs.join(",")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_render_in_a_stable_order_for_tables_and_forms() {
+        let labels = HashMap::from([
+            ("z".to_string(), "1".to_string()),
+            ("a".to_string(), "2".to_string()),
+            ("m".to_string(), "3".to_string()),
+        ]);
+
+        assert_eq!(labels_line(&labels), "a=2, m=3, z=1");
+        assert_eq!(labels_input(&labels), "a=2,m=3,z=1");
+        assert_eq!(labels_line(&HashMap::new()), "-");
+    }
+}

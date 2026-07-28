@@ -76,9 +76,18 @@ fn running() -> UnitStatus {
     }
 }
 
+fn an_update(available: bool, breaking: bool) -> UpdateBanner {
+    UpdateBanner {
+        current: "0.1.0".to_string(),
+        latest: "0.2.0".to_string(),
+        available,
+        breaking,
+        url: "https://github.com/loa212/nudo/releases/tag/v0.2.0".to_string(),
+    }
+}
+
 mod account;
 mod banners;
-use banners::an_update;
 mod components;
 mod dashboard;
 mod formatting;

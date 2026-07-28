@@ -19,7 +19,9 @@ pub fn ago(timestamp: Option<&nudo_proto::Timestamp>) -> String {
 pub fn ago_at(when: chrono::DateTime<chrono::Utc>) -> String {
     let seconds = chrono::Utc::now().signed_duration_since(when).num_seconds();
 
-    // A peer whose clock is slightly ahead should still read as current.
+    // Intentionally keep negative values in this same branch: a peer whose
+    // clock is ahead must never produce a future-tense age such as "in 3s".
+    // Clock skew is presentation noise here, so it is clamped to "just now".
     if seconds < 60 {
         return "just now".to_string();
     }

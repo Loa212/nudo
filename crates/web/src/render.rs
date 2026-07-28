@@ -65,10 +65,6 @@ mod updates;
 use auth::auth_shell;
 use deployments::deployments_table;
 use services::js_text;
-#[cfg(test)]
-use services::{directives_text, env_line};
-#[cfg(test)]
-use targets::{labels_input, labels_line};
 pub use updates::*;
 
 fn digest_prefix(digest: &str) -> String {

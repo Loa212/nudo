@@ -393,7 +393,7 @@ async fn a_multi_field_update_rolls_back_when_one_field_is_invalid() {
 }
 
 #[tokio::test]
-async fn moving_a_service_to_another_target_is_refused() {
+async fn a_refused_target_move_happens_before_any_other_masked_field_is_written() {
     let (store, target_id) = store_with_target().await;
     let created = store
         .create_service(&service(&target_id))
@@ -413,9 +413,10 @@ async fn moving_a_service_to_another_target_is_refused() {
             &created.id,
             &Service {
                 target_id: other.id,
+                name: "renamed-before-the-move".to_string(),
                 ..Default::default()
             },
-            &["target_id".to_string()],
+            &["name".to_string(), "target_id".to_string()],
         )
         .await
         .expect_err("must refuse");
@@ -423,6 +424,14 @@ async fn moving_a_service_to_another_target_is_refused() {
         error.to_string().contains("cannot be moved"),
         "got: {error}"
     );
+
+    let unchanged = store
+        .get_service(&created.id)
+        .await
+        .expect("read")
+        .expect("service");
+    assert_eq!(unchanged.name, "bot");
+    assert_eq!(unchanged.target_id, target_id);
 }
 
 #[tokio::test]

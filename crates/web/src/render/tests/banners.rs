@@ -1,15 +1,5 @@
 use super::*;
 
-pub(super) fn an_update(available: bool, breaking: bool) -> UpdateBanner {
-    UpdateBanner {
-        current: "0.1.0".to_string(),
-        latest: "0.2.0".to_string(),
-        available,
-        breaking,
-        url: "https://github.com/loa212/nudo/releases/tag/v0.2.0".to_string(),
-    }
-}
-
 #[test]
 fn a_current_instance_is_shown_no_update_banner_at_all() {
     // Not a hidden element or an empty box — nothing, so the dashboard of

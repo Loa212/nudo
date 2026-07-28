@@ -1,5 +1,7 @@
 use super::*;
+use crate::events::DeploymentEvent;
 use crate::store::TargetInput;
+use nudo_proto::{Release, Service, deployment};
 
 async fn engine() -> Engine {
     Engine {

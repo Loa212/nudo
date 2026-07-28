@@ -5,6 +5,28 @@ choice open, and the things deliberately left out.
 
 ---
 
+## Refactor behavior changes
+
+The repository-wide module refactor deliberately includes four operator-visible
+fixes. They are called out here because they are not mechanical file moves:
+
+- **Masked target and service updates are atomic.** All SQL statements for one
+  update mask now share a transaction. A later failure rolls back earlier field
+  writes instead of returning an error after partially changing the row. This
+  holds SQLite's write lock for the duration of the masked update rather than
+  for each individual statement.
+- **A forbidden service target move is validated before any write.** A request
+  that includes both `target_id` and another field now persists neither field.
+  Previously the other field could autocommit before the move was refused.
+- **Duplicate service renames return the same readable conflict as creation.**
+  The raw SQLite `UNIQUE constraint failed` text is now translated to
+  `a service named ... already exists on that target`.
+- **Temporary artifact and MCP session tokens use UUIDs.** The previous
+  timestamp-and-process-id values were guessable from creation time; UUIDs keep
+  the existing URL and audit prefixes while making the token unpredictable.
+
+---
+
 ## Proto changes
 
 **None.** `controlplane.proto` is unmodified from what was provided. Every RPC in
