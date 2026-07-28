@@ -736,7 +736,12 @@ def main() -> int:
         instance.start()
         base = instance.url
 
-    if OUT.exists():
+    # Only a full run clears the directory. A filtered or partial one overwrites
+    # what it captures and leaves the rest alone: `--only build` wiping the other
+    # sixty images is precisely the surprise that costs someone the run they were
+    # comparing against.
+    full_run = not args.only and args.state == "both" and args.theme == "both"
+    if full_run and OUT.exists():
         shutil.rmtree(OUT)
 
     chrome = None
@@ -766,7 +771,12 @@ def main() -> int:
         elif instance:
             print(f"==> left running at {instance.url} ({EMAIL} / {PASSWORD})")
 
-    print(f"\n{taken} screenshots in {OUT}")
+    total = len(list(OUT.rglob("*.png"))) if OUT.exists() else 0
+    if taken == total:
+        print(f"\n{taken} screenshots in {OUT}")
+    else:
+        # Say both numbers, so a filtered run is not mistaken for a full one.
+        print(f"\n{taken} captured, {total} total in {OUT}")
     return 0
 
 

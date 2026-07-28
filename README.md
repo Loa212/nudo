@@ -541,11 +541,16 @@ Both light and dark, since only one of them tends to get looked at while
 developing.
 
 ```sh
-make screenshots                      # everything, ~70 images
+make screenshots                      # everything: 66 images
 make screenshots ARGS="--only build"  # just the build-host views
 make screenshots ARGS="--keep"        # leave the instance up to poke at
 scripts/screenshots.py --url http://localhost:3000   # an instance you already run
 ```
+
+A full run replaces the directory. A filtered one — anything with `--only`, or a
+single `--state` or `--theme` — overwrites only what it captures and leaves the
+rest, so iterating on one page does not throw away the set you were comparing
+against. It reports `N captured, M total` when the two differ.
 
 Needs Docker and Google Chrome. The output is gitignored: it is for looking at,
 not for committing.
