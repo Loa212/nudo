@@ -5,6 +5,7 @@
 //! place those two rules live, so a new RPC cannot forget either.
 
 mod audit;
+mod build_hosts;
 mod deployments;
 mod logs;
 mod secrets;
@@ -16,6 +17,7 @@ mod terminals;
 pub(crate) mod test_support;
 
 pub use audit::AuditService;
+pub use build_hosts::BuildHostsService;
 pub use deployments::DeploymentsService;
 pub use logs::LogsService;
 pub use secrets::SecretsService;
@@ -125,6 +127,75 @@ impl Context {
             dry_run: mutation.dry_run,
             idempotency_key: mutation.idempotency_key,
         })
+    }
+
+    /// Checks a build-host mutation is permitted and records it.
+    ///
+    /// A build host is not a `Target`, so it cannot go through
+    /// [`Context::authorize`]'s subject: the guardrail message would name a
+    /// target that does not exist, and an operator would go looking for it.
+    /// The rule itself is identical — a latency-critical host takes an explicit
+    /// per-request opt-in — and both refusals are audited the same way.
+    pub async fn authorize_build_host(
+        &self,
+        mutation: Option<&Mutation>,
+        action: &str,
+        subject_id: &str,
+        subject: Option<&nudo_proto::BuildHost>,
+        summary: impl Into<String>,
+    ) -> Result<Authorized, Status> {
+        let mutation = mutation.cloned().unwrap_or_default();
+        let actor = mutation.actor_or_system();
+
+        if let Some(build_host) = subject
+            && build_host.latency_critical
+            && !mutation.allow_latency_critical
+        {
+            self.store
+                .audit(NewAuditEntry {
+                    actor: actor.clone(),
+                    action: format!("{action} (refused)"),
+                    subject_id: subject_id.to_string(),
+                    dry_run: mutation.dry_run,
+                    summary: format!(
+                        "refused: build host {} is latency-critical and \
+                         allow_latency_critical was not set",
+                        build_host.name
+                    ),
+                })
+                .await;
+
+            return Err(Status::failed_precondition(format!(
+                "build host {} is marked latency-critical; set allow_latency_critical \
+                 on the request to mutate it",
+                build_host.name
+            )));
+        }
+
+        self.store
+            .audit(NewAuditEntry {
+                actor: actor.clone(),
+                action: action.to_string(),
+                subject_id: subject_id.to_string(),
+                dry_run: mutation.dry_run,
+                summary: summary.into(),
+            })
+            .await;
+
+        Ok(Authorized {
+            actor,
+            dry_run: mutation.dry_run,
+            idempotency_key: mutation.idempotency_key,
+        })
+    }
+
+    /// Loads a build host or returns a `NOT_FOUND` a client can act on.
+    pub async fn require_build_host(&self, id: &str) -> Result<nudo_proto::BuildHost, Status> {
+        self.store
+            .get_build_host(id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Status::not_found(format!("no such build host: {id}")))
     }
 
     /// Loads a target or returns a `NOT_FOUND` a client can act on.

@@ -26,8 +26,9 @@ use std::collections::HashMap;
 
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use nudo_proto::{
-    AuditEntry, CheckTargetResponse, Deployment, HostKey, LogLine, Release, Secret, Service,
-    Source, Target, UnitStatus, deployment, source, target,
+    AuditEntry, BuildHost, CheckBuildHostResponse, CheckTargetResponse, Deployment, HostKey,
+    LogLine, Release, Secret, Service, Source, Target, UnitStatus, build_host, deployment, source,
+    target,
 };
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,8 @@ mod dashboard;
 pub use dashboard::*;
 mod targets;
 pub use targets::*;
+mod build_hosts;
+pub use build_hosts::*;
 mod services;
 pub use services::*;
 mod deployments;
@@ -138,6 +141,7 @@ fn has_latency_knobs(service: &Service) -> bool {
 pub enum Nav {
     Dashboard,
     Targets,
+    BuildHosts,
     Services,
     Deployments,
     Secrets,
@@ -149,10 +153,11 @@ pub enum Nav {
 
 impl Nav {
     /// Rail entries in display order: label, href, icon.
-    const fn items() -> [(Nav, &'static str, &'static str, &'static str); 9] {
+    const fn items() -> [(Nav, &'static str, &'static str, &'static str); 10] {
         [
             (Nav::Dashboard, "Overview", "/", "◎"),
             (Nav::Targets, "Targets", "/targets", "▦"),
+            (Nav::BuildHosts, "Build hosts", "/build-hosts", "⚒"),
             (Nav::Services, "Services", "/services", "◈"),
             (Nav::Deployments, "Deployments", "/deployments", "↑"),
             (Nav::Secrets, "Secrets", "/secrets", "✦"),

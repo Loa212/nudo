@@ -12,6 +12,13 @@ pub struct ListTargetsParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ListBuildHostsParams {
+    /// Optional label selector, e.g. "arch=arm64,pool=ci". Omit to list all.
+    #[serde(default)]
+    pub label_selector: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ListServicesParams {
     /// Only services on this target. Omit to list every service.
     #[serde(default)]
@@ -142,6 +149,15 @@ pub struct TargetList {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct BuildHostList {
+    pub count: usize,
+    pub build_hosts: Vec<BuildHostSummary>,
+    /// Where a build runs when its service does not name a build host. Empty
+    /// means the control plane, which is the default.
+    pub default_build_host_id: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ServiceList {
     pub count: usize,
     pub services: Vec<ServiceSummary>,
@@ -168,6 +184,30 @@ pub struct TargetSummary {
     /// usefully do here. Accepting a host key is deliberately not an agent
     /// action: it is a judgement about whether a machine is the one it claims
     /// to be, which needs someone who can check it out of band.
+    pub host_key_change_pending: bool,
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+/// A machine that builds, which is never a machine that is deployed to.
+///
+/// Read-only for an agent, like targets: registering infrastructure is not an
+/// agent action. This exists so an agent can explain where a build ran, or why
+/// one failed, without guessing.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct BuildHostSummary {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub reachability: String,
+    /// Where checkouts and build trees go on this host.
+    pub workspace_root: String,
+    /// True when something latency-sensitive also runs here, so a build will
+    /// contend with it for CPU, cache and memory bandwidth. Allowed, but worth
+    /// saying when reporting where a build ran.
+    pub latency_critical: bool,
+    /// True when this host's SSH host key has changed and is waiting for a
+    /// human to review it. Nothing builds here until it is resolved, and
+    /// accepting a key is deliberately not an agent action.
     pub host_key_change_pending: bool,
     pub labels: std::collections::BTreeMap<String, String>,
 }

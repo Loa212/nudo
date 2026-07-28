@@ -178,6 +178,84 @@ impl target::Status {
     }
 }
 
+/// The `build_host_id` that means "build on the control plane".
+///
+/// Distinct from an empty id, which means "whatever the instance default is".
+/// A service pinned to local stays local after an operator points the instance
+/// at a build host; an empty string could not express that.
+pub const LOCAL_BUILD_HOST_ID: &str = "local";
+
+/// Where a build should run, once the service and the instance default have
+/// both been taken into account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildLocation {
+    /// A subprocess of the control plane — the original behaviour, and what an
+    /// instance that configures nothing keeps doing.
+    ControlPlane,
+    /// A build host, by id.
+    Remote(String),
+}
+
+impl BuildLocation {
+    /// Resolves a service's setting against the instance default.
+    ///
+    /// The precedence is the whole feature in one function, so the server, the
+    /// dashboard's "where will this build" hint and the CLI cannot disagree
+    /// about it:
+    ///
+    /// 1. A service naming a build host uses it.
+    /// 2. A service pinned to [`LOCAL_BUILD_HOST_ID`] builds locally, whatever
+    ///    the default is.
+    /// 3. Otherwise the instance default applies.
+    /// 4. With no default set, builds run on the control plane.
+    pub fn resolve(service_build_host_id: &str, instance_default: &str) -> Self {
+        let service = service_build_host_id.trim();
+        if service == LOCAL_BUILD_HOST_ID {
+            return Self::ControlPlane;
+        }
+        if !service.is_empty() {
+            return Self::Remote(service.to_string());
+        }
+
+        let default = instance_default.trim();
+        if default.is_empty() || default == LOCAL_BUILD_HOST_ID {
+            return Self::ControlPlane;
+        }
+        Self::Remote(default.to_string())
+    }
+
+    /// The build host's id, or `None` when the build runs locally.
+    pub fn remote_id(&self) -> Option<&str> {
+        match self {
+            Self::ControlPlane => None,
+            Self::Remote(id) => Some(id.as_str()),
+        }
+    }
+
+    pub fn is_remote(&self) -> bool {
+        matches!(self, Self::Remote(_))
+    }
+}
+
+impl build_host::Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Unknown => "unknown",
+            Self::Reachable => "reachable",
+            Self::Unreachable => "unreachable",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "reachable" => Self::Reachable,
+            "unreachable" => Self::Unreachable,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl source::Kind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -226,6 +304,87 @@ mod tests {
         assert!(!deployment::Status::Queued.is_terminal());
         assert!(!deployment::Status::Building.is_terminal());
         assert!(!deployment::Status::HealthChecking.is_terminal());
+    }
+
+    #[test]
+    fn an_instance_that_configures_nothing_still_builds_on_the_control_plane() {
+        // The compatibility promise in the issue: upgrading and setting nothing
+        // must not move anybody's builds.
+        assert_eq!(BuildLocation::resolve("", ""), BuildLocation::ControlPlane);
+    }
+
+    #[test]
+    fn a_service_naming_a_build_host_uses_it() {
+        assert_eq!(
+            BuildLocation::resolve("bh_gpu", ""),
+            BuildLocation::Remote("bh_gpu".to_string())
+        );
+        // And overrides the instance default rather than being overridden by it.
+        assert_eq!(
+            BuildLocation::resolve("bh_gpu", "bh_default"),
+            BuildLocation::Remote("bh_gpu".to_string())
+        );
+    }
+
+    #[test]
+    fn a_service_with_no_setting_falls_back_to_the_instance_default() {
+        assert_eq!(
+            BuildLocation::resolve("", "bh_default"),
+            BuildLocation::Remote("bh_default".to_string())
+        );
+    }
+
+    #[test]
+    fn a_service_pinned_to_local_stays_local_despite_the_instance_default() {
+        // The reason "local" is a sentinel rather than an empty string: without
+        // it, pointing the instance at a build host would silently move a
+        // service that was deliberately building on the control plane.
+        assert_eq!(
+            BuildLocation::resolve(LOCAL_BUILD_HOST_ID, "bh_default"),
+            BuildLocation::ControlPlane
+        );
+    }
+
+    #[test]
+    fn an_instance_default_of_local_is_the_same_as_no_default() {
+        assert_eq!(
+            BuildLocation::resolve("", LOCAL_BUILD_HOST_ID),
+            BuildLocation::ControlPlane
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_create_a_phantom_build_host() {
+        // These arrive from a text field in the dashboard.
+        assert_eq!(
+            BuildLocation::resolve("   ", "  "),
+            BuildLocation::ControlPlane
+        );
+        assert_eq!(
+            BuildLocation::resolve(" bh_gpu ", ""),
+            BuildLocation::Remote("bh_gpu".to_string())
+        );
+    }
+
+    #[test]
+    fn a_resolved_location_reports_its_remote_id() {
+        assert_eq!(BuildLocation::ControlPlane.remote_id(), None);
+        assert!(!BuildLocation::ControlPlane.is_remote());
+
+        let remote = BuildLocation::Remote("bh_1".to_string());
+        assert_eq!(remote.remote_id(), Some("bh_1"));
+        assert!(remote.is_remote());
+    }
+
+    #[test]
+    fn build_host_status_round_trips_through_its_string_form() {
+        for status in [
+            build_host::Status::Unknown,
+            build_host::Status::Reachable,
+            build_host::Status::Unreachable,
+        ] {
+            assert_eq!(build_host::Status::parse(status.as_str()), status);
+        }
     }
 
     #[test]

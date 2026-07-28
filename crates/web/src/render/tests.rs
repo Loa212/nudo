@@ -38,6 +38,8 @@ fn a_service() -> Service {
                 build_command: "cargo build --release".to_string(),
                 artifact_path: "target/release/bot".to_string(),
                 auto_deploy_on_push: false,
+                // Unset: builds wherever the instance says.
+                build_host_id: String::new(),
             })),
         }),
         unit: Some(SystemdUnit {

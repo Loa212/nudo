@@ -55,7 +55,7 @@ impl Engine {
             Some(artifact_source::Kind::Git(git_source)) => {
                 self.transition(deployment_id, deployment::Status::Building)
                     .await;
-                self.build_from_git(deployment_id, git_source, &options.git_ref)
+                self.build(deployment_id, git_source, &options.git_ref)
                     .await
             }
             _ => bail!(
@@ -101,7 +101,7 @@ impl Engine {
 
         // A binary this large is a misconfiguration or a decompression bomb, and
         // it would be buffered in memory before ever reaching a target.
-        const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+        const MAX_ARTIFACT_BYTES: u64 = crate::git::MAX_ARTIFACT_BYTES as u64;
         if let Some(length) = response.content_length()
             && length > MAX_ARTIFACT_BYTES
         {
@@ -124,6 +124,119 @@ impl Engine {
             git_sha: String::new(),
             git_ref: String::new(),
         })
+    }
+
+    /// Builds from a connected git source, wherever this service builds.
+    ///
+    /// Resolving the location here — rather than inside either build path —
+    /// keeps the precedence rule (service setting, then instance default, then
+    /// the control plane) in one place, and means a failure to resolve is
+    /// reported before anything is cloned.
+    ///
+    /// Never on the deploy target, whichever branch this takes. A target runs
+    /// the OS, systemd and the binary; a build host is a third role.
+    pub(super) async fn build(
+        &self,
+        deployment_id: &str,
+        git_source: &nudo_proto::GitSource,
+        git_ref_override: &str,
+    ) -> anyhow::Result<Artifact> {
+        let instance_default = self.store.default_build_host_id().await.unwrap_or_default();
+        let location =
+            nudo_proto::BuildLocation::resolve(&git_source.build_host_id, &instance_default);
+
+        match location.remote_id() {
+            None => {
+                self.build_from_git(deployment_id, git_source, git_ref_override)
+                    .await
+            }
+            Some(build_host_id) => {
+                let build_host = self.store.get_build_host(build_host_id).await?.ok_or_else(
+                    || {
+                        anyhow::anyhow!(
+                            "this service builds on build host {build_host_id}, which no longer \
+                             exists — point it at another one, or at the control plane"
+                        )
+                    },
+                )?;
+
+                self.build_on_host(deployment_id, &build_host, git_source, git_ref_override)
+                    .await
+            }
+        }
+    }
+
+    /// Clones and builds on a build host, then brings the artifact back.
+    ///
+    /// The workspace is removed on every exit path, including a failed build and
+    /// a lost connection: a build host that accumulates checkouts eventually
+    /// fills up, and that failure then belongs to every service built there.
+    pub(super) async fn build_on_host(
+        &self,
+        deployment_id: &str,
+        build_host: &nudo_proto::BuildHost,
+        git_source: &nudo_proto::GitSource,
+        git_ref_override: &str,
+    ) -> anyhow::Result<Artifact> {
+        // Deliberately not announced in the deploy log: the output of a build
+        // must not depend on where it ran. This is a server-side log line, for
+        // an operator debugging the control plane rather than a deploy.
+        tracing::info!(
+            deployment = %deployment_id,
+            build_host = %build_host.id,
+            latency_critical = build_host.latency_critical,
+            "building on a remote build host"
+        );
+
+        let session = self.connect_build_host(build_host).await?;
+        let workspace = crate::build_host::workspace_for(build_host, deployment_id);
+
+        // Created before the build so a failure to create one is reported as
+        // what it is, rather than as a confusing clone failure.
+        let created = session
+            .exec(&format!("mkdir -p {}", crate::ssh::quote(&workspace)))
+            .await;
+        if let Err(error) = created.and_then(|r| {
+            r.require_success(&format!("creating {workspace} on {}", build_host.name))
+                .map(|_| ())
+        }) {
+            let _ = session.close().await;
+            return Err(error);
+        }
+
+        let engine = self.clone();
+        let deployment_for_output = deployment_id.to_string();
+        let (tx, mut rx) = mpsc::channel::<OutputLine>(256);
+        let pump = tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                engine
+                    .emit(&deployment_for_output, &line.text, line.stderr)
+                    .await;
+            }
+        });
+
+        let result = crate::build_host::build_remotely(
+            crate::build_host::RemoteBuild {
+                store: &self.store,
+                key: &self.secret_key,
+                session: &session,
+                git_source,
+                git_ref_override,
+                workspace: &workspace,
+                timeout: BUILD_TIMEOUT,
+            },
+            tx.clone(),
+        )
+        .await;
+
+        drop(tx);
+        let _ = pump.await;
+
+        // However the build ended.
+        crate::build_host::cleanup_workspace(&session, &workspace).await;
+        let _ = session.close().await;
+
+        result
     }
 
     /// Clones and builds from a connected git source, on the control plane.

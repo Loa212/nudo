@@ -193,6 +193,18 @@ pub fn router(state: AppState) -> Router {
             post(routes::target_accept_host_key),
         )
         .route("/targets/{id}/delete", post(routes::target_delete))
+        // ---- build hosts ----
+        .route("/build-hosts", get(routes::build_hosts_list))
+        .route("/build-hosts/new", get(routes::build_host_new))
+        .route("/build-hosts", post(routes::build_host_create))
+        .route("/build-hosts/default", post(routes::build_default_set))
+        .route("/build-hosts/{id}", get(routes::build_host_detail))
+        .route("/build-hosts/{id}/check", post(routes::build_host_check))
+        .route(
+            "/build-hosts/{id}/host-key/accept",
+            post(routes::build_host_accept_host_key),
+        )
+        .route("/build-hosts/{id}/delete", post(routes::build_host_delete))
         // ---- services ----
         .route("/services", get(routes::services_list))
         .route("/services/new", get(routes::service_new))

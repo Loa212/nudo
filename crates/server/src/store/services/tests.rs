@@ -157,6 +157,8 @@ async fn each_artifact_kind_round_trips() {
                     build_command: "cargo build --release".to_string(),
                     artifact_path: "target/release/bot".to_string(),
                     auto_deploy_on_push: true,
+                    // Unset: this service builds wherever the instance says.
+                    build_host_id: String::new(),
                 })),
             }),
             ..service(&target_id)

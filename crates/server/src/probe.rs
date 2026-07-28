@@ -1,16 +1,26 @@
-//! Target reachability checks.
+//! Target and build-host reachability checks.
 //!
 //! `CheckTarget` answers the question an operator actually has when a deploy
 //! fails: which part is broken? So it reports each prerequisite separately —
 //! the host key, SSH, sudo, systemd, and a writable release directory — rather
 //! than one pass/fail.
+//!
+//! `check_build_host` answers the same question for the other role, against the
+//! things a build actually needs: a verified identity, SSH, a writable
+//! workspace, and git. It deliberately does not check for sudo or systemd —
+//! nothing is installed or supervised on a build host — which is the clearest
+//! statement that the two roles are not the same machine.
 
+use nudo_proto::check_build_host_response::Check as BuildHostCheck;
 use nudo_proto::check_target_response::Check;
 
 use crate::ssh::{HostKeyChanged, HostKeyOutcome, SshSession, quote};
 
 /// The names of the checks, in the order they are reported.
 pub const CHECK_NAMES: [&str; 5] = ["host_key", "ssh", "sudo", "systemd", "release_dir"];
+
+/// The names of the build-host checks, in the order they are reported.
+pub const BUILD_HOST_CHECK_NAMES: [&str; 4] = ["host_key", "ssh", "workspace", "git"];
 
 /// Runs every prerequisite check against an already-open session.
 ///
@@ -209,6 +219,174 @@ fn unreachable_checks(error: &anyhow::Error) -> Vec<Check> {
         .collect()
 }
 
+/// Runs every build-host prerequisite against an already-open session.
+///
+/// Returns the checks and any non-fatal warnings. A warning must never make the
+/// result fail: "this host is latency-critical" is something the operator chose
+/// and is entitled to keep, and turning it into a failed check would make an
+/// intentional configuration look broken.
+///
+/// `latency_critical` is passed in rather than probed, because it is a property
+/// of the registration rather than of the machine.
+pub async fn check_build_host(
+    connection: anyhow::Result<SshSession>,
+    workspace_root: &str,
+    latency_critical: bool,
+) -> (bool, Vec<BuildHostCheck>, Vec<String>) {
+    let mut warnings = Vec::new();
+    if latency_critical {
+        warnings.push(
+            "This build host is marked latency-critical. A build will compete with whatever \
+             else runs here for CPU, cache and memory bandwidth; expect jitter on anything \
+             sensitive while a build is in flight."
+                .to_string(),
+        );
+    }
+
+    let session = match connection {
+        Ok(session) => session,
+        Err(error) => return (false, unreachable_build_host_checks(&error), warnings),
+    };
+
+    let mut checks = Vec::with_capacity(BUILD_HOST_CHECK_NAMES.len());
+
+    // ---- host key ----
+    // First, for the same reason as a target: it decides whether the rest are
+    // being run against the machine we think they are. It matters at least as
+    // much here, since this host is handed repository credentials.
+    checks.push(match session.host_key() {
+        HostKeyOutcome::Pinned { fingerprint, .. } => BuildHostCheck {
+            name: "host_key".to_string(),
+            ok: true,
+            detail: format!("pinned on first use: {fingerprint}"),
+        },
+        HostKeyOutcome::Matched { fingerprint } => BuildHostCheck {
+            name: "host_key".to_string(),
+            ok: true,
+            detail: format!("matches the pinned key: {fingerprint}"),
+        },
+        HostKeyOutcome::Changed { fingerprint, .. } => BuildHostCheck {
+            name: "host_key".to_string(),
+            ok: false,
+            detail: format!("the host key has changed: {fingerprint}"),
+        },
+    });
+
+    // ---- ssh ----
+    let whoami = session.exec("id -un").await;
+    match &whoami {
+        Ok(result) if result.ok() => checks.push(BuildHostCheck {
+            name: "ssh".to_string(),
+            ok: true,
+            detail: format!("connected as {}", result.trimmed()),
+        }),
+        Ok(result) => checks.push(BuildHostCheck {
+            name: "ssh".to_string(),
+            ok: false,
+            detail: format!("connected but `id -un` failed: {}", result.stderr.trim()),
+        }),
+        Err(error) => checks.push(BuildHostCheck {
+            name: "ssh".to_string(),
+            ok: false,
+            detail: format!("{error:#}"),
+        }),
+    }
+
+    // ---- workspace ----
+    // Creatable and writable, not merely present: the first build has to create
+    // it, and a root that exists but is read-only fails every build with a
+    // confusing clone error instead of this one.
+    let root = if workspace_root.trim().is_empty() {
+        crate::store::DEFAULT_WORKSPACE_ROOT.to_string()
+    } else {
+        workspace_root.trim().trim_end_matches('/').to_string()
+    };
+    let probe_file = format!("{root}/.nudo-write-probe");
+    let command = format!(
+        "mkdir -p {root} && touch {probe} && rm -f {probe} && echo ok",
+        root = quote(&root),
+        probe = quote(&probe_file)
+    );
+
+    match session.exec(&command).await {
+        Ok(result) if result.ok() && result.trimmed() == "ok" => checks.push(BuildHostCheck {
+            name: "workspace".to_string(),
+            ok: true,
+            detail: format!("{root} is writable"),
+        }),
+        Ok(result) => checks.push(BuildHostCheck {
+            name: "workspace".to_string(),
+            ok: false,
+            detail: format!(
+                "{root} is not writable: {}",
+                first_line(&result.stdout, &result.stderr)
+            ),
+        }),
+        Err(error) => checks.push(BuildHostCheck {
+            name: "workspace".to_string(),
+            ok: false,
+            detail: format!("{error:#}"),
+        }),
+    }
+
+    // ---- git ----
+    // The one tool nudo itself runs on a build host. Everything else a build
+    // needs is named by the build command, which nudo does not parse and will
+    // not guess at; a missing compiler surfaces as a build failure with the
+    // command's own error, which is more useful than anything probing could
+    // invent.
+    let git = session.exec("git --version 2>&1 | head -n 1").await;
+    match git {
+        Ok(result) if result.ok() && !result.trimmed().is_empty() => checks.push(BuildHostCheck {
+            name: "git".to_string(),
+            ok: true,
+            detail: result.trimmed().to_string(),
+        }),
+        Ok(result) => checks.push(BuildHostCheck {
+            name: "git".to_string(),
+            ok: false,
+            detail: format!(
+                "git is not usable on this host, so nudo cannot clone here: {}",
+                first_line(&result.stdout, &result.stderr)
+            ),
+        }),
+        Err(error) => checks.push(BuildHostCheck {
+            name: "git".to_string(),
+            ok: false,
+            detail: format!("{error:#}"),
+        }),
+    }
+
+    let _ = session.close().await;
+    let ok = checks.iter().all(|check| check.ok);
+    (ok, checks, warnings)
+}
+
+/// The build-host checks reported when no session could be opened.
+fn unreachable_build_host_checks(error: &anyhow::Error) -> Vec<BuildHostCheck> {
+    let host_key_changed = error.is::<HostKeyChanged>();
+    let blamed = if host_key_changed { "host_key" } else { "ssh" };
+    let unchecked = if host_key_changed {
+        "not checked: the host key was refused"
+    } else {
+        "not checked: no SSH connection"
+    };
+    let detail = format!("{error:#}");
+
+    BUILD_HOST_CHECK_NAMES
+        .iter()
+        .map(|name| BuildHostCheck {
+            name: (*name).to_string(),
+            ok: false,
+            detail: if *name == blamed {
+                detail.clone()
+            } else {
+                unchecked.to_string()
+            },
+        })
+        .collect()
+}
+
 /// The first non-empty line of stderr, or of stdout when stderr is empty.
 ///
 /// Commands here are run with `2>&1` in places, so the useful message can be on
@@ -311,6 +489,122 @@ mod tests {
             CHECK_NAMES,
             ["host_key", "ssh", "sudo", "systemd", "release_dir"]
         );
+        assert_eq!(
+            BUILD_HOST_CHECK_NAMES,
+            ["host_key", "ssh", "workspace", "git"]
+        );
+    }
+
+    #[test]
+    fn a_build_host_is_not_checked_for_sudo_or_systemd() {
+        // Nothing is installed or supervised on a build host. Checking for
+        // systemd here would imply it is a place things run, which is the
+        // confusion between the two roles that this feature exists to avoid.
+        assert!(!BUILD_HOST_CHECK_NAMES.contains(&"sudo"));
+        assert!(!BUILD_HOST_CHECK_NAMES.contains(&"systemd"));
+        assert!(!BUILD_HOST_CHECK_NAMES.contains(&"release_dir"));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_build_host_reports_ssh_as_the_cause() {
+        let (ok, checks, warnings) = check_build_host(
+            Err(anyhow::anyhow!("connection refused")),
+            "/var/lib/nudo/builds",
+            false,
+        )
+        .await;
+
+        assert!(!ok);
+        let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, BUILD_HOST_CHECK_NAMES.to_vec());
+        assert!(warnings.is_empty());
+
+        let ssh = find_build(&checks, "ssh");
+        assert!(ssh.detail.contains("connection refused"));
+        for check in checks.iter().filter(|c| c.name != "ssh") {
+            assert!(
+                check.detail.contains("no SSH connection"),
+                "expected an unchecked marker, got: {}",
+                check.detail
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_changed_build_host_key_is_blamed_on_the_host_key() {
+        // A build host is handed repository credentials, so connecting to the
+        // wrong machine matters at least as much here as for a deploy target.
+        let (ok, checks, _) = check_build_host(
+            Err(HostKeyChanged {
+                host: "10.0.0.9".to_string(),
+                port: 22,
+                expected_fingerprint: "SHA256:old".to_string(),
+                key: "ssh-ed25519 AAAA".to_string(),
+                fingerprint: "SHA256:new".to_string(),
+            }
+            .into()),
+            "/var/lib/nudo/builds",
+            false,
+        )
+        .await;
+
+        assert!(!ok);
+        let host_key = find_build(&checks, "host_key");
+        assert!(!host_key.ok);
+        assert!(
+            host_key.detail.contains("SHA256:old"),
+            "{}",
+            host_key.detail
+        );
+        assert!(
+            host_key.detail.contains("SHA256:new"),
+            "{}",
+            host_key.detail
+        );
+
+        let ssh = find_build(&checks, "ssh");
+        assert!(
+            ssh.detail.contains("host key was refused"),
+            "got: {}",
+            ssh.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn a_latency_critical_build_host_warns_without_failing_the_check() {
+        // The decision on this issue: permitted, not refused. A warning that
+        // failed the check would make a deliberate configuration look broken
+        // and would gate CI on it.
+        let (_, _, warnings) = check_build_host(
+            Err(anyhow::anyhow!("unreachable")),
+            "/var/lib/nudo/builds",
+            true,
+        )
+        .await;
+
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].contains("latency-critical"),
+            "got: {}",
+            warnings[0]
+        );
+
+        // And the warning is the only difference: the checks themselves are
+        // identical to the same host without the flag.
+        let (ok_flagged, checks_flagged, _) =
+            check_build_host(Err(anyhow::anyhow!("unreachable")), "/w/x", true).await;
+        let (ok_plain, checks_plain, _) =
+            check_build_host(Err(anyhow::anyhow!("unreachable")), "/w/x", false).await;
+        assert_eq!(ok_flagged, ok_plain);
+        assert_eq!(checks_flagged.len(), checks_plain.len());
+    }
+
+    /// The build-host check with this name.
+    fn find_build<'a>(checks: &'a [BuildHostCheck], name: &str) -> &'a BuildHostCheck {
+        checks
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
     }
 
     /// The check with this name, which every path is expected to report.

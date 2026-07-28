@@ -540,6 +540,83 @@ impl SshSession {
         Ok(())
     }
 
+    /// Reads a remote file back, in chunks, verifying the size.
+    ///
+    /// The mirror of [`SshSession::upload_file`], and the second half of a
+    /// remote build: the artifact is produced over there and has to come back
+    /// here to be shipped to the target.
+    ///
+    /// base64 on the far side for the same reason as the upload — a binary is
+    /// not valid UTF-8 and would not survive a plain `cat` through a channel
+    /// that the caller reads as text. Chunked because a release binary can be
+    /// hundreds of megabytes and a single command's output is buffered whole.
+    pub async fn read_file(&self, path: &str, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        use base64::Engine as _;
+
+        // Bytes per round trip, before base64 inflates it by 4/3.
+        const CHUNK: usize = 1024 * 1024;
+
+        let size = self
+            .exec(&format!("wc -c < {} | tr -d ' \\n'", quote(path)))
+            .await?;
+        let size = size
+            .trimmed()
+            .parse::<usize>()
+            .with_context(|| format!("reading the size of {path} — is it there?"))?;
+
+        if size == 0 {
+            bail!("{path} is empty");
+        }
+        // Checked before transferring rather than after, so an absurd file
+        // costs one round trip instead of a download.
+        if size > max_bytes {
+            bail!("{path} is {size} bytes, over the {max_bytes} byte limit");
+        }
+
+        let mut out = Vec::with_capacity(size);
+        while out.len() < size {
+            // `tail -c +N` is 1-indexed, hence the +1.
+            let result = self
+                .exec(&format!(
+                    "tail -c +{} {} | head -c {} | base64",
+                    out.len() + 1,
+                    quote(path),
+                    CHUNK
+                ))
+                .await?;
+            result.require_success(&format!("reading {path}"))?;
+
+            // base64's line wrapping has to come out before decoding.
+            let encoded: String = result
+                .stdout
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
+                .with_context(|| format!("decoding a chunk of {path}"))?;
+
+            // No progress means the file shrank or the remote command is
+            // misbehaving; looping forever would be worse than failing.
+            if decoded.is_empty() {
+                bail!("reading {path} stalled after {} of {size} bytes", out.len());
+            }
+            out.extend_from_slice(&decoded);
+        }
+
+        // The file could have been rewritten between the size check and the
+        // last chunk; shipping a differently-sized binary than was measured is
+        // exactly the kind of thing the upload path already refuses to do.
+        if out.len() != size {
+            bail!(
+                "reading {path} produced {} bytes, expected {size}",
+                out.len()
+            );
+        }
+
+        Ok(out)
+    }
+
     /// Opens an interactive PTY channel for the terminal feature.
     ///
     /// Returns the channel so the caller can pump bytes both ways and issue

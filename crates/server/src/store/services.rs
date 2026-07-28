@@ -56,7 +56,7 @@ impl Store {
                 health_kind, health_http_url, health_command,
                 health_timeout_seconds, health_retries, health_initial_delay_seconds,
                 release_root, keep_releases, secret_ids, env,
-                current_release_id, created_at
+                current_release_id, created_at, git_build_host_id
              ) VALUES (
                 ?1, ?2, ?3,
                 ?4, ?5, ?6, ?7, ?8,
@@ -67,7 +67,7 @@ impl Store {
                 ?25, ?26, ?27,
                 ?28, ?29, ?30,
                 ?31, ?32, ?33, ?34,
-                '', ?35
+                '', ?35, ?36
              )",
         )
         .bind(&id)
@@ -117,6 +117,7 @@ impl Store {
         .bind(encode_list(&service.secret_ids))
         .bind(encode_map(&service.env))
         .bind(now_string())
+        .bind(&artifact.build_host_id)
         .execute(self.pool())
         .await
         .map_err(|e| {
@@ -279,8 +280,9 @@ impl Store {
             sqlx::query(
                 "UPDATE services SET artifact_kind = ?1, artifact_url = ?2,
                        git_source_id = ?3, git_repo = ?4, git_branch = ?5,
-                       git_build_command = ?6, git_artifact_path = ?7, git_auto_deploy = ?8
-                     WHERE id = ?9",
+                       git_build_command = ?6, git_artifact_path = ?7, git_auto_deploy = ?8,
+                       git_build_host_id = ?9
+                     WHERE id = ?10",
             )
             .bind(&cols.kind)
             .bind(&cols.url)
@@ -290,6 +292,7 @@ impl Store {
             .bind(&cols.build_command)
             .bind(&cols.artifact_path)
             .bind(cols.auto_deploy as i64)
+            .bind(&cols.build_host_id)
             .bind(id)
             .execute(&mut *transaction)
             .await?;
@@ -397,7 +400,7 @@ impl Store {
 const SERVICE_SELECT: &str = "SELECT
     id, target_id, name,
     artifact_kind, artifact_url, git_source_id, git_repo, git_branch,
-    git_build_command, git_artifact_path, git_auto_deploy,
+    git_build_command, git_artifact_path, git_auto_deploy, git_build_host_id,
     unit_name, unit_description, exec_args, working_directory,
     unit_user, unit_group, restart, restart_sec, after_units,
     cpu_affinity, nice, io_scheduling_class, extra_directives,
@@ -416,6 +419,7 @@ struct ArtifactColumns {
     build_command: String,
     artifact_path: String,
     auto_deploy: bool,
+    build_host_id: String,
 }
 
 impl ArtifactColumns {
@@ -429,6 +433,7 @@ impl ArtifactColumns {
             build_command: String::new(),
             artifact_path: String::new(),
             auto_deploy: false,
+            build_host_id: String::new(),
         };
 
         match artifact.and_then(|a| a.kind.as_ref()) {
@@ -446,6 +451,9 @@ impl ArtifactColumns {
                 out.build_command = git.build_command.trim().to_string();
                 out.artifact_path = git.artifact_path.trim().to_string();
                 out.auto_deploy = git.auto_deploy_on_push;
+                // Empty means "use the instance default"; `local` pins the
+                // control plane. Both are stored verbatim — see 0007.
+                out.build_host_id = git.build_host_id.trim().to_string();
             }
             // `direct_upload: false` is indistinguishable from unset in
             // proto3, and both mean the same thing here.
@@ -512,6 +520,7 @@ fn row_to_service(row: &SqliteRow) -> Service {
                 build_command: row.get("git_build_command"),
                 artifact_path: row.get("git_artifact_path"),
                 auto_deploy_on_push: row.get::<i64, _>("git_auto_deploy") != 0,
+                build_host_id: row.get("git_build_host_id"),
             }),
             _ => artifact_source::Kind::DirectUpload(true),
         }),

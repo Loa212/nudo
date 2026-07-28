@@ -32,6 +32,9 @@ impl tonic::service::Interceptor for BearerToken {
 type TargetsClient = targets_client::TargetsClient<
     tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
 >;
+type BuildHostsClient = build_hosts_client::BuildHostsClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
 type ServicesApiClient = services_api_client::ServicesApiClient<
     tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
 >;
@@ -107,6 +110,13 @@ impl Api {
         ))
     }
 
+    pub async fn build_hosts(&self) -> Result<BuildHostsClient, tonic::Status> {
+        Ok(build_hosts_client::BuildHostsClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
+    }
+
     pub async fn services(&self) -> Result<ServicesApiClient, tonic::Status> {
         Ok(services_api_client::ServicesApiClient::with_interceptor(
             self.channel().await?,
@@ -174,6 +184,68 @@ impl Api {
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         }
+    }
+
+    pub async fn list_build_hosts(&self) -> Vec<BuildHost> {
+        match self.build_hosts().await {
+            Ok(mut client) => client
+                .list(ListBuildHostsRequest {
+                    page_size: 200,
+                    ..Default::default()
+                })
+                .await
+                .map(|response| response.into_inner().build_hosts)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The instance's default build host id, or empty for the control plane.
+    ///
+    /// Degrades to empty — the control plane — which is also what an instance
+    /// that has configured nothing reports, so an unreachable control plane
+    /// renders the page rather than a 500.
+    pub async fn default_build_host_id(&self) -> String {
+        match self.build_hosts().await {
+            Ok(mut client) => client
+                .get_defaults(GetBuildDefaultsRequest {})
+                .await
+                .map(|response| response.into_inner().build_host_id)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Services that name this build host explicitly.
+    ///
+    /// Only explicit references: a service falling back to the instance default
+    /// is not listed, because it is not tied to this host and would move with
+    /// the default. What this answers is "what breaks if I delete this".
+    pub async fn services_building_on(&self, build_host_id: &str) -> Vec<Service> {
+        if build_host_id.trim().is_empty() {
+            return Vec::new();
+        }
+
+        let all = match self.services().await {
+            Ok(mut client) => client
+                .list(ListServicesRequest {
+                    page_size: 200,
+                    ..Default::default()
+                })
+                .await
+                .map(|response| response.into_inner().services)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+
+        all.into_iter()
+            .filter(|service| {
+                matches!(
+                    service.artifact.as_ref().and_then(|a| a.kind.as_ref()),
+                    Some(artifact_source::Kind::Git(git)) if git.build_host_id == build_host_id
+                )
+            })
+            .collect()
     }
 
     pub async fn list_services(&self, target_id: &str) -> Vec<Service> {

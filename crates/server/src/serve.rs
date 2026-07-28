@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use nudo_proto::audit_server::AuditServer;
+use nudo_proto::build_hosts_server::BuildHostsServer;
 use nudo_proto::deployments_server::DeploymentsServer;
 use nudo_proto::logs_server::LogsServer;
 use nudo_proto::secrets_server::SecretsServer;
@@ -68,6 +69,9 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
     builder
         .add_service(health_service)
         .add_service(TargetsServer::new(api::TargetsService::new(
+            context.clone(),
+        )))
+        .add_service(BuildHostsServer::new(api::BuildHostsService::new(
             context.clone(),
         )))
         .add_service(ServicesApiServer::new(api::ServicesApiService::new(

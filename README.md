@@ -21,7 +21,14 @@ observability story that, until now, only containerised workloads had.
 │  nudo-web      dashboard     │          │  your binary        │
 │  nudo-mcp      agent tools   │          │  ...and nothing     │
 │  nudo          CLI           │          │     else            │
-└──────────────────────────────┘          └─────────────────────┘
+└──────────────┬───────────────┘          └─────────────────────┘
+               │ ssh (optional)
+               ▼
+┌──────────────────────────────┐
+│  build host                  │   Where a build runs, when it
+│  clone, build, send the      │   does not run on the control
+│  binary back                 │   plane. Never the target.
+└──────────────────────────────┘
 ```
 
 **No agent is installed on a target.** Everything — probing, writing units,
@@ -34,8 +41,8 @@ deployed.
 ## How a deploy works
 
 1. Build from a connected GitHub repo, fetch a prebuilt artifact, or take a
-   binary pushed by the CLI. **Builds run on the control plane**, never on the
-   target.
+   binary pushed by the CLI. Builds run on the control plane by default, or on a
+   [build host](#build-hosts) — **never on the target**.
 2. Upload into `<release_root>/.staging-<id>/`, verify the transferred size, then
    move it to `<release_root>/releases/<id>/`. A truncated upload can never end up
    somewhere the live symlink could point.
@@ -240,6 +247,83 @@ fleet.
 
 ---
 
+## Build hosts
+
+Builds run on the control plane by default, and for most instances that is the
+right answer. But the control plane is often the smallest machine in the
+deployment — a dashboard, a SQLite file and an SSH client, comfortable on 1 vCPU
+— and pointing a service at a Rust repo makes that box run `cargo build
+--release`. A build host is somewhere else to run it.
+
+A build host is **not** a deploy target. A target runs the OS, systemd and the
+binary you deployed; nothing is installed or supervised on a build host, and
+nothing is ever deployed to one. They are separate things with separate
+commands, and pointing a service's build at its own deploy target is not
+possible.
+
+```sh
+nudo build-hosts add builder-1 --host 10.0.0.9 --user build --ssh-key sec_abc123
+nudo build-hosts check bh_abc123
+```
+
+`check` verifies each prerequisite separately, as `targets check` does: the host
+key, SSH, a writable workspace, and git. Not sudo, and not systemd — a build
+host needs neither.
+
+Then say where a service builds. A service's own setting always wins; without
+one it follows the instance default:
+
+```sh
+nudo build-hosts default bh_abc123   # everything unpinned builds here
+nudo build-hosts default --local     # ...back on the control plane
+nudo build-hosts default             # show the current default
+```
+
+In the dashboard, a service's **Build on** field offers the instance default,
+the control plane, or a named build host. Pinning a service to the control plane
+is not the same as leaving it unset: a pinned service stays there when the
+instance default later changes.
+
+The deploy log is identical wherever a build ran — same lines, same order, same
+secret redaction — so nothing downstream has to care.
+
+**An instance that upgrades and configures nothing keeps building exactly where
+it built before.** The local path is unchanged and remains the default.
+
+### What a build host is not
+
+**It is not a sandbox.** Builds on one host are not isolated from each other,
+and nudo does not try to isolate them. A build command is arbitrary code; two
+mutually distrusting builds on one machine can see each other. If that matters,
+run the host so it cannot happen — a one-shot container, an ephemeral VM, a
+fresh instance per build. That is an operational decision, and nudo does not
+make it for you.
+
+**Credentials do reach the build host.** nudo clones there rather than
+transferring a tree from the control plane, so the host needs access to the
+repository: a deploy key is written to a `0600` file for the clone's lifetime
+and removed with the workspace, and an App token is passed on the command line
+and redacted from any output. Register a build host as deliberately as you would
+a target — its SSH host key is pinned and verified on exactly the same terms,
+for exactly this reason.
+
+**A build workspace is temporary.** Each build gets a fresh directory under the
+host's workspace root, removed when the build finishes however it finishes.
+There is no build cache and no shared artifact store; each build is independent.
+
+### Latency-critical build hosts
+
+A build host can be marked latency-critical, and building on one is allowed —
+you may have exactly one spare machine. It is not silent: the dashboard, the
+CLI and `check` all say that a build here will contend with whatever else runs
+on the box for CPU, cache and memory bandwidth, and mutating it needs
+`--allow-latency-critical` like any other latency-critical host.
+
+Expect jitter on anything sensitive while a build is in flight. If that is not
+acceptable, that machine should not be a build host.
+
+---
+
 ## GitHub CD
 
 Under **Sources**, create a GitHub App. nudo generates the manifest, hands your
@@ -263,9 +347,9 @@ public half into GitHub.
 
 ## Agents (MCP)
 
-`nudo-mcp` speaks MCP over stdio and exposes eight coarse-grained tools:
-`list_targets`, `list_services`, `get_unit_status`, `deploy`, `rollback`,
-`stream_logs`, `run_command`, `list_deployments`.
+`nudo-mcp` speaks MCP over stdio and exposes nine coarse-grained tools:
+`list_targets`, `list_build_hosts`, `list_services`, `get_unit_status`,
+`deploy`, `rollback`, `stream_logs`, `run_command`, `list_deployments`.
 
 ```json
 {
@@ -322,6 +406,8 @@ Set on the service, in the dashboard or over the API:
 
 - **Artifact source** — a URL, a git repo + branch + build command + artifact
   path, or a CLI upload.
+- **Build host** — where a git build runs: the instance default, the control
+  plane, or a named [build host](#build-hosts). Never the deploy target.
 - **Unit** — description, exec args, working directory, user, group, restart
   policy, ordering, and the latency knobs (`CPUAffinity`, `Nice`,
   `IOSchedulingClass`) plus arbitrary extra directives written verbatim.
@@ -395,7 +481,7 @@ make demo                       # nudo + a systemd target + three services
 Or directly:
 
 ```sh
-cargo test --workspace          # 734 unit and integration tests
+cargo test --workspace          # 862 unit and integration tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```

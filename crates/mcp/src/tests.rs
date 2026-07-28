@@ -13,9 +13,12 @@ fn the_tool_set_is_curated_rather_than_a_mapping_of_every_rpc() {
         .map(|tool| tool.name.to_string())
         .collect();
 
-    // The eight the plan calls for.
+    // The eight the plan calls for, plus `list_build_hosts` — a read, added
+    // with build hosts so an agent can say where a build ran rather than
+    // inferring it. Registering one stays a human action.
     for expected in [
         "list_targets",
+        "list_build_hosts",
         "list_services",
         "get_unit_status",
         "deploy",
@@ -26,7 +29,7 @@ fn the_tool_set_is_curated_rather_than_a_mapping_of_every_rpc() {
     ] {
         assert!(names.contains(&expected.to_string()), "missing {expected}");
     }
-    assert_eq!(names.len(), 8, "the surface should stay curated: {names:?}");
+    assert_eq!(names.len(), 9, "the surface should stay curated: {names:?}");
 }
 
 #[test]
@@ -44,6 +47,15 @@ fn nothing_that_should_be_left_to_a_human_is_exposed() {
     for forbidden in [
         "create_target",
         "delete_target",
+        // A build host is infrastructure like a target: an agent may see one,
+        // and may not register, edit or delete one. Accepting its host key is
+        // likewise a human judgement about whether a machine is what it claims
+        // to be — and this one is handed repository credentials.
+        "create_build_host",
+        "delete_build_host",
+        "update_build_host",
+        "accept_host_key",
+        "set_build_default",
         "create_service",
         "delete_service",
         "put_secret",

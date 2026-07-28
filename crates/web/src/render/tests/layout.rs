@@ -120,6 +120,7 @@ fn every_destructive_button_confirms_and_names_the_consequence() {
                 std::slice::from_ref(&target),
                 &[],
                 &[],
+                &[],
                 "t",
             )),
         ),

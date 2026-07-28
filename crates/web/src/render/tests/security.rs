@@ -73,7 +73,14 @@ fn a_services_secret_selection_is_by_id_and_shows_no_values() {
         digest: "abc123abc123".to_string(),
         ..Default::default()
     };
-    let rendered = s(service_form(None, &[a_target()], &[], &[secret], "tok"));
+    let rendered = s(service_form(
+        None,
+        &[a_target()],
+        &[],
+        &[secret],
+        &[],
+        "tok",
+    ));
     assert!(rendered.contains("name=\"secret_ids\""), "selected by id");
     assert!(rendered.contains("value=\"sec_1\""));
     assert!(rendered.contains("API_KEY"));
@@ -196,6 +203,7 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
                 std::slice::from_ref(&target),
                 std::slice::from_ref(&source),
                 std::slice::from_ref(&secret),
+                &[],
                 token,
             )),
         ),
@@ -206,6 +214,7 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
                 std::slice::from_ref(&target),
                 std::slice::from_ref(&source),
                 std::slice::from_ref(&secret),
+                &[],
                 token,
             )),
         ),

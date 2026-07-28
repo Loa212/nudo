@@ -386,7 +386,7 @@ fn a_unit_file_containing_markup_is_escaped() {
 
 #[test]
 fn the_service_form_carries_every_systemd_and_latency_field() {
-    let rendered = s(service_form(None, &[a_target()], &[], &[], "t"));
+    let rendered = s(service_form(None, &[a_target()], &[], &[], &[], "t"));
     for field in [
         "name=\"name\"",
         "name=\"target_id\"",
@@ -414,6 +414,203 @@ fn the_service_form_carries_every_systemd_and_latency_field() {
         "name=\"check_initial_delay\"",
         "name=\"artifact_kind\"",
         "name=\"artifact_url\"",
+        // The git inputs are named for the fields `ServiceForm` deserializes,
+        // not for their labels. They differed once, and every git field
+        // silently dropped on submit — the form posted, the service saved, and
+        // the repository, branch, build command and artifact path were all
+        // quietly empty.
+        "name=\"git_source_id\"",
+        "name=\"git_repo\"",
+        "name=\"git_branch\"",
+        "name=\"git_build_command\"",
+        "name=\"git_artifact_path\"",
+        "name=\"git_auto_deploy\"",
+        "name=\"git_build_host_id\"",
+    ] {
+        assert!(
+            rendered.contains(field),
+            "the service form is missing {field}"
+        );
+    }
+}
+
+// -- build hosts -------------------------------------------------------
+
+fn a_build_host(latency_critical: bool) -> BuildHost {
+    BuildHost {
+        id: "bh_1".to_string(),
+        name: "builder-1".to_string(),
+        host: "10.0.0.9".to_string(),
+        port: 22,
+        user: "build".to_string(),
+        ssh_key_id: "sec_key".to_string(),
+        workspace_root: "/var/lib/nudo/builds".to_string(),
+        latency_critical,
+        status: build_host::Status::Reachable as i32,
+        created_at: Some(nudo_proto::to_timestamp(chrono::Utc::now())),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_instance_with_no_build_hosts_is_told_builds_run_on_the_control_plane() {
+    let rendered = s(build_hosts_list(&[], "", "t"));
+    assert!(rendered.contains("No build hosts"));
+    assert!(
+        rendered.contains("The control plane"),
+        "the default selector must offer the control plane"
+    );
+}
+
+#[test]
+fn the_default_build_host_is_marked_in_the_listing() {
+    let rendered = s(build_hosts_list(&[a_build_host(false)], "bh_1", "t"));
+    assert!(rendered.contains("builder-1"));
+    assert!(rendered.contains("build@10.0.0.9:22"));
+    assert!(rendered.contains("default"));
+}
+
+#[test]
+fn a_build_host_detail_page_says_it_is_not_a_sandbox() {
+    // The assumption worth correcting before somebody relies on it: registering
+    // a build host does not buy isolation between builds.
+    let rendered = s(build_host_detail(&a_build_host(false), &[], "", None, "t"));
+    assert!(
+        rendered.contains("not a sandbox"),
+        "the page must say builds here are not isolated"
+    );
+    assert!(rendered.contains("/var/lib/nudo/builds"));
+}
+
+#[test]
+fn a_latency_critical_build_host_warns_about_contention() {
+    // Allowed, but never silently: the page has to say a build here competes
+    // with whatever else runs on the box.
+    let rendered = s(build_host_detail(&a_build_host(true), &[], "", None, "t"));
+    assert!(rendered.contains("Latency-critical host"));
+    assert!(
+        rendered.contains("cache and memory bandwidth"),
+        "the warning must say what the contention actually costs"
+    );
+    assert!(rendered.contains("latency-critical"));
+
+    // And a host without the flag says none of it.
+    let plain = s(build_host_detail(&a_build_host(false), &[], "", None, "t"));
+    assert!(!plain.contains("Latency-critical host"));
+}
+
+#[test]
+fn a_build_host_check_shows_its_warnings_without_reporting_a_failure() {
+    let rendered = s(build_host_detail(
+        &a_build_host(true),
+        &[],
+        "",
+        Some(&CheckBuildHostResponse {
+            ok: true,
+            checks: vec![nudo_proto::check_build_host_response::Check {
+                name: "git".to_string(),
+                ok: true,
+                detail: "git version 2.43.0".to_string(),
+            }],
+            warnings: vec!["This build host is marked latency-critical.".to_string()],
+        }),
+        "t",
+    ));
+
+    assert!(
+        rendered.contains("all passed"),
+        "a warning is not a failure"
+    );
+    assert!(!rendered.contains("problems found"));
+    assert!(rendered.contains("git version 2.43.0"));
+    assert!(rendered.contains("This build host is marked latency-critical."));
+}
+
+#[test]
+fn the_services_pinned_to_a_build_host_are_listed_with_what_deleting_it_does() {
+    let service = Service {
+        id: "svc_1".to_string(),
+        name: "bot".to_string(),
+        artifact: Some(ArtifactSource {
+            kind: Some(artifact_source::Kind::Git(GitSource {
+                build_command: "cargo build --release".to_string(),
+                build_host_id: "bh_1".to_string(),
+                ..Default::default()
+            })),
+        }),
+        ..Default::default()
+    };
+
+    let rendered = s(build_host_detail(
+        &a_build_host(false),
+        std::slice::from_ref(&service),
+        "",
+        None,
+        "t",
+    ));
+    assert!(rendered.contains("bot"));
+    assert!(rendered.contains("cargo build --release"));
+    // The consequence has to be stated: they fail rather than move.
+    assert!(
+        rendered.contains("fails with a message naming it"),
+        "the page must say what happens to these services on deletion"
+    );
+}
+
+#[test]
+fn the_build_host_form_offers_a_workspace_and_the_contention_checkbox() {
+    let rendered = s(build_host_form(None, &[], "t"));
+    for field in [
+        "name=\"name\"",
+        "name=\"host\"",
+        "name=\"port\"",
+        "name=\"user\"",
+        "name=\"ssh_key_id\"",
+        "name=\"workspace_root\"",
+        "name=\"latency_critical\"",
+        "name=\"labels\"",
+    ] {
+        assert!(rendered.contains(field), "the form is missing {field}");
+    }
+    // And no release root or unit fields: this host is never deployed to.
+    assert!(!rendered.contains("name=\"release_root\""));
+    assert!(!rendered.contains("name=\"unit_name\""));
+}
+
+#[test]
+fn the_service_form_can_pin_a_build_host_or_the_control_plane() {
+    let rendered = s(service_form(
+        None,
+        &[a_target()],
+        &[],
+        &[],
+        &[a_build_host(true)],
+        "t",
+    ));
+
+    assert!(rendered.contains("name=\"git_build_host_id\""));
+    assert!(rendered.contains("The instance default"));
+    assert!(rendered.contains("The control plane"));
+    // A latency-critical build host is flagged in the option itself, as a
+    // latency-critical target is.
+    assert!(rendered.contains("builder-1"));
+    assert!(rendered.contains("(latency-critical)"));
+    // And the invariant the whole feature rests on.
+    assert!(
+        rendered.contains("Never the deploy target"),
+        "the hint must rule out building on the target"
+    );
+}
+
+#[test]
+fn the_git_inputs_are_named_for_the_fields_the_server_deserializes() {
+    // The failure this guards against is silent: a name no `ServiceForm` field
+    // matches is discarded by serde, so the input renders, the form submits,
+    // and the value simply never arrives. Nothing errors.
+    let rendered = s(service_form(None, &[a_target()], &[], &[], &[], "t"));
+
+    // The bare names these were once given, each of which dropped its value.
+    for stale in [
         "name=\"source_id\"",
         "name=\"repo\"",
         "name=\"branch\"",
@@ -422,8 +619,9 @@ fn the_service_form_carries_every_systemd_and_latency_field() {
         "name=\"auto_deploy_on_push\"",
     ] {
         assert!(
-            rendered.contains(field),
-            "the service form is missing {field}"
+            !rendered.contains(stale),
+            "{stale} is not a ServiceForm field — its value would be dropped \
+             on submit. The git inputs must be named git_*."
         );
     }
 }
@@ -448,7 +646,14 @@ fn editing_a_service_preselects_its_existing_configuration() {
     });
     service.env = HashMap::from([("RUST_LOG".to_string(), "info".to_string())]);
 
-    let rendered = s(service_form(Some(&service), &[a_target()], &[], &[], "t"));
+    let rendered = s(service_form(
+        Some(&service),
+        &[a_target()],
+        &[],
+        &[],
+        &[],
+        "t",
+    ));
     assert!(rendered.contains("value=\"2-5\""));
     assert!(rendered.contains("value=\"realtime\" selected"));
     assert!(rendered.contains("value=\"on-failure\" selected"));
@@ -560,7 +765,7 @@ fn the_pages_that_stack_cards_still_do() {
     // pages actually render adjacent cards. If one is restructured, this
     // says so rather than leaving a stylesheet rule for a shape that no
     // longer exists.
-    let form = s(service_form(None, &[a_target()], &[], &[], "t"));
+    let form = s(service_form(None, &[a_target()], &[], &[], &[], "t"));
     assert!(
         form.matches(r#"class="card""#).count() >= 2,
         "the service form no longer stacks cards"

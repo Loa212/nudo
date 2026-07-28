@@ -29,10 +29,23 @@ fixes. They are called out here because they are not mechanical file moves:
 
 ## Proto changes
 
-**None.** `controlplane.proto` is unmodified from what was provided. Every RPC in
-all eight services is implemented, including the four streams
-(`WatchUnitStatus`, `Watch`, `Stream`, `RunCommand`) and the bidirectional
-`Attach`.
+**One addition: build hosts.** Every RPC in the original eight services is
+implemented and unchanged, including the four streams (`WatchUnitStatus`,
+`Watch`, `Stream`, `RunCommand`) and the bidirectional `Attach`. A ninth
+service, `BuildHosts`, was added along with:
+
+- `BuildHost`, and its request/response messages, mirroring `Target`'s shape.
+- `GitSource.build_host_id` (field 7), a new optional field. Unset — which is
+  what every existing client sends — means the instance default, which is itself
+  the control plane until an operator changes it. Nothing that predates this
+  builds anywhere new.
+- `BuildDefaults`, and `GetDefaults`/`SetDefaults` on the new service.
+
+`CheckBuildHostResponse` carries a `warnings` list alongside `checks`, which
+`CheckTargetResponse` has no equivalent of. A warning must not make `ok` false:
+a latency-critical build host is a choice an operator made, and folding it into
+the checks would fail a CI step gating on readiness for a host that is working
+exactly as configured.
 
 Two places where the proto leaves a gap are handled without changing it:
 
@@ -76,9 +89,10 @@ back to. The live release is never a candidate for pruning even when it falls
 outside the retention window, and `keep_releases: 0` is treated as the default
 rather than as "delete everything".
 
-**Builds happen on the control plane, never on a target.** A latency-critical
-host should not have a compiler, a package manager, or a build's memory pressure
-on it. The control plane produces a binary and ships only that.
+**Builds never happen on a target.** A latency-critical host should not have a
+compiler, a package manager, or a build's memory pressure on it. They run on the
+control plane by default, or on a build host — see *Build hosts* below — and a
+binary is all that reaches the target either way.
 
 **Cancellation sets a flag the engine checks between steps** rather than killing
 the task. A cancel that landed mid-swap could leave the symlink pointing at a
@@ -87,6 +101,72 @@ half-uploaded release, or a unit file half-written.
 **A restart that fails pulls in `systemctl status --lines=20`** before reporting,
 because a bare exit code tells an operator nothing about why a unit would not
 start.
+
+### Build hosts
+
+The issue that asked for these left three questions open. All three were
+decided deliberately; the reasoning is here because the code cannot explain a
+road not taken.
+
+**A build host is its own entity, not a `targets` row with a flag.** They share
+reachability, an SSH user and a key, and nothing else: a build host has no
+release root, no unit, no `latency_critical` semantics in the deploy sense, and
+nothing is ever deployed to it. Reusing `targets` would have been less code and
+would have produced a "target" that is never deployed to, carrying columns that
+mean nothing for it — and it would have made "a build host is not a deploy
+target" a rule enforced by remembering rather than by the schema. The two nouns
+are separate everywhere: table, proto service, CLI noun, dashboard page.
+
+**The checkout is cloned on the build host, not uploaded to it.** The
+alternative keeps credentials on the control plane at the cost of transferring a
+tree over the existing base64 SSH upload path, which is slow for a large
+repository. Cloning there is cheaper and keeps one code path for credential
+handling, and the cost is stated rather than hidden: the build host receives
+repository credentials. A deploy key is written to a `0600` file for the clone's
+lifetime and removed with the workspace; an App token rides the command line as
+it does locally and is redacted from output before it reaches a log. This is
+why a build host's SSH host key is pinned and verified on exactly the same terms
+as a target's — connecting to the wrong machine here hands it a key.
+
+**A latency-critical build host is allowed, and warned about.** Refusing it
+outright was the tidier rule and the wrong one: an operator may have exactly one
+spare machine, and nudo refusing to use it does not make the build go away — it
+makes the build stay on the control plane, which may be worse. So it is
+permitted, mutating it needs `allow_latency_critical` like any other
+latency-critical host, and the contention is stated everywhere it is relevant:
+`check` returns it as a warning, the dashboard renders a callout, the CLI prints
+it after the checks. What is *not* done is failing the check, which would gate
+CI on a host that is working exactly as configured.
+
+**The deploy log does not reveal where a build ran.** Same lines, same order,
+same redaction, local or remote. Where a build happens is configuration, not
+output, and anything parsing a deployment log should not break when an operator
+adds a build host.
+
+**The workspace is removed on every exit path** — success, failure, timeout, a
+lost connection. A build host that accumulates checkouts fills up, and that
+failure then belongs to every service that builds there. Cleanup is best-effort
+and never fails a build that produced a binary; the `rm -rf` is guarded against
+ever being aimed at a path shallower than two directories deep.
+
+**Deleting a build host leaves its services pointing at it.** They fail their
+next build with a message naming the missing id, rather than silently falling
+back to the default — which would move a build nobody asked to move. The
+instance default *is* cleared on deletion, because a dangling default would fail
+every git-backed deploy on the instance at once. The deletion's audit entry
+names the services left behind.
+
+**`local` is a sentinel `build_host_id`, distinct from empty.** Empty means
+"whatever the instance default is"; `local` means the control plane whatever the
+default is. Without the distinction, pointing an instance at a build host would
+silently move every service that was deliberately building locally.
+
+**Isolation between builds is out of scope, and said so in the docs.** Running
+two mutually distrusting build commands on one host is a real problem, and it is
+a property of how that host is run — one-shot container, ephemeral VM, fresh
+instance per build — not something nudo can implement inside itself. The risk is
+that registering a build host *reads* as a sandbox, so the dashboard says
+otherwise on every build host's page, not only shared ones.
 
 ### The latency-critical guardrail
 

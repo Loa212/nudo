@@ -172,6 +172,159 @@ message CheckTargetResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Build hosts — where a build runs, when it does not run on the control plane
+// ---------------------------------------------------------------------------
+
+// A machine that builds, reached over SSH.
+//
+// Deliberately not a `Target`. The two share reachability, an SSH user and a
+// key, and nothing else: a build host has no release root, no unit and nothing
+// deployed to it, and a target must never be sent a build. Keeping them apart
+// makes "a build host is not a deploy target" a property of the model rather
+// than a rule someone has to remember.
+//
+// A build host is not a sandbox. Two builds running here can see each other,
+// and nudo does not isolate them; that is a property of how the host is run —
+// one-shot container, ephemeral VM, fresh instance per build — and remains the
+// operator's decision.
+message BuildHost {
+  string id = 1;
+  string name = 2;
+  string host = 3;              // hostname or IP
+  uint32 port = 4;              // ssh port, default 22
+  string user = 5;              // ssh user
+  string ssh_key_id = 6;        // reference into the secret store, never the key itself
+
+  // Where checkouts and build trees go. Each build gets a fresh directory
+  // underneath, removed when it finishes however it finishes.
+  string workspace_root = 7;    // default "/var/lib/nudo/builds"
+
+  // Marks a box where a build competes with something latency-sensitive for
+  // CPU, cache and memory bandwidth. Permitted — an operator may have exactly
+  // one spare machine — but surfaced everywhere it is relevant rather than
+  // silently accepted.
+  bool latency_critical = 8;
+
+  map<string, string> labels = 9;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    UNKNOWN = 1;
+    REACHABLE = 2;
+    UNREACHABLE = 3;
+  }
+  Status status = 10;
+  google.protobuf.Timestamp last_seen_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+
+  // Pinned and verified exactly as a target's is: a build host is handed
+  // repository credentials, so connecting to the wrong machine matters at least
+  // as much here.
+  HostKey host_key = 13;
+}
+
+message CreateBuildHostRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  string host = 3;
+  uint32 port = 4;
+  string user = 5;
+  string ssh_key_id = 6;
+  string workspace_root = 7;
+  bool latency_critical = 8;
+  map<string, string> labels = 9;
+}
+
+message UpdateBuildHostRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  BuildHost build_host = 3;     // fields present in update_mask
+  repeated string update_mask = 4;
+}
+
+message DeleteBuildHostRequest {
+  Mutation mutation = 1;
+  string id = 2;
+}
+
+message GetBuildHostRequest { string id = 1; }
+
+message ListBuildHostsRequest {
+  string label_selector = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListBuildHostsResponse {
+  repeated BuildHost build_hosts = 1;
+  string next_page_token = 2;
+}
+
+// Accepts a build host's current host key, promoting a pending change to the
+// pinned one. Guarded and audited like any other mutation.
+message AcceptBuildHostKeyRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  // The fingerprint being accepted, which must match the pending one — so the
+  // acceptance refers to the key the operator looked at rather than to whatever
+  // is pending when the request lands.
+  string fingerprint = 3;
+}
+
+// Forgets a build host's pinned key, reopening the first-use window.
+message ForgetBuildHostKeyRequest {
+  Mutation mutation = 1;
+  string id = 2;
+}
+
+// Probes a build host the way `CheckTarget` probes a target: each prerequisite
+// separately, so a failure names the part that is broken.
+message CheckBuildHostRequest { string id = 1; }
+
+message CheckBuildHostResponse {
+  bool ok = 1;
+  message Check {
+    // "host_key", "ssh", "workspace", "git", "toolchain"
+    string name = 1;
+    bool ok = 2;
+    string detail = 3;
+  }
+  repeated Check checks = 2;
+
+  // Non-fatal things worth saying — currently, that this host is marked
+  // latency-critical and a build on it will contend with whatever else runs
+  // there. Separate from `checks` because it must not make `ok` false.
+  repeated string warnings = 3;
+}
+
+// The value of a `build_host_id` that means "the control plane", as opposed to
+// an unset field meaning "whatever the instance default is".
+//
+// A service pinned to local with this stays local even after an operator points
+// the instance at a build host, which an empty string could not express.
+//
+// Not an enum: `build_host_id` is an id, and a reserved id costs one constant
+// where a wrapper message would cost a migration and a proto change at every
+// call site.
+//
+// const LOCAL_BUILD_HOST_ID = "local"
+
+// The build host used when a service does not name one.
+//
+// Empty means the control plane, which is the default and the behaviour of
+// every instance that configures nothing.
+message BuildDefaults {
+  string build_host_id = 1;
+}
+
+message GetBuildDefaultsRequest {}
+
+message SetBuildDefaultsRequest {
+  Mutation mutation = 1;
+  string build_host_id = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Services — a deployable unit on a target (one systemd unit)
 // ---------------------------------------------------------------------------
 
@@ -205,6 +358,14 @@ message GitSource {
   string build_command = 4;     // e.g. "cargo build --release"
   string artifact_path = 5;     // e.g. "target/release/bot"
   bool auto_deploy_on_push = 6;
+
+  // Where this service's build runs, overriding the instance default. A repo
+  // needing a GPU or a particular toolchain is a per-service fact.
+  //
+  // Three states, and the difference matters: unset falls back to the instance
+  // default, the sentinel below forces the control plane whatever that default
+  // is, and any other value names a build host.
+  string build_host_id = 7;
 }
 
 message SystemdUnit {
@@ -641,6 +802,23 @@ service Targets {
   // Host-key pinning. A change is refused until it is accepted here.
   rpc AcceptHostKey(AcceptHostKeyRequest) returns (Target);
   rpc ForgetHostKey(ForgetHostKeyRequest) returns (Target);
+}
+
+service BuildHosts {
+  rpc Create(CreateBuildHostRequest) returns (BuildHost);
+  rpc Get(GetBuildHostRequest) returns (BuildHost);
+  rpc List(ListBuildHostsRequest) returns (ListBuildHostsResponse);
+  rpc Update(UpdateBuildHostRequest) returns (BuildHost);
+  rpc Delete(DeleteBuildHostRequest) returns (google.protobuf.Empty);
+  rpc Check(CheckBuildHostRequest) returns (CheckBuildHostResponse);
+
+  // Host-key pinning, as for a target: a change is refused until accepted.
+  rpc AcceptHostKey(AcceptBuildHostKeyRequest) returns (BuildHost);
+  rpc ForgetHostKey(ForgetBuildHostKeyRequest) returns (BuildHost);
+
+  // The instance-wide default, which a service's own setting overrides.
+  rpc GetDefaults(GetBuildDefaultsRequest) returns (BuildDefaults);
+  rpc SetDefaults(SetBuildDefaultsRequest) returns (BuildDefaults);
 }
 
 service ServicesApi {

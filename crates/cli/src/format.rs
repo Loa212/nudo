@@ -1,6 +1,9 @@
 //! Output formatting. Kept separate so it can be tested without a server.
 
-use nudo_proto::{Deployment, Release, Secret, Service, Target, UnitStatus, deployment, target};
+use nudo_proto::{
+    BuildHost, Deployment, Release, Secret, Service, Target, UnitStatus, build_host, deployment,
+    target,
+};
 
 pub use nudo_format::{ago, artifact_summary, bytes, duration, scope_label, truncate};
 
@@ -97,6 +100,46 @@ pub fn targets_table(targets: &[Target]) -> String {
             "id",
             "name",
             "address",
+            "status",
+            "latency-critical",
+            "last seen",
+        ],
+        &rows,
+    )
+}
+
+pub fn build_hosts_table(hosts: &[BuildHost]) -> String {
+    let rows: Vec<Vec<String>> = hosts
+        .iter()
+        .map(|h| {
+            vec![
+                h.id.clone(),
+                h.name.clone(),
+                format!("{}@{}:{}", h.user, h.host, h.port),
+                h.workspace_root.clone(),
+                build_host::Status::try_from(h.status)
+                    .unwrap_or(build_host::Status::Unknown)
+                    .as_str()
+                    .to_string(),
+                // Shown for the same reason it is on a target: it changes how
+                // every other command against this host behaves, and here it
+                // also means a build will contend with whatever else runs.
+                if h.latency_critical {
+                    "yes".to_string()
+                } else {
+                    "-".to_string()
+                },
+                ago(h.last_seen_at.as_ref()),
+            ]
+        })
+        .collect();
+
+    table(
+        &[
+            "id",
+            "name",
+            "address",
+            "workspace",
             "status",
             "latency-critical",
             "last seen",
@@ -306,6 +349,56 @@ mod tests {
             .find(|l| l.contains("normal"))
             .expect("row");
         assert!(!normal.contains("yes"));
+    }
+
+    #[test]
+    fn a_build_host_listing_shows_its_workspace_and_contention_flag() {
+        let rendered = build_hosts_table(&[
+            BuildHost {
+                id: "bh_1".to_string(),
+                name: "spare-box".to_string(),
+                host: "10.0.0.9".to_string(),
+                port: 22,
+                user: "build".to_string(),
+                workspace_root: "/mnt/fast/builds".to_string(),
+                latency_critical: true,
+                status: build_host::Status::Reachable as i32,
+                ..Default::default()
+            },
+            BuildHost {
+                id: "bh_2".to_string(),
+                name: "ci-runner".to_string(),
+                host: "10.0.0.10".to_string(),
+                port: 2222,
+                user: "ci".to_string(),
+                workspace_root: "/var/lib/nudo/builds".to_string(),
+                ..Default::default()
+            },
+        ]);
+
+        assert!(rendered.contains("WORKSPACE"));
+        assert!(rendered.contains("/mnt/fast/builds"));
+        assert!(rendered.contains("build@10.0.0.9:22"));
+        assert!(rendered.contains("ci@10.0.0.10:2222"));
+        assert!(rendered.contains("reachable"));
+
+        // The contention flag has to be readable at a glance, for the same
+        // reason it is on a target listing.
+        let hot = rendered
+            .lines()
+            .find(|l| l.contains("spare-box"))
+            .expect("row");
+        assert!(hot.contains("yes"));
+        let plain = rendered
+            .lines()
+            .find(|l| l.contains("ci-runner"))
+            .expect("row");
+        assert!(!plain.contains("yes"));
+    }
+
+    #[test]
+    fn an_empty_build_host_listing_renders_nothing_so_the_caller_can_say_none() {
+        assert!(build_hosts_table(&[]).trim().is_empty());
     }
 
     #[test]

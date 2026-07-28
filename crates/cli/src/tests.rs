@@ -169,6 +169,84 @@ fn json_output_renders_enums_as_names_rather_than_numbers() {
     assert_eq!(json["targets"][0]["status"], "reachable");
 }
 
+#[test]
+fn a_build_hosts_json_output_renders_enums_as_names() {
+    let json = serde_json::to_value(JsonBuildHosts::from(&vec![BuildHost {
+        id: "bh_1".to_string(),
+        status: build_host::Status::Reachable as i32,
+        workspace_root: "/var/lib/nudo/builds".to_string(),
+        ..Default::default()
+    }]))
+    .expect("serialize");
+    assert_eq!(json["build_hosts"][0]["status"], "reachable");
+    assert_eq!(
+        json["build_hosts"][0]["workspace_root"],
+        "/var/lib/nudo/builds"
+    );
+}
+
+#[test]
+fn a_build_host_check_carries_its_warnings_without_failing() {
+    // The decision on this issue: a latency-critical build host is allowed and
+    // warned about. A script gating on `ok` must not be tripped by the warning.
+    let json = serde_json::to_value(JsonChecks::from(&CheckBuildHostResponse {
+        ok: true,
+        checks: vec![check_build_host_response::Check {
+            name: "git".to_string(),
+            ok: true,
+            detail: "git version 2.43.0".to_string(),
+        }],
+        warnings: vec!["This build host is marked latency-critical.".to_string()],
+    }))
+    .expect("serialize");
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(
+        json["warnings"][0],
+        "This build host is marked latency-critical."
+    );
+}
+
+#[test]
+fn a_target_check_reports_no_warnings_field_at_all() {
+    // The warnings field is skipped when empty, so the target output is
+    // byte-identical to what it was before build hosts existed.
+    let json = serde_json::to_value(JsonChecks::from(&CheckTargetResponse {
+        ok: true,
+        checks: Vec::new(),
+    }))
+    .expect("serialize");
+    assert!(json.get("warnings").is_none(), "got: {json}");
+}
+
+#[test]
+fn the_build_host_default_accepts_a_host_or_local_but_not_both() {
+    // They are mutually exclusive: `--local` is the sentinel that pins the
+    // control plane, so naming a host alongside it is contradictory.
+    assert!(
+        Cli::try_parse_from(["nudo", "build-hosts", "default", "bh_1", "--local"]).is_err(),
+        "an id and --local must not be accepted together"
+    );
+    assert!(Cli::try_parse_from(["nudo", "build-hosts", "default", "bh_1"]).is_ok());
+    assert!(Cli::try_parse_from(["nudo", "build-hosts", "default", "--local"]).is_ok());
+}
+
+#[test]
+fn a_build_hosts_host_key_cannot_be_accepted_and_forgotten_at_once() {
+    assert!(
+        Cli::try_parse_from([
+            "nudo",
+            "build-hosts",
+            "host-key",
+            "bh_1",
+            "--accept",
+            "SHA256:x",
+            "--forget",
+        ])
+        .is_err()
+    );
+}
+
 #[tokio::test]
 async fn a_local_artifact_is_served_over_loopback_at_an_unguessable_path() {
     // This is how `--artifact` reaches the control plane: no upload RPC, and
@@ -275,6 +353,22 @@ fn every_subcommand_group_parses() {
             "sec_1",
         ],
         vec!["nudo", "targets", "check", "tgt_1"],
+        vec!["nudo", "build-hosts", "list"],
+        vec![
+            "nudo",
+            "build-hosts",
+            "add",
+            "builder",
+            "--host",
+            "h",
+            "--ssh-key",
+            "sec_1",
+        ],
+        vec!["nudo", "build-hosts", "check", "bh_1"],
+        vec!["nudo", "build-hosts", "host-key", "bh_1"],
+        vec!["nudo", "build-hosts", "default"],
+        vec!["nudo", "build-hosts", "default", "bh_1"],
+        vec!["nudo", "build-hosts", "default", "--local"],
         vec!["nudo", "services", "list"],
         vec!["nudo", "services", "unit", "svc_1"],
         vec!["nudo", "services", "restart", "svc_1"],
