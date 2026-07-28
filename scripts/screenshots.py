@@ -287,11 +287,65 @@ class Chrome:
         metrics = self.call("Page.getLayoutMetrics")
         content = metrics.get("cssContentSize") or metrics["contentSize"]
         width = max(int(content["width"]), 1200)
-        # Bounded: a log view can be tens of thousands of pixels tall, which is
-        # not something anybody is going to look at.
-        height = min(max(int(content["height"]), 320), 4000)
 
-        # Resize the viewport to the full page before capturing. The rail is
+        # How far down the page the *content* is actually drawn.
+        #
+        # Two things are sized to the viewport rather than to what they contain:
+        # `.shell` is `min-height: 100vh` and `.rail` is `height: 100vh`. So the
+        # document reports a full viewport however little is on it, and a
+        # two-row table screenshots with two-thirds empty grey below it.
+        #
+        # Every container is stretched: `.shell` is `min-height: 100vh`, `.rail`
+        # is `height: 100vh`, and `.main`/`.content` are `flex: 1` inside it. So
+        # measuring any of them just reports the viewport back, and a two-row
+        # table screenshots with two-thirds empty grey below it.
+        #
+        # The direct children of `.topbar` and `.content` are the things
+        # actually sized by what they contain, so the bottom of the last one is
+        # where the page really ends. The viewport override below then stretches
+        # the containers — including the rail — to exactly that.
+        bottom = self.call(
+            "Runtime.evaluate",
+            expression="""
+                (() => {
+                    let content = 0;
+                    for (const section of document.querySelectorAll(".topbar, .content")) {
+                        for (const node of section.children) {
+                            const box = node.getBoundingClientRect();
+                            if (box.height === 0 && box.width === 0) continue;
+                            content = Math.max(content, box.bottom + window.scrollY);
+                        }
+                    }
+
+                    // The rail is `height: 100vh` and a `.spacer` pushes its
+                    // footer to the bottom, so neither is a fixed measure. The
+                    // last nav link is: it sits where the navigation naturally
+                    // ends. Cropping above it would cut the nav, which is worse
+                    // than a little empty space beside a short page.
+                    let rail = 0;
+                    const links = document.querySelectorAll(".rail a.nav");
+                    if (links.length) {
+                        const last = links[links.length - 1];
+                        rail = last.getBoundingClientRect().bottom + window.scrollY;
+                    }
+
+                    return Math.ceil(Math.max(content, rail));
+                })()
+            """,
+            returnByValue=True,
+        )["result"].get("value", 0)
+
+        if not bottom:
+            # A page with neither section — the login screen centres its card in
+            # the viewport — keeps whatever the document reports.
+            bottom = int(content["height"])
+
+        # A little breathing room under the last element, and bounded: a log
+        # view can be tens of thousands of pixels tall, which is not something
+        # anybody is going to look at.
+        height = min(max(int(bottom) + 24, 320), 4000)
+
+        # Resize the viewport to the page before capturing. The rail is
         # `position: fixed` and sized to the viewport, so capturing a tall page
         # from a short viewport leaves it ending partway down with empty space
         # beside the content — the nav appears cut off in every long screenshot.
@@ -714,8 +768,9 @@ def main() -> int:
     parser.add_argument(
         "--theme",
         choices=["light", "dark", "both"],
-        default="both",
-        help="which colour scheme to capture (default both)",
+        default="light",
+        help="which colour scheme to capture (default light; the two differ only "
+        "in palette, so capturing both doubles the images to review for little)",
     )
     parser.add_argument("--keep", action="store_true", help="leave the instance running")
     parser.add_argument("--width", type=int, default=1440)
@@ -738,9 +793,14 @@ def main() -> int:
 
     # Only a full run clears the directory. A filtered or partial one overwrites
     # what it captures and leaves the rest alone: `--only build` wiping the other
-    # sixty images is precisely the surprise that costs someone the run they were
-    # comparing against.
-    full_run = not args.only and args.state == "both" and args.theme == "both"
+    # thirty images is precisely the surprise that costs someone the run they
+    # were comparing against.
+    #
+    # "Full" is measured against the defaults rather than against every possible
+    # flag: a default run is what someone means by "regenerate the set", and it
+    # should not leave a stale dark/ directory behind from an earlier `--theme
+    # both`.
+    full_run = not args.only and args.state == "both" and args.theme == parser.get_default("theme")
     if full_run and OUT.exists():
         shutil.rmtree(OUT)
 

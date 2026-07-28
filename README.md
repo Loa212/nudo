@@ -537,13 +537,15 @@ states fail differently:
   states that only appear when something is wrong — a latency-critical host, a
   build host that is the instance default, a service pinned to one
 
-Both light and dark, since only one of them tends to get looked at while
-developing.
+Light only by default — the two themes differ in palette rather than layout, so
+capturing both doubles what there is to look through for little. `--theme dark`
+or `--theme both` when the palette is what you are checking.
 
 ```sh
-make screenshots                      # everything: 66 images
-make screenshots ARGS="--only build"  # just the build-host views
-make screenshots ARGS="--keep"        # leave the instance up to poke at
+make screenshots                        # everything: 33 images
+make screenshots ARGS="--only build"    # just the build-host views
+make screenshots ARGS="--theme both"    # light and dark
+make screenshots ARGS="--keep"          # leave the instance up to poke at
 scripts/screenshots.py --url http://localhost:3000   # an instance you already run
 ```
 
