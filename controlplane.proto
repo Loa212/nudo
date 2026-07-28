@@ -67,6 +67,57 @@ message Target {
   string agent_version = 11;    // empty when running agentless (pure ssh)
 
   google.protobuf.Timestamp created_at = 12;
+
+  // The pinned SSH host key, trusted on first use and verified on every
+  // connection after that. Public key material, so it is safe to return.
+  HostKey host_key = 13;
+}
+
+// A target's pinned host key, and any change waiting to be reviewed.
+//
+// Both halves carry the key itself and not only its fingerprint, so a change can
+// be shown — algorithm, full key, both fingerprints — rather than merely
+// reported.
+message HostKey {
+  // OpenSSH one-line form ("ssh-ed25519 AAAA..."). Empty until the first
+  // successful connection pins one.
+  string key = 1;
+  // The SHA-256 fingerprint, as ssh-keygen prints it ("SHA256:...").
+  string fingerprint = 2;
+  google.protobuf.Timestamp pinned_at = 3;
+
+  // A key presented by the host that did not match the pinned one. Set by a
+  // refused connection; every connection stays refused until it is accepted or
+  // the host presents the pinned key again.
+  string pending_key = 4;
+  string pending_fingerprint = 5;
+  google.protobuf.Timestamp pending_seen_at = 6;
+}
+
+// Accepts a target's current host key.
+//
+// With a change pending, this promotes it to the pinned key — the flow for a
+// legitimately rebuilt host. It is deliberately a mutation like any other: it is
+// authorized, guarded on latency-critical hosts, and audited with the
+// fingerprint that was accepted and by whom.
+message AcceptHostKeyRequest {
+  Mutation mutation = 1;
+  string id = 2;
+  // The fingerprint being accepted, which must match the pending one. Required:
+  // an operator accepts a key they have looked at, and this is what makes the
+  // acceptance refer to that key rather than to whatever is pending by the time
+  // the request lands.
+  string fingerprint = 3;
+}
+
+// Forgets a target's pinned host key, so the next connection pins afresh.
+//
+// The escape hatch for a host that was rebuilt while nobody was watching and
+// whose old key is of no further interest. It reopens the first-use window, so
+// it is a mutation, guarded and audited like an acceptance.
+message ForgetHostKeyRequest {
+  Mutation mutation = 1;
+  string id = 2;
 }
 
 message CreateTargetRequest {
@@ -105,13 +156,15 @@ message ListTargetsResponse {
   string next_page_token = 2;
 }
 
-// Probes ssh reachability, sudo, systemd presence, and writable release dir.
+// Probes the host key, ssh reachability, sudo, systemd presence, and a writable
+// release dir.
 message CheckTargetRequest { string id = 1; }
 
 message CheckTargetResponse {
   bool ok = 1;
   message Check {
-    string name = 1;            // "ssh", "sudo", "systemd", "release_dir"
+    // "host_key", "ssh", "sudo", "systemd", "release_dir"
+    string name = 1;
     bool ok = 2;
     string detail = 3;
   }
@@ -584,6 +637,10 @@ service Targets {
   rpc Update(UpdateTargetRequest) returns (Target);
   rpc Delete(DeleteTargetRequest) returns (google.protobuf.Empty);
   rpc Check(CheckTargetRequest) returns (CheckTargetResponse);
+
+  // Host-key pinning. A change is refused until it is accepted here.
+  rpc AcceptHostKey(AcceptHostKeyRequest) returns (Target);
+  rpc ForgetHostKey(ForgetHostKeyRequest) returns (Target);
 }
 
 service ServicesApi {

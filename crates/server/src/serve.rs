@@ -127,14 +127,12 @@ fn spawn_reachability_probe(context: api::Context, interval_seconds: u64) {
                     continue;
                 }
 
-                let Ok(ssh_target) = context.engine.ssh_target_for(&target).await else {
-                    continue;
-                };
-
-                // One cheap command, not the full four-check probe: this runs on
-                // a timer against hosts that are supposed to be doing nothing
-                // else.
-                let status = match crate::ssh::SshSession::connect(&ssh_target).await {
+                // One cheap command, not the full probe: this runs on a timer
+                // against hosts that are supposed to be doing nothing else.
+                // Going through the engine means the loop pins a host key on
+                // first use and records a change for review, so a target that
+                // is only ever probed still gets both.
+                let status = match context.engine.connect(&target).await {
                     Ok(session) => {
                         let reachable = session
                             .exec_timeout("true", std::time::Duration::from_secs(10))

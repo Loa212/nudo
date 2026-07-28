@@ -58,7 +58,7 @@ pub fn dashboard(
                 div .card {
                     (empty_state(
                         "No targets yet",
-                        "A target is a machine reachable over ssh. Add one and nudo will check ssh, sudo, systemd and the release directory before you deploy anything.",
+                        "A target is a machine reachable over ssh. Add one and nudo will check its host key, ssh, sudo, systemd and the release directory before you deploy anything.",
                         Some(("Add your first target", "/targets/new")),
                     ))
                 }

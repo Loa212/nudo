@@ -133,6 +133,7 @@ impl Fixture {
             .output();
     }
 
+    /// SSH details with nothing pinned, so a connection trusts on first use.
     fn ssh_target(&self) -> SshTarget {
         SshTarget {
             host: "127.0.0.1".to_string(),
@@ -140,7 +141,38 @@ impl Fixture {
             user: "root".to_string(),
             private_key: self.private_key.clone(),
             passphrase: None,
+            host_key: String::new(),
         }
+    }
+
+    /// The container's actual ed25519 host key, in OpenSSH one-line form.
+    ///
+    /// Read from inside the container rather than scanned over the network, so
+    /// the test compares nudo's verification against the machine's own idea of
+    /// its identity — which is exactly what an operator is told to do.
+    fn host_key(&self) -> anyhow::Result<String> {
+        Ok(
+            exec_in_container(&["cat", "/etc/ssh/ssh_host_ed25519_key.pub"])?
+                .trim()
+                .to_string(),
+        )
+    }
+
+    /// Replaces the container's host key with a freshly generated one and
+    /// restarts sshd, as rebuilding the machine would.
+    fn regenerate_host_key(&self) -> anyhow::Result<()> {
+        exec_in_container(&[
+            "bash",
+            "-c",
+            "rm -f /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub && \
+             ssh-keygen -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key -q",
+        ])?;
+        exec_in_container(&["systemctl", "restart", "ssh"])?;
+        wait_for(
+            "sshd to come back with its new key",
+            Duration::from_secs(30),
+            || std::net::TcpStream::connect(("127.0.0.1", SSH_PORT)).is_ok(),
+        )
     }
 }
 
@@ -341,7 +373,8 @@ async fn a_binary_deploys_and_the_unit_becomes_active() {
         .expect("create the target");
 
     // ---- the readiness probe should pass against a real host ----
-    let (ok, checks) = nudo_server::probe::check_target(&fixture.ssh_target(), "/opt").await;
+    let (ok, checks) =
+        nudo_server::probe::check_target(engine.connect(&target).await, "/opt").await;
     for check in &checks {
         eprintln!(
             "check {:<12} {} {}",
@@ -775,6 +808,180 @@ async fn secrets_reach_the_target_as_a_locked_down_environment_file() {
     );
 
     let _ = session.close().await;
+}
+
+/// The whole host-key lifecycle against a real sshd: pin, verify, refuse a
+/// change, review it, accept it, connect again.
+///
+/// This is the test that proves the feature does what it claims. The unit tests
+/// exercise the decision rule; only a real server actually presenting a real
+/// host key — and then a different one — shows that the refusal happens where it
+/// has to, which is before authentication.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_key_is_pinned_on_first_use_and_a_change_is_refused_until_accepted() {
+    let fixture = Fixture::start().expect("start the target container");
+    let secret_key = SecretKey::generate();
+    let (engine, _dir) = engine(secret_key.clone()).await;
+
+    let key_secret = engine
+        .store
+        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .await
+        .expect("store the key");
+
+    let target = engine
+        .store
+        .create_target(&TargetInput {
+            name: "e2e-host-key".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: SSH_PORT as u32,
+            user: "root".to_string(),
+            ssh_key_id: key_secret.id,
+            latency_critical: false,
+            labels: Default::default(),
+        })
+        .await
+        .expect("create the target");
+
+    // ---- nothing pinned: the first connection records what the host presents ----
+    let reload = |id: String| {
+        let engine = engine.clone();
+        async move {
+            engine
+                .store
+                .get_target(&id)
+                .await
+                .expect("read the target")
+                .expect("the target exists")
+        }
+    };
+
+    assert!(
+        reload(target.id.clone()).await.host_key.is_none(),
+        "a target that has never connected must not have a pinned key"
+    );
+
+    let session = engine.connect(&target).await.expect("first connection");
+    let _ = session.close().await;
+
+    let pinned = reload(target.id.clone())
+        .await
+        .host_key
+        .expect("the first connection must pin a key");
+    assert!(!pinned.key.is_empty());
+    assert!(pinned.fingerprint.starts_with("SHA256:"));
+    assert!(pinned.pending_key.is_empty());
+
+    // What was pinned must be the machine's own key, not merely something
+    // self-consistent: this is checked against the container's key file rather
+    // than against anything nudo produced.
+    let actual = fixture.host_key().expect("read the container's host key");
+    let actual_key_only = actual
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        pinned.key, actual_key_only,
+        "the pinned key must be the host's actual key"
+    );
+
+    // ---- pinned: a second connection verifies rather than re-pins ----
+    // Re-read first, as every caller does: what is pinned is carried on the
+    // target, so connecting with a stale copy would be first use all over again.
+    let target = reload(target.id.clone()).await;
+    let session = engine.connect(&target).await.expect("second connection");
+    let _ = session.close().await;
+    let unchanged = reload(target.id.clone()).await.host_key.expect("host key");
+    assert_eq!(unchanged.key, pinned.key);
+    assert_eq!(
+        unchanged.pinned_at, pinned.pinned_at,
+        "an unchanged key must not be re-pinned on every connection"
+    );
+
+    // ---- the host key changes, as a rebuilt machine's would ----
+    fixture
+        .regenerate_host_key()
+        .expect("regenerate the container's host key");
+
+    let error = engine
+        .connect(&target)
+        .await
+        .expect_err("a changed host key must refuse the connection");
+    assert!(
+        error.is::<nudo_server::ssh::HostKeyChanged>(),
+        "expected a host-key refusal, got: {error:#}"
+    );
+    let message = format!("{error:#}");
+    assert!(message.contains(&pinned.fingerprint), "got: {message}");
+
+    // The change is held for review rather than only reported, and the pinned
+    // key is untouched — it is still what every connection is checked against.
+    let refused = reload(target.id.clone()).await.host_key.expect("host key");
+    assert_eq!(refused.key, pinned.key, "the pinned key must survive");
+    assert!(!refused.pending_key.is_empty());
+    assert_ne!(refused.pending_fingerprint, pinned.fingerprint);
+
+    // The pending key must be the host's new key, so what an operator reviews
+    // is what the machine actually presented.
+    let new_actual = fixture.host_key().expect("read the new host key");
+    let new_key_only = new_actual
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(refused.pending_key, new_key_only);
+
+    // ---- every operation stays refused, not just deploys ----
+    // A mismatch may mean this is not the host at all, so reading from it is no
+    // safer than writing to it.
+    let (ok, checks) =
+        nudo_server::probe::check_target(engine.connect(&target).await, "/opt").await;
+    assert!(
+        !ok,
+        "the preflight check must fail while the key is unreviewed"
+    );
+    let host_key_check = checks
+        .iter()
+        .find(|c| c.name == "host_key")
+        .expect("a host_key check");
+    assert!(!host_key_check.ok);
+    let ssh_check = checks
+        .iter()
+        .find(|c| c.name == "ssh")
+        .expect("an ssh check");
+    assert!(
+        ssh_check.detail.contains("host key was refused"),
+        "ssh must not be blamed for a deliberate refusal, got: {}",
+        ssh_check.detail
+    );
+
+    // ---- accepting the reviewed key restores service ----
+    engine
+        .store
+        .pin_host_key(
+            &target.id,
+            &refused.pending_key,
+            &refused.pending_fingerprint,
+        )
+        .await
+        .expect("accept the reviewed key");
+
+    let target = reload(target.id.clone()).await;
+    let session = engine
+        .connect(&target)
+        .await
+        .expect("connecting must work again once the new key is accepted");
+    let whoami = session.exec("id -un").await.expect("run a command");
+    assert_eq!(whoami.trimmed(), "root");
+    let _ = session.close().await;
+
+    let accepted = reload(target.id.clone()).await.host_key.expect("host key");
+    assert_eq!(accepted.key, new_key_only);
+    assert!(
+        accepted.pending_key.is_empty(),
+        "accepting must clear the review"
+    );
 }
 
 /// Polls an async condition until it holds or the deadline passes.

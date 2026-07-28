@@ -13,7 +13,6 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
-use nudo_server::ssh::SshSession;
 use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
 
@@ -137,21 +136,11 @@ async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
         }
     };
 
-    let ssh_target = match state.engine.ssh_target_for(&target).await {
-        Ok(ssh_target) => ssh_target,
-        Err(error) => {
-            send(
-                &mut socket,
-                ServerFrame::Error {
-                    message: format!("{error:#}"),
-                },
-            )
-            .await;
-            return;
-        }
-    };
-
-    let session = match SshSession::connect(&ssh_target).await {
+    // Through the engine, so the host key is verified and a first-use pinning
+    // or a refused change is recorded here as it is everywhere else. A changed
+    // key ends the session before a PTY is opened: a terminal is exactly the
+    // thing you least want attached to a host that is not the one you pinned.
+    let session = match state.engine.connect(&target).await {
         Ok(session) => session,
         Err(error) => {
             send(

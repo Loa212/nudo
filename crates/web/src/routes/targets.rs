@@ -87,7 +87,7 @@ pub async fn target_create(
 pub async fn target_detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    _user: CurrentUser,
+    user: CurrentUser,
 ) -> Response {
     let mut client = match state.api.targets().await {
         Ok(client) => client,
@@ -105,15 +105,15 @@ pub async fn target_detail(
     page(
         &target.name,
         Nav::Targets,
-        render::target_detail(&target, &services, &statuses, None),
+        render::target_detail(&target, &services, &statuses, None, &user.csrf_token),
     )
 }
 
-/// Runs the four-part readiness check and re-renders the page with its results.
+/// Runs the readiness check and re-renders the page with its results.
 pub async fn target_check(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    _user: CurrentUser,
+    user: CurrentUser,
 ) -> Response {
     let mut client = match state.api.targets().await {
         Ok(client) => client,
@@ -140,14 +140,73 @@ pub async fn target_check(
             }],
         });
 
+    // Re-read the target: the check is what pins a host key on first use, and
+    // what records a change, so the copy fetched above is already stale.
+    let target = client
+        .get(GetTargetRequest { id: id.clone() })
+        .await
+        .map(|response| response.into_inner())
+        .unwrap_or(target);
+
     let services = state.api.list_services(&id).await;
     let statuses = state.api.unit_statuses(&services).await;
 
     page(
         &target.name,
         Nav::Targets,
-        render::target_detail(&target, &services, &statuses, Some(&checks)),
+        render::target_detail(
+            &target,
+            &services,
+            &statuses,
+            Some(&checks),
+            &user.csrf_token,
+        ),
     )
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AcceptHostKeyForm {
+    /// The fingerprint shown on the page that produced this submission, so a
+    /// key that changed again in between is refused rather than accepted
+    /// unseen. Checked server-side against what is actually pending.
+    pub fingerprint: String,
+    pub csrf: String,
+    #[serde(default)]
+    pub allow_latency_critical: Option<String>,
+}
+
+/// Accepts a reviewed host-key change.
+pub async fn target_accept_host_key(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    user: CurrentUser,
+    Form(form): Form<AcceptHostKeyForm>,
+) -> Response {
+    if let Err(rejection) = check_csrf(&user, &form.csrf) {
+        return rejection.into_response();
+    }
+
+    let mut client = match state.api.targets().await {
+        Ok(client) => client,
+        Err(status) => return grpc_error(status),
+    };
+
+    match client
+        .accept_host_key(AcceptHostKeyRequest {
+            mutation: Some(mutation(
+                &user,
+                &MutationFlags {
+                    allow_latency_critical: form.allow_latency_critical,
+                },
+            )),
+            id: id.clone(),
+            fingerprint: form.fingerprint,
+        })
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/targets/{id}")).into_response(),
+        Err(status) => grpc_error(status),
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]

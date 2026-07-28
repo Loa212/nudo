@@ -170,7 +170,13 @@ fn every_empty_listing_offers_the_action_that_fills_it() {
 
 #[test]
 fn a_target_with_no_services_is_offered_one_scoped_to_it() {
-    let rendered = s(target_detail(&a_target(), &[], &HashMap::new(), None));
+    let rendered = s(target_detail(
+        &a_target(),
+        &[],
+        &HashMap::new(),
+        None,
+        "csrf",
+    ));
     assert!(rendered.contains("/services/new?target=tgt_1"));
 }
 

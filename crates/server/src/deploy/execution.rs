@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::crypto::sha256_hex;
 use crate::health;
-use crate::ssh::{OutputLine, SshSession, quote};
+use crate::ssh::{OutputLine, quote};
 use crate::systemd::{self, BINARY_NAME, ReleasePaths};
 
 use super::{DeployOptions, Engine};
@@ -117,8 +117,8 @@ impl Engine {
         self.transition(deployment_id, deployment::Status::Uploading)
             .await;
 
-        let ssh_target = self.ssh_target_for(&target).await?;
-        let session = SshSession::connect(&ssh_target)
+        let session = self
+            .connect(&target)
             .await
             .with_context(|| format!("connecting to {}", target.host))?;
 

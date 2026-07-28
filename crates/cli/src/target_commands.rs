@@ -111,9 +111,102 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
                 bail!("target {id} is not ready");
             }
         }
+
+        TargetCommand::HostKey { id, accept, forget } => {
+            let target = match (accept, forget) {
+                (Some(fingerprint), _) => client
+                    .accept_host_key(authenticated(
+                        cli,
+                        AcceptHostKeyRequest {
+                            mutation: Some(mutation(cli)),
+                            id: id.clone(),
+                            fingerprint: fingerprint.trim().to_string(),
+                        },
+                    ))
+                    .await?
+                    .into_inner(),
+                (None, true) => client
+                    .forget_host_key(authenticated(
+                        cli,
+                        ForgetHostKeyRequest {
+                            mutation: Some(mutation(cli)),
+                            id: id.clone(),
+                        },
+                    ))
+                    .await?
+                    .into_inner(),
+                (None, false) => client
+                    .get(authenticated(cli, GetTargetRequest { id: id.clone() }))
+                    .await?
+                    .into_inner(),
+            };
+
+            match cli.output {
+                Output::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&JsonHostKey::of(&target))?
+                ),
+                Output::Table => print_host_key(cli, &target, accept.is_some(), *forget),
+            }
+
+            // Non-zero exit while a change is outstanding, so a CI step that
+            // deploys after checking does not proceed against a host whose
+            // identity is in question.
+            if target
+                .host_key
+                .as_ref()
+                .is_some_and(|k| !k.pending_key.is_empty())
+            {
+                bail!("target {id} has an unreviewed host-key change");
+            }
+        }
     }
 
     Ok(())
+}
+
+/// The human-readable host-key report.
+fn print_host_key(cli: &Cli, target: &Target, accepted: bool, forgotten: bool) {
+    let prefix = dry_run_prefix(cli);
+    let host_key = target.host_key.clone().unwrap_or_default();
+
+    if forgotten {
+        println!(
+            "{prefix}forgot the pinned host key for {}; the next connection will pin afresh",
+            target.name
+        );
+        return;
+    }
+    if accepted {
+        println!(
+            "{prefix}accepted {} as the host key for {}",
+            host_key.fingerprint, target.name
+        );
+        return;
+    }
+
+    if host_key.key.is_empty() {
+        println!(
+            "no host key pinned for {} yet — the first successful connection will record one",
+            target.name
+        );
+    } else {
+        println!("pinned    {}", host_key.fingerprint);
+        println!("          {}", host_key.key.trim());
+    }
+
+    if !host_key.pending_key.is_empty() {
+        println!();
+        println!("CHANGED   {}", host_key.pending_fingerprint);
+        println!("          {}", host_key.pending_key.trim());
+        println!();
+        println!(
+            "Every connection to {} is refused until this is resolved. Compare the \n\
+             fingerprint against `ssh-keyscan -t ed25519 {}` run on the machine itself, \n\
+             then accept it with:\n\n    nudo targets host-key {} --accept {}",
+            target.name, target.host, target.id, host_key.pending_fingerprint
+        );
+    }
 }
 
 /// Parses repeated `key=value` label flags.

@@ -256,7 +256,13 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
 fn a_read_only_screen_posts_nothing_and_so_needs_no_token() {
     // Running the preflight checks probes the target and changes nothing, so
     // it is a link. A screen with no POST form has nothing to forge.
-    let rendered = s(target_detail(&a_target(), &[], &HashMap::new(), None));
+    let rendered = s(target_detail(
+        &a_target(),
+        &[],
+        &HashMap::new(),
+        None,
+        "csrf",
+    ));
     assert!(!rendered.contains("method=\"post\""));
     assert!(rendered.contains("Run checks"));
     assert!(rendered.contains("href=\"/targets/tgt_1?check=1\""));
@@ -303,7 +309,7 @@ fn a_latency_critical_target_is_marked_everywhere_it_appears() {
     assert!(listing.contains("latency-critical"));
     assert!(listing.contains("badge hot"));
 
-    let detail = s(target_detail(&hot, &[], &HashMap::new(), None));
+    let detail = s(target_detail(&hot, &[], &HashMap::new(), None, "csrf"));
     assert!(detail.contains("badge hot"));
     assert!(
         detail.contains("Latency-critical host"),
@@ -315,7 +321,7 @@ fn a_latency_critical_target_is_marked_everywhere_it_appears() {
 
     // And absent for an ordinary host, on every one of those screens.
     assert!(!s(targets_list(std::slice::from_ref(&cold))).contains("badge hot"));
-    assert!(!s(target_detail(&cold, &[], &HashMap::new(), None)).contains("badge hot"));
+    assert!(!s(target_detail(&cold, &[], &HashMap::new(), None, "csrf")).contains("badge hot"));
     assert!(!s(dashboard(&[cold], &[], &HashMap::new(), &[])).contains("badge hot"));
 }
 

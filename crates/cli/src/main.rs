@@ -185,9 +185,30 @@ enum TargetCommand {
     Remove {
         id: String,
     },
-    /// Check SSH, sudo, systemd and a writable release directory.
+    /// Check the host key, SSH, sudo, systemd and a writable release directory.
     Check {
         id: String,
+    },
+    /// Show a target's pinned SSH host key, and accept a change to it.
+    ///
+    /// nudo pins a host key on the first successful connection and refuses to
+    /// connect if it later changes. A rebuilt host legitimately has a new key,
+    /// which is what `--accept` is for; compare the fingerprint against
+    /// `ssh-keyscan -t ed25519 <host>` on the machine itself before accepting.
+    HostKey {
+        id: String,
+        /// Accept the pending key with this fingerprint, making it the pinned
+        /// one. Naming the fingerprint is required so that what is accepted is
+        /// the key that was reviewed.
+        #[arg(long, value_name = "SHA256:...")]
+        accept: Option<String>,
+        /// Forget the pinned key, so the next connection pins afresh.
+        ///
+        /// Weaker than accepting a reviewed key — it reopens the trust-on-first-
+        /// use window — so prefer `--accept` whenever there is a fingerprint to
+        /// compare against.
+        #[arg(long, conflicts_with = "accept")]
+        forget: bool,
     },
 }
 
