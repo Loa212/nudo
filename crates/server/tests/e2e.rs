@@ -216,6 +216,38 @@ impl Fixture {
         Ok(())
     }
 
+    /// Pushes a new commit to a seeded repository, changing what its build
+    /// produces.
+    ///
+    /// `healthy` decides whether the built binary ever signals readiness. A
+    /// false one starts and stays up but never becomes ready, so the health
+    /// check fails while systemd still reports the unit active — which is the
+    /// case a tool that only asks systemd gets wrong, and the one the rollback
+    /// depends on.
+    ///
+    /// The build command is untouched: only the source file changes, so the
+    /// second deploy exercises the same clone-build-collect path and differs
+    /// solely in what the build emits.
+    fn commit_to_repository(&self, name: &str, version: &str, healthy: bool) -> anyhow::Result<()> {
+        let work = format!("/tmp/seed-{name}");
+        let script = make_artifact(version, healthy);
+
+        exec_in_container(&[
+            "bash",
+            "-c",
+            &format!(
+                "set -eu && cd {work} && \
+                 printf '%s' {script} > bot.sh && \
+                 git add -A && git commit -q -m {message} && \
+                 git push -q origin main",
+                work = shell_quote(&work),
+                script = shell_quote(&String::from_utf8_lossy(&script)),
+                message = shell_quote(version),
+            ),
+        ])?;
+        Ok(())
+    }
+
     /// Whether a path exists inside the container.
     fn path_exists(&self, path: &str) -> bool {
         exec_in_container(&["test", "-e", path]).is_ok()
@@ -1423,6 +1455,201 @@ async fn a_failed_remote_build_reports_it_and_still_cleans_up() {
         !fixture.path_exists(&format!("/var/lib/nudo/builds/{}", deployment.id)),
         "the build workspace should be removed after a failed build too"
     );
+}
+
+#[tokio::test]
+async fn a_bad_remote_build_rolls_back_to_the_previously_built_release() {
+    // The full cycle, with both releases produced by a build on a build host
+    // rather than uploaded: build v1, ship it, then build a v2 that starts but
+    // never becomes ready, and assert the rollback put the *built* v1 back and
+    // that it is serving again.
+    //
+    // The activation path is shared with an uploaded artifact, so what is new
+    // here is that the release being rolled back *to* came off a build host —
+    // its directory, its recorded release id and the symlink all have to line
+    // up for the rollback to find it.
+    let fixture = Fixture::start().expect("start the container");
+    let secret_key = SecretKey::generate();
+    let (engine, _dir) = engine(secret_key.clone()).await;
+
+    fixture
+        .seed_repository("acme", "rollback", "v1")
+        .expect("seed the repository");
+
+    let build_host = register_build_host(&engine, &secret_key, &fixture, false).await;
+
+    let key_secret = engine
+        .store
+        .put_secret(&secret_key, "E2E_SSH_KEY", &fixture.private_key, "", "")
+        .await
+        .expect("store the key");
+    let target = engine
+        .store
+        .create_target(&TargetInput {
+            name: "e2e-target".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: SSH_PORT as u32,
+            user: "root".to_string(),
+            ssh_key_id: key_secret.id,
+            latency_critical: false,
+            labels: Default::default(),
+        })
+        .await
+        .expect("create the target");
+
+    let service = engine
+        .store
+        .create_service(&Service {
+            target_id: target.id.clone(),
+            name: "e2e-build-rollback".to_string(),
+            artifact: Some(ArtifactSource {
+                kind: Some(artifact_source::Kind::Git(nudo_proto::GitSource {
+                    repo: "acme/rollback".to_string(),
+                    branch: "main".to_string(),
+                    build_command: "./build.sh".to_string(),
+                    artifact_path: "dist/bot".to_string(),
+                    build_host_id: build_host.id.clone(),
+                    ..Default::default()
+                })),
+            }),
+            unit: Some(SystemdUnit {
+                unit_name: "e2e-build-rollback.service".to_string(),
+                description: "rollback between two remote builds".to_string(),
+                restart: "always".to_string(),
+                restart_sec: 1,
+                ..Default::default()
+            }),
+            health_check: Some(ready_check()),
+            release_root: "/opt/e2e-build-rollback".to_string(),
+            keep_releases: 5,
+            ..Default::default()
+        })
+        .await
+        .expect("create the service");
+
+    // ---- build and deploy v1 ----
+    let first = engine
+        .start_deploy(
+            &service.id,
+            nudo_proto::Actor::human("usr_e2e", "e2e test"),
+            DeployOptions {
+                auto_rollback_on_failure: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("queue the first deploy");
+
+    let status = await_deployment(&engine, &first.id).await;
+    if status != deployment::Status::Succeeded {
+        dump_logs(&engine, &first.id, "first remote build").await;
+    }
+    assert_eq!(
+        status,
+        deployment::Status::Succeeded,
+        "the first remote build should deploy"
+    );
+
+    let good_release = engine
+        .store
+        .get_service(&service.id)
+        .await
+        .expect("read")
+        .expect("service")
+        .current_release_id;
+    assert!(
+        !good_release.is_empty(),
+        "the first build should have produced a live release"
+    );
+
+    // ---- push a v2 whose build produces a binary that never becomes ready ----
+    fixture
+        .commit_to_repository("rollback", "v2", false)
+        .expect("commit the bad version");
+
+    let second = engine
+        .start_deploy(
+            &service.id,
+            nudo_proto::Actor::human("usr_e2e", "e2e test"),
+            DeployOptions {
+                auto_rollback_on_failure: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("queue the bad deploy");
+
+    let status = await_deployment(&engine, &second.id).await;
+    dump_logs(&engine, &second.id, "bad remote build").await;
+
+    // The build itself succeeded — it is the *service* that never becomes
+    // ready. A tool that only asked systemd would have called this a success,
+    // since the unit is active throughout.
+    assert_eq!(
+        status,
+        deployment::Status::RolledBack,
+        "a built release that starts but does not serve must roll back"
+    );
+
+    // ---- the previously built release is live again and serving ----
+    let session = SshSession::connect(&fixture.ssh_target())
+        .await
+        .expect("connect");
+
+    let link = session
+        .exec("readlink -f /opt/e2e-build-rollback/current")
+        .await
+        .expect("read the symlink");
+    assert!(
+        link.trimmed().contains(&good_release),
+        "current should be back at {good_release}, got {}",
+        link.trimmed()
+    );
+
+    let active = session
+        .exec("systemctl is-active e2e-build-rollback.service")
+        .await
+        .expect("query the unit");
+    assert_eq!(
+        active.trimmed(),
+        "active",
+        "the rolled-back unit should be running"
+    );
+
+    // Healthy again, which is the property that actually matters: the rollback
+    // has to restore a *working* service, not merely an active unit. v1 is what
+    // the first build produced, so this also proves the rolled-back binary is
+    // the one that build emitted rather than whatever was there before.
+    wait_for_async(Duration::from_secs(30), || async {
+        session
+            .exec(&format!("cat {READY_FILE} 2>/dev/null"))
+            .await
+            .map(|result| result.trimmed() == "v1")
+            .unwrap_or(false)
+    })
+    .await
+    .expect("the rolled-back build should be healthy again");
+
+    let reloaded = engine
+        .store
+        .get_service(&service.id)
+        .await
+        .expect("read")
+        .expect("service");
+    assert_eq!(
+        reloaded.current_release_id, good_release,
+        "the recorded current release should match what is on the target"
+    );
+
+    // Both builds cleaned up after themselves, the rolled-back one included.
+    for deployment_id in [&first.id, &second.id] {
+        assert!(
+            !fixture.path_exists(&format!("/var/lib/nudo/builds/{deployment_id}")),
+            "the workspace for {deployment_id} should have been removed"
+        );
+    }
+
+    let _ = session.close().await;
 }
 
 #[tokio::test]
