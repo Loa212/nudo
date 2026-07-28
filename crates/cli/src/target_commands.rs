@@ -210,7 +210,7 @@ fn print_host_key(cli: &Cli, target: &Target, accepted: bool, forgotten: bool) {
 }
 
 /// Parses repeated `key=value` label flags.
-pub(super) fn parse_labels(
+pub(crate) fn parse_labels(
     labels: &[String],
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     let mut parsed = std::collections::HashMap::new();

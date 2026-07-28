@@ -8,6 +8,7 @@
 
 mod audit;
 mod auth;
+mod build_hosts;
 mod deployments;
 mod idempotency;
 mod key_verifier;
@@ -20,6 +21,7 @@ mod terminals;
 
 pub use audit::*;
 pub use auth::*;
+pub use build_hosts::*;
 pub use deployments::*;
 // `secrets` and `services` only add `impl Store` methods, which are in scope
 // through `Store` itself; there are no types of their own to re-export.
@@ -189,6 +191,8 @@ mod tests {
         // Every table the schema declares must exist.
         for table in [
             "targets",
+            "build_hosts",
+            "build_defaults",
             "services",
             "releases",
             "deployments",

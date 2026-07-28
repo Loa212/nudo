@@ -68,6 +68,9 @@ enum Command {
     /// Manage the machines you deploy to.
     #[command(subcommand)]
     Targets(TargetCommand),
+    /// Manage the machines that build, when the control plane does not.
+    #[command(subcommand)]
+    BuildHosts(BuildHostCommand),
     /// Manage deployable units.
     #[command(subcommand)]
     Services(ServiceCommand),
@@ -212,6 +215,93 @@ enum TargetCommand {
     },
 }
 
+/// Build hosts: where a build runs when it does not run on the control plane.
+///
+/// A build host is not a deploy target and is never deployed to, which is why
+/// it is its own noun. It is also not a sandbox: builds on one host are not
+/// isolated from each other, and making them so is a property of how the host
+/// is run — a one-shot container, an ephemeral VM — rather than something nudo
+/// implements.
+#[derive(Subcommand)]
+enum BuildHostCommand {
+    List {
+        /// e.g. `arch=arm64,pool=ci`
+        #[arg(long)]
+        selector: Option<String>,
+    },
+    Get {
+        id: String,
+    },
+    Add {
+        name: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long, default_value_t = 22)]
+        port: u32,
+        #[arg(long, default_value = "root")]
+        user: String,
+        /// The secret holding this build host's SSH private key.
+        #[arg(long)]
+        ssh_key: String,
+        /// Where checkouts and build trees go. Must be absolute.
+        ///
+        /// Each build gets a fresh directory underneath, removed when it
+        /// finishes however it finishes.
+        #[arg(long, value_name = "/var/lib/nudo/builds")]
+        workspace_root: Option<String>,
+        /// Mark a host where a build will contend with something latency-
+        /// sensitive.
+        ///
+        /// Allowed — you may have exactly one spare machine — but every surface
+        /// says so, and mutating it needs `--allow-latency-critical`.
+        #[arg(long)]
+        latency_critical: bool,
+        /// Repeatable, as `key=value`.
+        #[arg(long = "label")]
+        labels: Vec<String>,
+    },
+    Remove {
+        id: String,
+    },
+    /// Check the host key, SSH, a writable workspace and git.
+    ///
+    /// Deliberately not sudo or systemd: nothing is installed or supervised on
+    /// a build host.
+    Check {
+        id: String,
+    },
+    /// Show a build host's pinned SSH host key, and accept a change to it.
+    ///
+    /// A build host is handed repository credentials, so its identity is pinned
+    /// and verified exactly as a deploy target's is. Compare the fingerprint
+    /// against `ssh-keyscan -t ed25519 <host>` on the machine itself before
+    /// accepting.
+    HostKey {
+        id: String,
+        /// Accept the pending key with this fingerprint, making it the pinned
+        /// one.
+        #[arg(long, value_name = "SHA256:...")]
+        accept: Option<String>,
+        /// Forget the pinned key, so the next connection pins afresh.
+        #[arg(long, conflicts_with = "accept")]
+        forget: bool,
+    },
+    /// Show or set where builds run when a service does not say.
+    ///
+    /// With no argument, prints the current default. A service naming its own
+    /// build host always overrides this.
+    Default {
+        /// The build host to build on by default.
+        id: Option<String>,
+        /// Build on the control plane by default — the original behaviour.
+        #[arg(long, conflicts_with = "id")]
+        local: bool,
+        /// Print the current default without changing it.
+        #[arg(long, conflicts_with_all = ["id", "local"])]
+        show: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum ServiceCommand {
     List {
@@ -264,10 +354,27 @@ enum SecretCommand {
         #[arg(long)]
         service: Option<String>,
     },
-    /// Store a secret. The value is read from stdin unless --value is given.
+    /// Store a new secret. The value is read from stdin unless --value is given.
+    ///
+    /// A name that already exists is refused — use `rotate` to replace one.
     Set {
         name: String,
         /// The value. Prefer stdin so it does not reach your shell history.
+        #[arg(long)]
+        value: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Replace the value of a secret that already exists.
+    ///
+    /// The old value cannot be read back and is gone once this succeeds.
+    /// Separate from `set` so an ordinary write can never destroy one by
+    /// accident — including a `set` re-run from shell history.
+    Rotate {
+        name: String,
+        /// The new value. Prefer stdin so it does not reach your shell history.
         #[arg(long)]
         value: Option<String>,
         #[arg(long)]
@@ -299,6 +406,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
     match &cli.command {
         Command::Init { path } => init(cli, path.as_deref()),
         Command::Targets(command) => targets(cli, command).await,
+        Command::BuildHosts(command) => build_hosts(cli, command).await,
         Command::Services(command) => services(cli, command).await,
         Command::Deploy {
             service,
@@ -449,6 +557,7 @@ fn init(cli: &Cli, path: Option<&std::path::Path>) -> anyhow::Result<()> {
 }
 
 mod audit_command;
+mod build_host_commands;
 mod deploy_commands;
 mod log_commands;
 mod output;
@@ -459,6 +568,7 @@ mod target_commands;
 mod terminal_command;
 
 use audit_command::audit;
+use build_host_commands::build_hosts;
 use deploy_commands::{deploy, rollback};
 use log_commands::{exec, logs};
 use output::*;

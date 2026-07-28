@@ -19,10 +19,18 @@ pub async fn service_new(State(state): State<AppState>, user: CurrentUser) -> Re
     let targets = state.api.list_targets().await;
     let sources = state.api.list_sources().await;
     let secrets = state.api.list_secrets().await;
+    let build_hosts = state.api.list_build_hosts().await;
     page(
         "Add a service",
         Nav::Services,
-        render::service_form(None, &targets, &sources, &secrets, &user.csrf_token),
+        render::service_form(
+            None,
+            &targets,
+            &sources,
+            &secrets,
+            &build_hosts,
+            &user.csrf_token,
+        ),
     )
 }
 
@@ -71,6 +79,7 @@ pub async fn service_edit(
     let targets = state.api.list_targets().await;
     let sources = state.api.list_sources().await;
     let secrets = state.api.list_secrets().await;
+    let build_hosts = state.api.list_build_hosts().await;
 
     page(
         &format!("Edit {}", service.name),
@@ -80,6 +89,7 @@ pub async fn service_edit(
             &targets,
             &sources,
             &secrets,
+            &build_hosts,
             &user.csrf_token,
         ),
     )
@@ -141,6 +151,10 @@ pub struct ServiceForm {
     pub git_artifact_path: String,
     #[serde(default)]
     pub git_auto_deploy: Option<String>,
+    /// Where this service builds. Empty means the instance default; the
+    /// `local` sentinel pins the control plane.
+    #[serde(default)]
+    pub git_build_host_id: String,
 
     #[serde(default)]
     pub unit_name: String,
@@ -210,6 +224,7 @@ impl ServiceForm {
                     build_command: self.git_build_command.trim().to_string(),
                     artifact_path: self.git_artifact_path.trim().to_string(),
                     auto_deploy_on_push: self.git_auto_deploy.is_some(),
+                    build_host_id: self.git_build_host_id.trim().to_string(),
                 })),
             },
             _ => ArtifactSource {

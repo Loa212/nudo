@@ -123,6 +123,70 @@ impl NudoTools {
         }))
     }
 
+    /// Lists build hosts.
+    ///
+    /// Read-only, like `list_targets`: registering infrastructure is not an
+    /// agent action. This is here so an agent can say where a build ran, or why
+    /// one failed, rather than inferring it.
+    #[tool(
+        description = "List the machines that run builds, when builds do not run on the \
+                       control plane. A build host is never deployed to — that is what \
+                       targets are — and is not a sandbox: builds on one are not isolated \
+                       from each other. The response also reports which build host is the \
+                       instance default; empty means builds run on the control plane."
+    )]
+    pub async fn list_build_hosts(
+        &self,
+        Parameters(params): Parameters<ListBuildHostsParams>,
+    ) -> Result<Json<BuildHostList>, ErrorData> {
+        let mut client = self.build_hosts().await?;
+
+        let response = client
+            .list(ListBuildHostsRequest {
+                label_selector: params.label_selector.unwrap_or_default(),
+                page_size: 200,
+                page_token: String::new(),
+            })
+            .await
+            .map_err(status_to_error)?
+            .into_inner();
+
+        let build_hosts: Vec<BuildHostSummary> = response
+            .build_hosts
+            .into_iter()
+            .map(|host| BuildHostSummary {
+                id: host.id,
+                name: host.name,
+                host: host.host,
+                reachability: build_host::Status::try_from(host.status)
+                    .unwrap_or(build_host::Status::Unknown)
+                    .as_str()
+                    .to_string(),
+                workspace_root: host.workspace_root,
+                latency_critical: host.latency_critical,
+                host_key_change_pending: host
+                    .host_key
+                    .as_ref()
+                    .is_some_and(|key| !key.pending_key.is_empty()),
+                labels: host.labels.into_iter().collect(),
+            })
+            .collect();
+
+        // Reported alongside the list because a build host means little without
+        // it: an agent asked where a service builds needs both.
+        let default_build_host_id = client
+            .get_defaults(GetBuildDefaultsRequest {})
+            .await
+            .map(|response| response.into_inner().build_host_id)
+            .unwrap_or_default();
+
+        Ok(Json(BuildHostList {
+            count: build_hosts.len(),
+            build_hosts,
+            default_build_host_id,
+        }))
+    }
+
     /// Lists deployable services.
     #[tool(
         description = "List the deployable services (each is one systemd unit on one target), \
@@ -589,6 +653,14 @@ impl NudoTools {
 
     async fn targets(&self) -> Result<targets_client::TargetsClient<Channel>, ErrorData> {
         Ok(targets_client::TargetsClient::new(self.channel().await?))
+    }
+
+    async fn build_hosts(
+        &self,
+    ) -> Result<build_hosts_client::BuildHostsClient<Channel>, ErrorData> {
+        Ok(build_hosts_client::BuildHostsClient::new(
+            self.channel().await?,
+        ))
     }
 
     async fn services(&self) -> Result<services_api_client::ServicesApiClient<Channel>, ErrorData> {

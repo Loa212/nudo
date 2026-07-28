@@ -71,6 +71,7 @@ fn wide_tables_are_wrapped_so_the_page_does_not_scroll_sideways() {
             }],
             &[],
             &[],
+            SecretNotice::None,
             "t",
         )),
     ];

@@ -75,15 +75,70 @@ pub(super) struct JsonHostKey {
 
 impl JsonHostKey {
     pub(super) fn of(target: &Target) -> Self {
-        let host_key = target.host_key.clone().unwrap_or_default();
+        Self::of_parts(&target.id, target.host_key.clone().unwrap_or_default())
+    }
+
+    /// The same report for a build host, whose key is pinned and verified on
+    /// exactly the same terms.
+    pub(super) fn of_build_host(host: &BuildHost) -> Self {
+        Self::of_parts(&host.id, host.host_key.clone().unwrap_or_default())
+    }
+
+    fn of_parts(id: &str, host_key: nudo_proto::HostKey) -> Self {
         Self {
-            target_id: target.id.clone(),
+            target_id: id.to_string(),
             pinned: !host_key.key.is_empty(),
             fingerprint: host_key.fingerprint,
             key: host_key.key,
             change_pending: !host_key.pending_key.is_empty(),
             pending_fingerprint: host_key.pending_fingerprint,
             pending_key: host_key.pending_key,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct JsonBuildHosts {
+    build_hosts: Vec<JsonBuildHost>,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct JsonBuildHost {
+    id: String,
+    name: String,
+    host: String,
+    port: u32,
+    user: String,
+    workspace_root: String,
+    status: String,
+    latency_critical: bool,
+    labels: std::collections::BTreeMap<String, String>,
+}
+
+impl From<&Vec<BuildHost>> for JsonBuildHosts {
+    fn from(hosts: &Vec<BuildHost>) -> Self {
+        Self {
+            build_hosts: hosts
+                .iter()
+                .map(|h| JsonBuildHost {
+                    id: h.id.clone(),
+                    name: h.name.clone(),
+                    host: h.host.clone(),
+                    port: h.port,
+                    user: h.user.clone(),
+                    workspace_root: h.workspace_root.clone(),
+                    status: build_host::Status::try_from(h.status)
+                        .unwrap_or(build_host::Status::Unknown)
+                        .as_str()
+                        .to_string(),
+                    latency_critical: h.latency_critical,
+                    labels: h
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                })
+                .collect(),
         }
     }
 }
@@ -287,6 +342,10 @@ impl From<&UnitStatus> for JsonUnitStatus {
 pub(super) struct JsonChecks {
     ok: bool,
     checks: Vec<JsonCheck>,
+    /// Non-fatal notes. Always present so the shape does not change between
+    /// nouns; empty for a target, which has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -309,6 +368,27 @@ impl From<&CheckTargetResponse> for JsonChecks {
                     detail: c.detail.clone(),
                 })
                 .collect(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl From<&CheckBuildHostResponse> for JsonChecks {
+    fn from(response: &CheckBuildHostResponse) -> Self {
+        Self {
+            ok: response.ok,
+            checks: response
+                .checks
+                .iter()
+                .map(|c| JsonCheck {
+                    name: c.name.clone(),
+                    ok: c.ok,
+                    detail: c.detail.clone(),
+                })
+                .collect(),
+            // Non-fatal by construction: `ok` is unaffected by these, so a
+            // script gating on readiness is not tripped by a warning.
+            warnings: response.warnings.clone(),
         }
     }
 }

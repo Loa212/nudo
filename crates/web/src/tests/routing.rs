@@ -27,10 +27,17 @@ async fn every_form_the_dashboard_renders_posts_to_a_route_that_exists() {
         "/setup",
         "/logout",
         "/secrets",
+        "/secrets/ssh-key",
+        "/secrets/rotate",
         "/secrets/sec_1/delete",
         "/targets",
         "/targets/tgt_1/check",
         "/targets/tgt_1/delete",
+        "/build-hosts",
+        "/build-hosts/default",
+        "/build-hosts/bh_1/check",
+        "/build-hosts/bh_1/host-key/accept",
+        "/build-hosts/bh_1/delete",
         "/services",
         "/services/svc_1/edit",
         "/services/svc_1/action",
@@ -81,21 +88,48 @@ async fn every_form_the_dashboard_renders_posts_to_a_route_that_exists() {
 fn no_form_action_in_the_renderer_is_missing_from_that_list() {
     // The list above is only as good as its completeness, so the renderer's
     // own source is scanned for actions it does not mention.
-    let source = include_str!("../render.rs");
+    //
+    // Every file that renders a form, not only `render.rs`: most of them now
+    // live in its submodules, and scanning only the parent would let a form in
+    // one of those post to a route nobody checked — which is the exact defect
+    // this test exists to catch.
+    let sources = [
+        include_str!("../render.rs"),
+        include_str!("../render/targets.rs"),
+        include_str!("../render/build_hosts.rs"),
+        include_str!("../render/services/form.rs"),
+        include_str!("../render/services/detail.rs"),
+        include_str!("../render/services/list.rs"),
+        include_str!("../render/deployments.rs"),
+        include_str!("../render/secrets.rs"),
+        include_str!("../render/sources.rs"),
+        include_str!("../render/settings.rs"),
+        include_str!("../render/tokens.rs"),
+        include_str!("../render/auth.rs"),
+        include_str!("../render/dashboard.rs"),
+        include_str!("../render/updates.rs"),
+        include_str!("../render/audit.rs"),
+        include_str!("../render/logs.rs"),
+        include_str!("../render/terminal.rs"),
+    ];
 
-    // Static actions, e.g. `action="/secrets"`.
-    let mut found: Vec<String> = source
-        .split("action=\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .filter(|action| action.starts_with('/'))
-        .map(str::to_string)
-        .collect();
+    let mut found: Vec<String> = Vec::new();
+    for source in sources {
+        // Static actions, e.g. `action="/secrets"`.
+        found.extend(
+            source
+                .split("action=\"")
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next())
+                .filter(|action| action.starts_with('/'))
+                .map(str::to_string),
+        );
 
-    // Interpolated ones, e.g. `action=(format!("/services/{}/deploy", ...))`.
-    for rest in source.split("action=(format!(\"").skip(1) {
-        if let Some(action) = rest.split('"').next() {
-            found.push(action.to_string());
+        // Interpolated ones, e.g. `action=(format!("/services/{}/deploy", ...))`.
+        for rest in source.split("action=(format!(\"").skip(1) {
+            if let Some(action) = rest.split('"').next() {
+                found.push(action.to_string());
+            }
         }
     }
 
@@ -108,9 +142,17 @@ fn no_form_action_in_the_renderer_is_missing_from_that_list() {
         "/login",
         "/setup",
         "/secrets",
+        "/secrets/ssh-key",
+        "/secrets/rotate",
         "/secrets/{}/delete",
         "/targets",
         "/targets/{id}/delete",
+        "/targets/{}/host-key/accept",
+        "/build-hosts",
+        "/build-hosts/default",
+        "/build-hosts/{}/check",
+        "/build-hosts/{}/host-key/accept",
+        "/build-hosts/{}/delete",
         "/services",
         "/services/{}/action",
         "/services/{}/deploy",
@@ -147,6 +189,8 @@ async fn every_dashboard_route_requires_a_session() {
         "/",
         "/targets",
         "/targets/new",
+        "/build-hosts",
+        "/build-hosts/new",
         "/services",
         "/services/new",
         "/deployments",

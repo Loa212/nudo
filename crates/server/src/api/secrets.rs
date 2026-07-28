@@ -54,8 +54,14 @@ impl Secrets for SecretsService {
                 "Secrets.Put",
                 "",
                 guardrail_target,
-                // The name, never the value.
-                format!("stored secret {}", request.name),
+                // The name, never the value. A rotation is recorded as one:
+                // "stored" and "replaced the value of" are different events,
+                // and the second is the one worth finding later.
+                if request.replace {
+                    format!("rotated secret {}", request.name)
+                } else {
+                    format!("stored secret {}", request.name)
+                },
             )
             .await?;
 
@@ -84,6 +90,7 @@ impl Secrets for SecretsService {
                 &request.value,
                 &request.scope_target_id,
                 &request.scope_service_id,
+                request.replace,
             )
             .await
             .map_err(super::invalid)?;
@@ -209,6 +216,15 @@ mod tests {
             value: value.to_string(),
             scope_target_id: String::new(),
             scope_service_id: String::new(),
+            replace: false,
+        }
+    }
+
+    /// The same write, asking to replace an existing value.
+    fn rotate(name: &str, value: &str) -> PutSecretRequest {
+        PutSecretRequest {
+            replace: true,
+            ..put(name, value)
         }
     }
 
@@ -276,7 +292,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writing_the_same_name_twice_rotates_it() {
+    async fn writing_a_name_that_is_taken_is_refused_rather_than_overwriting_it() {
+        // A value cannot be read back, so an accidental overwrite destroys
+        // something unrecoverable and leaves nothing to say what was lost.
+        let service = fixture().await.0;
+        let first = service
+            .put(Request::new(put("TAKEN", "v1")))
+            .await
+            .expect("put")
+            .into_inner();
+
+        let error = service
+            .put(Request::new(put("TAKEN", "v2")))
+            .await
+            .expect_err("the second write must be refused");
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(
+            error.message().contains("already exists"),
+            "{}",
+            error.message()
+        );
+
+        // And the original is untouched: same digest, one row.
+        let listed = service
+            .list(Request::new(ListSecretsRequest::default()))
+            .await
+            .expect("list")
+            .into_inner();
+        assert_eq!(listed.secrets.len(), 1);
+        assert_eq!(
+            listed.secrets[0].digest, first.digest,
+            "the refused write must not have changed the value"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_replaces_the_value_in_place() {
+        // Rotation stays possible — a leaked key has to be replaceable — it
+        // just has to be asked for.
         let service = fixture().await.0;
         let first = service
             .put(Request::new(put("ROTATE", "v1")))
@@ -284,13 +337,13 @@ mod tests {
             .expect("put")
             .into_inner();
         let second = service
-            .put(Request::new(put("ROTATE", "v2")))
+            .put(Request::new(rotate("ROTATE", "v2")))
             .await
-            .expect("put")
+            .expect("rotate")
             .into_inner();
 
-        assert_eq!(first.id, second.id);
-        assert_ne!(first.digest, second.digest);
+        assert_eq!(first.id, second.id, "rotation keeps the row");
+        assert_ne!(first.digest, second.digest, "the value actually changed");
 
         let listed = service
             .list(Request::new(ListSecretsRequest::default()))
@@ -298,6 +351,46 @@ mod tests {
             .expect("list")
             .into_inner();
         assert_eq!(listed.secrets.len(), 1, "no duplicate row");
+    }
+
+    #[tokio::test]
+    async fn a_rotation_is_audited_as_one_rather_than_as_a_store() {
+        // "stored" and "replaced the value of" are different events, and the
+        // second is the one worth finding later.
+        let (context, _, _) = test_support::context_with_service().await;
+        let service = SecretsService::new(context.clone());
+
+        service
+            .put(Request::new(put("AUDITED", "v1")))
+            .await
+            .expect("put");
+        service
+            .put(Request::new(rotate("AUDITED", "v2")))
+            .await
+            .expect("rotate");
+
+        let entries = context
+            .store
+            .list_audit("", nudo_proto::actor::Kind::Unspecified, 50, 0)
+            .await
+            .expect("audit");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.summary.contains("rotated secret AUDITED")),
+            "the rotation should be distinguishable in the audit log: {entries:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_a_name_that_does_not_exist_yet_simply_stores_it() {
+        // The flag says "replacing is acceptable", not "something must already
+        // be there" — a first write with it set is not an error.
+        let service = fixture().await.0;
+        service
+            .put(Request::new(rotate("FRESH", "v1")))
+            .await
+            .expect("a rotation of an absent name stores it");
     }
 
     #[tokio::test]

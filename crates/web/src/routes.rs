@@ -89,6 +89,8 @@ mod dashboard;
 pub use dashboard::*;
 mod targets;
 pub use targets::*;
+mod build_hosts;
+pub use build_hosts::*;
 mod services;
 pub use services::*;
 mod deployments;

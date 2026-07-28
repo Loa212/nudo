@@ -25,7 +25,16 @@ use crate::ssh::OutputLine;
 use crate::store::Store;
 
 /// What replaces a token in any output we forward.
-const REDACTED: &str = "***";
+///
+/// Shared with the remote build path so a token is redacted identically
+/// wherever the build ran.
+pub(crate) const REDACTED: &str = "***";
+
+/// The largest artifact nudo will carry in memory.
+///
+/// A binary over this is a misconfiguration or a decompression bomb, and it
+/// would be buffered here before ever reaching a target.
+pub(crate) const MAX_ARTIFACT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 /// Clones a repository, runs its build command, and reads the resulting binary.
 pub async fn clone_and_build(
@@ -143,8 +152,11 @@ pub async fn clone_and_build(
 }
 
 /// How to authenticate to the repository.
+///
+/// Shared with the remote build path, which resolves credentials the same way
+/// and then hands them to a build host rather than to a local subprocess.
 #[derive(Clone)]
-enum Credentials {
+pub(crate) enum Credentials {
     /// A GitHub App installation token, embedded in the clone URL.
     Token { token: String, html_url: String },
     /// An SSH deploy key, written to a temporary file for the clone's lifetime.
@@ -155,7 +167,7 @@ enum Credentials {
 
 impl Credentials {
     /// The secret to strip from any output.
-    fn secret(&self) -> Option<&str> {
+    pub(crate) fn secret(&self) -> Option<&str> {
         match self {
             Self::Token { token, .. } => Some(token),
             // The key never appears on a command line or in output, only in a
@@ -166,7 +178,7 @@ impl Credentials {
 }
 
 /// Loads the credentials a source implies.
-async fn resolve_credentials(
+pub(crate) async fn resolve_credentials(
     store: &Store,
     key: &SecretKey,
     source_id: &str,

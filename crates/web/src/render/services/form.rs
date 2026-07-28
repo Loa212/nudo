@@ -6,8 +6,10 @@ pub fn service_form(
     targets: &[Target],
     sources: &[Source],
     secrets: &[Secret],
+    build_hosts: &[BuildHost],
     csrf: &str,
 ) -> Markup {
+    use nudo_proto::LOCAL_BUILD_HOST_ID;
     use nudo_proto::artifact_source::Kind as ArtifactKind;
     use nudo_proto::health_check::Kind as CheckKind;
 
@@ -117,7 +119,7 @@ pub fn service_form(
                     div .fields style="margin-top:12px" {
                         div .field {
                             label for="source_id" { "Git source" }
-                            select id="source_id" name="source_id" {
+                            select id="source_id" name="git_source_id" {
                                 option value="" { "None" }
                                 @for source in sources {
                                     option value=(source.id)
@@ -133,29 +135,60 @@ pub fn service_form(
                         }
                         div .field {
                             label for="repo" { "Repository" }
-                            input type="text" id="repo" name="repo" placeholder="owner/name"
+                            input type="text" id="repo" name="git_repo" placeholder="owner/name"
                                 value=(git.as_ref().map(|g| g.repo.clone()).unwrap_or_default());
                         }
                         div .field {
                             label for="branch" { "Branch" }
-                            input type="text" id="branch" name="branch" placeholder="main"
+                            input type="text" id="branch" name="git_branch" placeholder="main"
                                 value=(git.as_ref().map(|g| g.branch.clone()).unwrap_or_default());
                         }
                         div .field {
                             label for="build_command" { "Build command" }
-                            input type="text" id="build_command" name="build_command"
+                            input type="text" id="build_command" name="git_build_command"
                                 placeholder="cargo build --release"
                                 value=(git.as_ref().map(|g| g.build_command.clone()).unwrap_or_default());
                         }
                         div .field {
                             label for="artifact_path" { "Artifact path" }
-                            input type="text" id="artifact_path" name="artifact_path"
+                            input type="text" id="artifact_path" name="git_artifact_path"
                                 placeholder="target/release/bot"
                                 value=(git.as_ref().map(|g| g.artifact_path.clone()).unwrap_or_default());
                         }
+                        div .field {
+                            label for="git_build_host_id" { "Build on" }
+                            select id="git_build_host_id" name="git_build_host_id" {
+                                @let selected = git
+                                    .as_ref()
+                                    .map(|g| g.build_host_id.clone())
+                                    .unwrap_or_default();
+                                option value="" selected[selected.is_empty()] {
+                                    "The instance default"
+                                }
+                                option value=(LOCAL_BUILD_HOST_ID)
+                                    selected[selected == LOCAL_BUILD_HOST_ID] {
+                                    "The control plane"
+                                }
+                                @for host in build_hosts {
+                                    option value=(host.id) selected[selected == host.id] {
+                                        (host.name)
+                                        @if host.latency_critical { " (latency-critical)" }
+                                    }
+                                }
+                            }
+                            span .hint {
+                                @if build_hosts.is_empty() {
+                                    a href="/build-hosts" { "Add a build host" }
+                                    " to build somewhere other than the control plane."
+                                } @else {
+                                    "Never the deploy target — a target runs the OS, systemd \
+                                     and the binary, and nothing else."
+                                }
+                            }
+                        }
                     }
                     div .check style="margin-top:12px" {
-                        input type="checkbox" id="auto_deploy_on_push" name="auto_deploy_on_push" value="1"
+                        input type="checkbox" id="auto_deploy_on_push" name="git_auto_deploy" value="1"
                             checked[git.as_ref().is_some_and(|g| g.auto_deploy_on_push)];
                         label for="auto_deploy_on_push" {
                             "Deploy automatically on push"

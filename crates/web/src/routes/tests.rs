@@ -108,6 +108,7 @@ fn a_service_form_builds_each_artifact_kind() {
         git_build_command: String::new(),
         git_artifact_path: String::new(),
         git_auto_deploy: None,
+        git_build_host_id: String::new(),
         unit_name: String::new(),
         description: String::new(),
         exec_args: String::new(),
@@ -188,6 +189,7 @@ fn a_service_form_builds_each_health_check_kind_with_defaults() {
         git_build_command: String::new(),
         git_artifact_path: String::new(),
         git_auto_deploy: None,
+        git_build_host_id: String::new(),
         unit_name: String::new(),
         description: String::new(),
         exec_args: String::new(),
@@ -255,6 +257,7 @@ fn a_service_form_carries_the_latency_knobs_and_the_unit_shape() {
         git_build_command: String::new(),
         git_artifact_path: String::new(),
         git_auto_deploy: None,
+        git_build_host_id: String::new(),
         unit_name: String::new(),
         description: String::new(),
         exec_args: String::new(),
@@ -291,4 +294,61 @@ fn a_service_form_carries_the_latency_knobs_and_the_unit_shape() {
     );
     // Blank checkbox values are dropped rather than stored as empty ids.
     assert_eq!(service.secret_ids, vec!["sec_1".to_string()]);
+}
+
+#[test]
+fn a_public_key_pasted_as_a_private_one_is_caught_by_name() {
+    // The single most likely mistake: id_ed25519.pub instead of id_ed25519.
+    // Stored, it is accepted silently and surfaces much later as a failed
+    // connection to a host nobody has reason to doubt.
+    assert_eq!(
+        looks_like_private_key(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINbQLN3OR4KHUki7vfmdITOI3q operator@laptop",
+        ),
+        Err("key-public")
+    );
+
+    // The other key types ssh-keygen emits.
+    assert_eq!(
+        looks_like_private_key("ssh-rsa AAAAB3Nza"),
+        Err("key-public")
+    );
+    assert_eq!(
+        looks_like_private_key("ecdsa-sha2-nistp256 AAAAE2V"),
+        Err("key-public")
+    );
+}
+
+#[test]
+fn a_truncated_key_is_caught_rather_than_stored() {
+    // A paste that lost its last line looks fine until a deploy fails.
+    assert_eq!(
+        looks_like_private_key("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n"),
+        Err("key-truncated")
+    );
+}
+
+#[test]
+fn something_that_is_not_a_key_at_all_says_what_was_expected() {
+    assert_eq!(looks_like_private_key("hunter2"), Err("key-shape"));
+    assert_eq!(looks_like_private_key("   "), Err("key-empty"));
+}
+
+#[test]
+fn the_key_formats_nudo_actually_accepts_are_allowed_through() {
+    // A shape check, not a parse: refusing a format nudo supports would be
+    // worse than storing something odd, so anything with the right envelope
+    // passes.
+    for key in [
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn\n-----END OPENSSH PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----\nMHcCAQ\n-----END EC PRIVATE KEY-----",
+        // Surrounding whitespace is a normal consequence of pasting.
+        "\n  -----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn\n-----END OPENSSH PRIVATE KEY-----  \n",
+    ] {
+        assert!(
+            looks_like_private_key(key).is_ok(),
+            "should have been accepted: {key:?}"
+        );
+    }
 }

@@ -9,13 +9,18 @@ use crate::crypto::SecretKey;
 use crate::events::Bus;
 use crate::store::{Store, TargetInput};
 
-pub async fn context_with_target() -> (Context, Target) {
-    let context = Context::new(
+/// A context over an empty in-memory store.
+pub async fn context() -> Context {
+    Context::new(
         Store::open_in_memory().await.expect("store"),
         Bus::default(),
         SecretKey::generate(),
         Arc::new(crate::Config::default()),
-    );
+    )
+}
+
+pub async fn context_with_target() -> (Context, Target) {
+    let context = context().await;
     let target = create_target(&context, "box", "10.0.0.1", false).await;
     (context, target)
 }

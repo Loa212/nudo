@@ -21,7 +21,14 @@ observability story that, until now, only containerised workloads had.
 │  nudo-web      dashboard     │          │  your binary        │
 │  nudo-mcp      agent tools   │          │  ...and nothing     │
 │  nudo          CLI           │          │     else            │
-└──────────────────────────────┘          └─────────────────────┘
+└──────────────┬───────────────┘          └─────────────────────┘
+               │ ssh (optional)
+               ▼
+┌──────────────────────────────┐
+│  build host                  │   Where a build runs, when it
+│  clone, build, send the      │   does not run on the control
+│  binary back                 │   plane. Never the target.
+└──────────────────────────────┘
 ```
 
 **No agent is installed on a target.** Everything — probing, writing units,
@@ -34,8 +41,8 @@ deployed.
 ## How a deploy works
 
 1. Build from a connected GitHub repo, fetch a prebuilt artifact, or take a
-   binary pushed by the CLI. **Builds run on the control plane**, never on the
-   target.
+   binary pushed by the CLI. Builds run on the control plane by default, or on a
+   [build host](#build-hosts) — **never on the target**.
 2. Upload into `<release_root>/.staging-<id>/`, verify the transferred size, then
    move it to `<release_root>/releases/<id>/`. A truncated upload can never end up
    somewhere the live symlink could point.
@@ -106,14 +113,23 @@ cargo build --release
 
 Open <http://localhost:3000> and create the first account. Then:
 
-**1. Add your SSH key as a secret.** nudo needs a key that can reach your target.
-Under **Secrets → Add**, paste the private key. It is encrypted immediately and
-never readable again through the API or the UI.
+**1. Add your SSH key.** nudo needs a key that can reach your target. Under
+**Secrets → Add an SSH key**, paste the private key — the whole file, including
+the `BEGIN` and `END` lines. It is encrypted immediately and never readable again
+through the API or the UI. Pasting the `.pub` half by mistake is refused rather
+than stored, since that failure would otherwise only surface as an unreachable
+host much later.
 
 ```sh
 # or from the CLI, which reads from stdin so it stays out of your shell history
 nudo secrets set DEPLOY_KEY < ~/.ssh/id_ed25519
 ```
+
+A name that is already taken is refused rather than overwritten — a stored value
+cannot be read back, so replacing one by accident destroys something
+unrecoverable and leaves nothing to say what was lost. Replacing is still
+possible, just deliberate: **Rotate** on the secret's row in the dashboard, or
+`nudo secrets rotate NAME`.
 
 **2. Add the target.** Under **Targets → Add**, give it a name, a host, the SSH
 user, and select the key you just stored. Then hit **Run checks** — it verifies
@@ -240,6 +256,83 @@ fleet.
 
 ---
 
+## Build hosts
+
+Builds run on the control plane by default, and for most instances that is the
+right answer. But the control plane is often the smallest machine in the
+deployment — a dashboard, a SQLite file and an SSH client, comfortable on 1 vCPU
+— and pointing a service at a Rust repo makes that box run `cargo build
+--release`. A build host is somewhere else to run it.
+
+A build host is **not** a deploy target. A target runs the OS, systemd and the
+binary you deployed; nothing is installed or supervised on a build host, and
+nothing is ever deployed to one. They are separate things with separate
+commands, and pointing a service's build at its own deploy target is not
+possible.
+
+```sh
+nudo build-hosts add builder-1 --host 10.0.0.9 --user build --ssh-key sec_abc123
+nudo build-hosts check bh_abc123
+```
+
+`check` verifies each prerequisite separately, as `targets check` does: the host
+key, SSH, a writable workspace, and git. Not sudo, and not systemd — a build
+host needs neither.
+
+Then say where a service builds. A service's own setting always wins; without
+one it follows the instance default:
+
+```sh
+nudo build-hosts default bh_abc123   # everything unpinned builds here
+nudo build-hosts default --local     # ...back on the control plane
+nudo build-hosts default             # show the current default
+```
+
+In the dashboard, a service's **Build on** field offers the instance default,
+the control plane, or a named build host. Pinning a service to the control plane
+is not the same as leaving it unset: a pinned service stays there when the
+instance default later changes.
+
+The deploy log is identical wherever a build ran — same lines, same order, same
+secret redaction — so nothing downstream has to care.
+
+**An instance that upgrades and configures nothing keeps building exactly where
+it built before.** The local path is unchanged and remains the default.
+
+### What a build host is not
+
+**It is not a sandbox.** Builds on one host are not isolated from each other,
+and nudo does not try to isolate them. A build command is arbitrary code; two
+mutually distrusting builds on one machine can see each other. If that matters,
+run the host so it cannot happen — a one-shot container, an ephemeral VM, a
+fresh instance per build. That is an operational decision, and nudo does not
+make it for you.
+
+**Credentials do reach the build host.** nudo clones there rather than
+transferring a tree from the control plane, so the host needs access to the
+repository: a deploy key is written to a `0600` file for the clone's lifetime
+and removed with the workspace, and an App token is passed on the command line
+and redacted from any output. Register a build host as deliberately as you would
+a target — its SSH host key is pinned and verified on exactly the same terms,
+for exactly this reason.
+
+**A build workspace is temporary.** Each build gets a fresh directory under the
+host's workspace root, removed when the build finishes however it finishes.
+There is no build cache and no shared artifact store; each build is independent.
+
+### Latency-critical build hosts
+
+A build host can be marked latency-critical, and building on one is allowed —
+you may have exactly one spare machine. It is not silent: the dashboard, the
+CLI and `check` all say that a build here will contend with whatever else runs
+on the box for CPU, cache and memory bandwidth, and mutating it needs
+`--allow-latency-critical` like any other latency-critical host.
+
+Expect jitter on anything sensitive while a build is in flight. If that is not
+acceptable, that machine should not be a build host.
+
+---
+
 ## GitHub CD
 
 Under **Sources**, create a GitHub App. nudo generates the manifest, hands your
@@ -263,9 +356,9 @@ public half into GitHub.
 
 ## Agents (MCP)
 
-`nudo-mcp` speaks MCP over stdio and exposes eight coarse-grained tools:
-`list_targets`, `list_services`, `get_unit_status`, `deploy`, `rollback`,
-`stream_logs`, `run_command`, `list_deployments`.
+`nudo-mcp` speaks MCP over stdio and exposes nine coarse-grained tools:
+`list_targets`, `list_build_hosts`, `list_services`, `get_unit_status`,
+`deploy`, `rollback`, `stream_logs`, `run_command`, `list_deployments`.
 
 ```json
 {
@@ -322,6 +415,8 @@ Set on the service, in the dashboard or over the API:
 
 - **Artifact source** — a URL, a git repo + branch + build command + artifact
   path, or a CLI upload.
+- **Build host** — where a git build runs: the instance default, the control
+  plane, or a named [build host](#build-hosts). Never the deploy target.
 - **Unit** — description, exec args, working directory, user, group, restart
   policy, ordering, and the latency knobs (`CPUAffinity`, `Nice`,
   `IOSchedulingClass`) plus arbitrary extra directives written verbatim.
@@ -395,7 +490,7 @@ make demo                       # nudo + a systemd target + three services
 Or directly:
 
 ```sh
-cargo test --workspace          # 734 unit and integration tests
+cargo test --workspace          # 862 unit and integration tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
@@ -423,14 +518,53 @@ exercises something specific: `hello-http` an HTTP health check,
 never becomes ready — which is what makes the rollback demo real rather than
 simulated.
 
-The end-to-end deployment tests need Docker. They start a systemd-enabled
-container, install an SSH key into it, and deploy a real artifact through the real
-engine — then make a health check fail and assert the rollback restored a
-*working* service:
+The end-to-end tests need Docker. They start a systemd-enabled container, install
+an SSH key into it, and deploy a real artifact through the real engine — then
+make a health check fail and assert the rollback restored a *working* service.
+The build-host half of the suite clones from a git repository seeded inside the
+container, builds there, and asserts the binary reached the target, that the
+deploy log does not say where the build ran, and that the workspace is gone
+afterwards — on the failing path as well as the succeeding one. It also pushes a
+second commit whose build produces a service that never becomes ready, and
+asserts the rollback restored the *previously built* release and that it is
+serving again:
 
 ```sh
 cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1
 ```
+
+### Looking at the dashboard
+
+The dashboard is server-rendered HTML with no component library and no story
+book, so the only way to see what a page looks like is to run it. `make
+screenshots` renders every view into `screenshots/` — twice, because the two
+states fail differently:
+
+- **empty**, a fresh instance with nothing configured, which is what a new
+  operator sees first and where a missing empty state reads as a broken page
+- **populated**, with targets, build hosts, services and secrets, including the
+  states that only appear when something is wrong — a latency-critical host, a
+  build host that is the instance default, a service pinned to one
+
+Light only by default — the two themes differ in palette rather than layout, so
+capturing both doubles what there is to look through for little. `--theme dark`
+or `--theme both` when the palette is what you are checking.
+
+```sh
+make screenshots                        # everything: 33 images
+make screenshots ARGS="--only build"    # just the build-host views
+make screenshots ARGS="--theme both"    # light and dark
+make screenshots ARGS="--keep"          # leave the instance up to poke at
+scripts/screenshots.py --url http://localhost:3000   # an instance you already run
+```
+
+A full run replaces the directory. A filtered one — anything with `--only`, or a
+single `--state` or `--theme` — overwrites only what it captures and leaves the
+rest, so iterating on one page does not throw away the set you were comparing
+against. It reports `N captured, M total` when the two differ.
+
+Needs Docker and Google Chrome. The output is gitignored: it is for looking at,
+not for committing.
 
 ### Layout
 

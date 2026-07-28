@@ -416,7 +416,7 @@ pub(crate) fn is_unique_violation(error: &sqlx::Error) -> bool {
 }
 
 /// Parses a selector like `env=prod,role=indexer` into pairs.
-fn parse_label_selector(selector: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_label_selector(selector: &str) -> Vec<(String, String)> {
     selector
         .split(',')
         .filter_map(|clause| {
@@ -431,7 +431,7 @@ fn parse_label_selector(selector: &str) -> Vec<(String, String)> {
 }
 
 /// Whether a label set satisfies every clause of a selector.
-fn matches_selector(
+pub(crate) fn matches_selector(
     labels: &std::collections::HashMap<String, String>,
     selector: &[(String, String)],
 ) -> bool {

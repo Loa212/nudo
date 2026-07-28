@@ -7,3 +7,6 @@ tmp/
 
 # Demo state: the throwaway account cookies, target SSH key and staged artifacts.
 .nudo-demo/
+
+# Rendered by `make screenshots`, for looking at rather than committing.
+screenshots/
