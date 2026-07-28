@@ -78,7 +78,12 @@ commit_parsers = [
   # each release adds one, so every subsequent changelog carried the previous
   # runs' bookkeeping alongside the actual changes.
   { message = "^Publish v?[0-9]", skip = true },
+  # Both spellings of the bump commit: "Release the version" and the bare
+  # "Release 0.2.0" this repository actually writes. The earlier rule required
+  # the literal word "version", so `Release 0.1.1` was published to operators
+  # as a change in its own release's notes.
   { message = "^(?i)(bump|release) (the )?version", skip = true },
+  { message = "^(?i)(bump|release) v?[0-9]", skip = true },
   { message = "^(?i)update (the )?lockfile", skip = true },
   { message = "^(?i)merge (branch|pull request)", skip = true },
 
