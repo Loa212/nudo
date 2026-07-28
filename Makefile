@@ -342,6 +342,18 @@ demo-restart: demo-down demo-up ## Restart the demo, keeping its data
 	@$(MAKE) --no-print-directory demo-target
 
 # ---------------------------------------------------------------------------
+# Screenshots
+# ---------------------------------------------------------------------------
+
+.PHONY: screenshots
+screenshots: image ## Screenshot every dashboard view, empty and populated
+	@python3 scripts/screenshots.py $(ARGS)
+
+.PHONY: screenshots-build-hosts
+screenshots-build-hosts: image ## Just the build-host views, both states and themes
+	@python3 scripts/screenshots.py --only build
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

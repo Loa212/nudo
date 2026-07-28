@@ -524,6 +524,32 @@ serving again:
 cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1
 ```
 
+### Looking at the dashboard
+
+The dashboard is server-rendered HTML with no component library and no story
+book, so the only way to see what a page looks like is to run it. `make
+screenshots` renders every view into `screenshots/` — twice, because the two
+states fail differently:
+
+- **empty**, a fresh instance with nothing configured, which is what a new
+  operator sees first and where a missing empty state reads as a broken page
+- **populated**, with targets, build hosts, services and secrets, including the
+  states that only appear when something is wrong — a latency-critical host, a
+  build host that is the instance default, a service pinned to one
+
+Both light and dark, since only one of them tends to get looked at while
+developing.
+
+```sh
+make screenshots                      # everything, ~70 images
+make screenshots ARGS="--only build"  # just the build-host views
+make screenshots ARGS="--keep"        # leave the instance up to poke at
+scripts/screenshots.py --url http://localhost:3000   # an instance you already run
+```
+
+Needs Docker and Google Chrome. The output is gitignored: it is for looking at,
+not for committing.
+
 ### Layout
 
 ```
