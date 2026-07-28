@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::Args;
 
 /// Configuration for the control plane process.
 ///
@@ -11,12 +11,7 @@ use clap::Parser;
 /// a fresh VPS; the only value most operators must set is `--secret-key` (or
 /// `NUDO_SECRET_KEY`), since a generated-per-boot key would make previously
 /// stored secrets unreadable after a restart.
-#[derive(Parser, Debug, Clone)]
-#[command(
-    name = "nudo-server",
-    about = "nudo control plane (gRPC API + deploy engine)",
-    version
-)]
+#[derive(Args, Debug, Clone)]
 pub struct Config {
     /// Address the gRPC API listens on.
     #[arg(long, env = "NUDO_GRPC_ADDR", default_value = "127.0.0.1:50051")]

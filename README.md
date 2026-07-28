@@ -385,6 +385,7 @@ cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1
 ```
 controlplane.proto        the API contract — authoritative, unmodified
 crates/proto/             generated server and client stubs
+crates/format/            shared operator-facing vocabulary and formatting
 crates/server/            gRPC services, deploy engine, SSH executor, SQLite
 crates/web/               dashboard: axum + maud + htmx, a gRPC client
 crates/cli/               nudo — a gRPC client, no duplicated logic

@@ -11,26 +11,23 @@ path = "src/main.rs"
 
 [dependencies]
 nudo-proto.workspace = true
+nudo-format.workspace = true
 
 tonic.workspace = true
-tonic-prost.workspace = true
-prost.workspace = true
 
 # io-std for stdin/stdout: the terminal command pumps the local terminal
 # through the PTY stream, and `secrets set` reads a value from stdin.
 tokio = { workspace = true, features = ["io-std"] }
 tokio-stream.workspace = true
-futures-util.workspace = true
 
 clap.workspace = true
 anyhow.workspace = true
-chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
 tempfile.workspace = true
 # The artifact-server test fetches the file back over HTTP.
 reqwest.workspace = true

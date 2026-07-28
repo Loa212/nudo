@@ -286,7 +286,7 @@ async fn reconcile_interrupted_deployments(store: &crate::store::Store) {
 }
 
 /// Resolves on SIGINT or SIGTERM.
-async fn shutdown_signal() {
+pub async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };

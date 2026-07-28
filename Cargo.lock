@@ -2265,12 +2265,9 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "nudo-proto",
  "nudo-server",
  "nudo-web",
  "tokio",
- "tonic",
- "tonic-health",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2282,9 +2279,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "futures-util",
+ "nudo-format",
  "nudo-proto",
- "prost",
  "reqwest",
  "serde",
  "serde_json",
@@ -2292,9 +2288,15 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-prost",
- "tracing",
- "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "nudo-format"
+version = "0.1.1"
+dependencies = [
+ "chrono",
+ "nudo-proto",
 ]
 
 [[package]]
@@ -2302,11 +2304,9 @@ name = "nudo-mcp"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
- "futures-util",
+ "nudo-format",
  "nudo-proto",
- "prost",
  "rmcp",
  "schemars",
  "serde",
@@ -2314,9 +2314,9 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-prost",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2347,6 +2347,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "jsonwebtoken 11.0.0",
+ "nudo-format",
  "nudo-proto",
  "octocrab",
  "prost",
@@ -2392,6 +2393,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "maud",
+ "nudo-format",
  "nudo-proto",
  "nudo-server",
  "prost",

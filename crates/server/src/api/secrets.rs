@@ -195,35 +195,10 @@ impl Secrets for SecretsService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Bus;
-    use crate::store::{Store, TargetInput};
-    use std::sync::Arc;
+    use crate::api::test_support;
 
     async fn fixture() -> (SecretsService, String, String) {
-        let context = Context::new(
-            Store::open_in_memory().await.expect("store"),
-            Bus::default(),
-            crate::crypto::SecretKey::generate(),
-            Arc::new(crate::Config::default()),
-        );
-        let target = context
-            .store
-            .create_target(&TargetInput {
-                name: "box".to_string(),
-                host: "10.0.0.1".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("target");
-        let service = context
-            .store
-            .create_service(&Service {
-                target_id: target.id.clone(),
-                name: "bot".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("service");
+        let (context, target, service) = test_support::context_with_service().await;
         (SecretsService::new(context), target.id, service.id)
     }
 
@@ -330,17 +305,7 @@ mod tests {
         // Changing what the hot-path box will run on its next start is a
         // mutation of that box.
         let (service, _, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
 
         let status = service
             .put(Request::new(PutSecretRequest {
@@ -369,27 +334,8 @@ mod tests {
     #[tokio::test]
     async fn a_service_scoped_secret_is_checked_against_the_host_it_lands_on() {
         let (service, _, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
-        let hot_service = service
-            .context
-            .store
-            .create_service(&Service {
-                target_id: hot.id,
-                name: "hft".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("service");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
+        let hot_service = test_support::create_service(&service.context, &hot.id, "hft").await;
 
         let status = service
             .put(Request::new(PutSecretRequest {

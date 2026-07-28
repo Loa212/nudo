@@ -138,12 +138,13 @@ impl Store {
         // An empty mask means "everything the message carries", which is what a
         // simple client sending a whole object expects.
         let touch = |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
+        let mut transaction = self.pool().begin().await?;
 
         if touch("name") && !target.name.trim().is_empty() {
             sqlx::query("UPDATE targets SET name = ?1 WHERE id = ?2")
                 .bind(target.name.trim())
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await
                 .map_err(|e| friendly_target_error(e, target.name.trim()))?;
         }
@@ -151,45 +152,46 @@ impl Store {
             sqlx::query("UPDATE targets SET host = ?1 WHERE id = ?2")
                 .bind(target.host.trim())
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
         if touch("port") && target.port != 0 {
             sqlx::query("UPDATE targets SET port = ?1 WHERE id = ?2")
                 .bind(target.port)
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
         if touch("user") && !target.user.trim().is_empty() {
             sqlx::query("UPDATE targets SET user = ?1 WHERE id = ?2")
                 .bind(target.user.trim())
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
         if touch("ssh_key_id") {
             sqlx::query("UPDATE targets SET ssh_key_id = ?1 WHERE id = ?2")
                 .bind(target.ssh_key_id.trim())
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
         if touch("latency_critical") {
             sqlx::query("UPDATE targets SET latency_critical = ?1 WHERE id = ?2")
                 .bind(target.latency_critical as i64)
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
         if touch("labels") {
             sqlx::query("UPDATE targets SET labels = ?1 WHERE id = ?2")
                 .bind(encode_map(&target.labels))
                 .bind(id)
-                .execute(self.pool())
+                .execute(&mut *transaction)
                 .await?;
         }
 
+        transaction.commit().await?;
         self.get_target(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("target {id} vanished during update"))
@@ -422,6 +424,47 @@ mod tests {
         // Outside the mask, so untouched.
         assert_eq!(updated.host, "10.0.0.5");
         assert!(!updated.latency_critical);
+    }
+
+    #[tokio::test]
+    async fn a_multi_field_update_rolls_back_when_one_field_fails() {
+        let store = store().await;
+        let created = store.create_target(&input("edge-1")).await.expect("create");
+
+        // Simulate a later database constraint so the first statement succeeds
+        // inside the transaction and the second one fails.
+        sqlx::query(
+            "CREATE TRIGGER reject_target_host
+             BEFORE UPDATE OF host ON targets
+             BEGIN
+               SELECT RAISE(ABORT, 'host rejected');
+             END",
+        )
+        .execute(store.pool())
+        .await
+        .expect("trigger");
+
+        let error = store
+            .update_target(
+                &created.id,
+                &Target {
+                    name: "renamed".to_string(),
+                    host: "192.168.1.2".to_string(),
+                    ..Default::default()
+                },
+                &["name".to_string(), "host".to_string()],
+            )
+            .await
+            .expect_err("the host trigger must reject the update");
+        assert!(error.to_string().contains("host rejected"), "got: {error}");
+
+        let unchanged = store
+            .get_target(&created.id)
+            .await
+            .expect("read")
+            .expect("target");
+        assert_eq!(unchanged.name, "edge-1");
+        assert_eq!(unchanged.host, "10.0.0.5");
     }
 
     #[tokio::test]

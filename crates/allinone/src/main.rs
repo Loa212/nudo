@@ -21,64 +21,9 @@ struct Args {
     #[arg(long, env = "NUDO_WEB_ADDR", default_value = "127.0.0.1:3000")]
     web_addr: SocketAddr,
 
-    /// Address the gRPC API listens on.
-    ///
-    /// Loopback by default: with both halves in one process there is no reason to
-    /// expose the API, and the CLI can still reach it locally or through a
-    /// tunnel.
-    #[arg(long, env = "NUDO_GRPC_ADDR", default_value = "127.0.0.1:50051")]
-    grpc_addr: SocketAddr,
-
-    #[arg(long, env = "NUDO_DB", default_value = "nudo.db")]
-    database: std::path::PathBuf,
-
-    #[arg(long, env = "NUDO_DATA_DIR", default_value = "./data")]
-    data_dir: std::path::PathBuf,
-
-    /// 32-byte AES-256-GCM key for the secret store, hex or base64.
-    #[arg(long, env = "NUDO_SECRET_KEY")]
-    secret_key: Option<String>,
-
-    #[arg(long, env = "NUDO_SECRET_KEY_FILE")]
-    secret_key_file: Option<std::path::PathBuf>,
-
-    /// This instance's public base URL. Used for the session cookie's `Secure`
-    /// attribute and for the URLs GitHub is told to call.
-    #[arg(long, env = "NUDO_BASE_URL", default_value = "http://localhost:3000")]
-    base_url: String,
-
-    #[arg(long, env = "NUDO_LOG_BUFFER", default_value_t = 2000)]
-    log_buffer_lines: usize,
-
-    #[arg(long, env = "NUDO_PROBE_INTERVAL", default_value_t = 60)]
-    probe_interval_seconds: u64,
-
-    #[arg(long, env = "NUDO_ALLOW_SETUP", default_value_t = true)]
-    allow_setup: bool,
-
-    /// Require an API token on every gRPC call.
-    ///
-    /// The dashboard is given one automatically, since it and the API are the
-    /// same process here — so turning this on does not lock anyone out. It is
-    /// worth setting when the API port is reachable by anything else.
-    #[arg(long, env = "NUDO_REQUIRE_API_TOKEN", default_value_t = false)]
-    require_api_token: bool,
-
-    /// Check for new nudo releases and show a banner when one is out.
-    ///
-    /// Fetches a static JSON manifest and sends nothing about this instance.
-    /// Nothing is ever installed automatically. Turn it off here or from the
-    /// dashboard's settings page.
-    #[arg(long, env = "NUDO_CHECK_FOR_UPDATES", default_value_t = true)]
-    check_for_updates: bool,
-
-    /// Where the release manifest is fetched from.
-    #[arg(long, env = "NUDO_UPDATE_MANIFEST_URL", default_value = nudo_server::updates::DEFAULT_MANIFEST_URL)]
-    update_manifest_url: String,
-
-    /// Hours between update checks.
-    #[arg(long, env = "NUDO_UPDATE_INTERVAL_HOURS", default_value_t = 24)]
-    update_interval_hours: u64,
+    /// Control-plane configuration shared verbatim with `nudo-server`.
+    #[command(flatten)]
+    server: nudo_server::Config,
 }
 
 #[tokio::main]
@@ -92,21 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let server_config = nudo_server::Config {
-        grpc_addr: args.grpc_addr,
-        database: args.database.clone(),
-        data_dir: args.data_dir.clone(),
-        secret_key: args.secret_key.clone(),
-        secret_key_file: args.secret_key_file.clone(),
-        base_url: args.base_url.clone(),
-        log_buffer_lines: args.log_buffer_lines,
-        probe_interval_seconds: args.probe_interval_seconds,
-        require_api_token: args.require_api_token,
-        check_for_updates: args.check_for_updates,
-        update_manifest_url: args.update_manifest_url.clone(),
-        update_interval_hours: args.update_interval_hours,
-        allow_setup: args.allow_setup,
-    };
+    let server_config = args.server;
 
     // Resolved once, before either half starts, so a bad key is a startup error
     // rather than a failure on the first secret read.
@@ -115,8 +46,8 @@ async fn main() -> anyhow::Result<()> {
     // With enforcement on, the dashboard needs a credential of its own or it
     // cannot reach the API — including the page that mints tokens, which would be
     // a lockout. Since both halves are this process, one is provisioned here.
-    let dashboard_token = if args.require_api_token {
-        let store = nudo_server::store::Store::open(&args.database).await?;
+    let dashboard_token = if server_config.require_api_token {
+        let store = nudo_server::store::Store::open(&server_config.database).await?;
         store.verify_secret_key(&secret_key).await?;
         Some(provision_dashboard_token(&store).await?)
     } else {
@@ -125,19 +56,19 @@ async fn main() -> anyhow::Result<()> {
 
     let web_config = nudo_web::WebConfig {
         addr: args.web_addr,
-        grpc_endpoint: format!("http://{}", args.grpc_addr),
-        database: args.database,
-        data_dir: args.data_dir,
-        secret_key: args.secret_key,
-        secret_key_file: args.secret_key_file,
-        base_url: args.base_url,
-        allow_setup: args.allow_setup,
+        grpc_endpoint: format!("http://{}", server_config.grpc_addr),
+        database: server_config.database.clone(),
+        data_dir: server_config.data_dir.clone(),
+        secret_key: server_config.secret_key.clone(),
+        secret_key_file: server_config.secret_key_file.clone(),
+        base_url: server_config.base_url.clone(),
+        allow_setup: server_config.allow_setup,
         api_token: dashboard_token,
     };
 
     // The gRPC server first, so the dashboard's first request has something to
     // talk to.
-    let grpc_addr = args.grpc_addr;
+    let grpc_addr = server_config.grpc_addr;
     let grpc = tokio::spawn(async move {
         if let Err(error) = nudo_server::serve::run(server_config, grpc_addr).await {
             tracing::error!(%error, "the control plane stopped");
@@ -161,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
     let web = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(nudo_server::serve::shutdown_signal())
             .await
         {
             tracing::error!(%error, "the dashboard stopped");
@@ -215,29 +146,26 @@ async fn wait_for(addr: SocketAddr) {
     tracing::warn!(%addr, "the control plane did not come up in time");
 }
 
-/// Resolves on SIGINT or SIGTERM.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not install the SIGTERM handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    #[test]
+    fn the_shared_server_configuration_flattens_into_one_command() {
+        use clap::CommandFactory;
+        Args::command().debug_assert();
 
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received SIGINT, shutting down"),
-        _ = terminate => tracing::info!("received SIGTERM, shutting down"),
+        let args = Args::parse_from([
+            "nudo-all-in-one",
+            "--web-addr",
+            "127.0.0.1:4000",
+            "--grpc-addr",
+            "127.0.0.1:6000",
+            "--log-buffer-lines",
+            "42",
+        ]);
+        assert_eq!(args.web_addr.port(), 4000);
+        assert_eq!(args.server.grpc_addr.port(), 6000);
+        assert_eq!(args.server.log_buffer_lines, 42);
     }
 }

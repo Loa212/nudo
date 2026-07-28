@@ -222,26 +222,10 @@ fn pty_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Bus;
-    use crate::store::{Store, TargetInput};
-    use std::sync::Arc;
+    use crate::api::test_support;
 
     async fn fixture() -> (TerminalsService, String) {
-        let context = Context::new(
-            Store::open_in_memory().await.expect("store"),
-            Bus::default(),
-            crate::crypto::SecretKey::generate(),
-            Arc::new(crate::Config::default()),
-        );
-        let target = context
-            .store
-            .create_target(&TargetInput {
-                name: "box".to_string(),
-                host: "10.0.0.1".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let (context, target) = test_support::context_with_target().await;
         (TerminalsService::new(context), target.id)
     }
 
@@ -301,17 +285,7 @@ mod tests {
         // Whoever holds a PTY can do anything the SSH user can, so this counts
         // as a mutation.
         let (service, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
 
         let status = service
             .create_session(Request::new(create(&hot.id)))

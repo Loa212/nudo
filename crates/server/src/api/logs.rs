@@ -269,36 +269,11 @@ fn expect_status<T>(result: Result<tonic::Response<T>, Status>, what: &str) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Bus;
-    use crate::store::{Store, TargetInput};
-    use std::sync::Arc;
+    use crate::api::test_support;
     use tokio_stream::StreamExt;
 
     async fn fixture() -> (LogsService, String, String) {
-        let context = Context::new(
-            Store::open_in_memory().await.expect("store"),
-            Bus::default(),
-            crate::crypto::SecretKey::generate(),
-            Arc::new(crate::Config::default()),
-        );
-        let target = context
-            .store
-            .create_target(&TargetInput {
-                name: "box".to_string(),
-                host: "10.0.0.1".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("target");
-        let service = context
-            .store
-            .create_service(&Service {
-                target_id: target.id.clone(),
-                name: "bot".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("service");
+        let (context, target, service) = test_support::context_with_service().await;
         (LogsService::new(context), target.id, service.id)
     }
 
@@ -455,17 +430,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_against_a_latency_critical_target_is_refused_without_the_opt_in() {
         let (service, _, _) = fixture().await;
-        let hot = service
-            .context
-            .store
-            .create_target(&TargetInput {
-                name: "hot-box".to_string(),
-                host: "10.0.0.2".to_string(),
-                latency_critical: true,
-                ..Default::default()
-            })
-            .await
-            .expect("target");
+        let hot = test_support::create_latency_critical_target(&service.context).await;
 
         let status = expect_status(
             service

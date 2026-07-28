@@ -156,17 +156,7 @@ pub fn unknown_status(service_id: &str) -> UnitStatus {
 /// Human-readable badge text for a unit state, shared by the dashboard and the
 /// CLI so the two never disagree about what "degraded" means.
 pub fn status_label(status: &UnitStatus) -> &'static str {
-    match (status.active_state.as_str(), status.sub_state.as_str()) {
-        ("active", "running") => "running",
-        ("active", "exited") => "exited cleanly",
-        ("active", _) => "active",
-        ("activating", _) => "starting",
-        ("deactivating", _) => "stopping",
-        ("failed", _) => "failed",
-        ("inactive", _) => "stopped",
-        ("unknown", _) => "unreachable",
-        _ => "unknown",
-    }
+    nudo_format::unit_state_label(status)
 }
 
 /// Whether a state should read as healthy in the UI.

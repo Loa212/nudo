@@ -10,12 +10,9 @@ name = "nudo-all-in-one"
 path = "src/main.rs"
 
 [dependencies]
-nudo-proto.workspace = true
 nudo-server.workspace = true
 nudo-web.workspace = true
 
-tonic.workspace = true
-tonic-health.workspace = true
 axum.workspace = true
 tokio.workspace = true
 
