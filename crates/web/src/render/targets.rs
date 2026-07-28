@@ -357,7 +357,7 @@ pub fn target_form(existing: Option<&Target>, secrets: &[Secret], csrf: &str) ->
                     }
                     span .hint {
                         "Keys live in the secret store and are chosen by reference. "
-                        a href="/secrets" { "Add a key" }
+                        a href="/secrets#ssh-key" { "Add a key" }
                         " if the one you need is not listed."
                     }
                 }

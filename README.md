@@ -113,9 +113,12 @@ cargo build --release
 
 Open <http://localhost:3000> and create the first account. Then:
 
-**1. Add your SSH key as a secret.** nudo needs a key that can reach your target.
-Under **Secrets → Add**, paste the private key. It is encrypted immediately and
-never readable again through the API or the UI.
+**1. Add your SSH key.** nudo needs a key that can reach your target. Under
+**Secrets → Add an SSH key**, paste the private key — the whole file, including
+the `BEGIN` and `END` lines. It is encrypted immediately and never readable again
+through the API or the UI. Pasting the `.pub` half by mistake is refused rather
+than stored, since that failure would otherwise only surface as an unreachable
+host much later.
 
 ```sh
 # or from the CLI, which reads from stdin so it stays out of your shell history

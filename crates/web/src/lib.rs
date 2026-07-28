@@ -231,6 +231,7 @@ pub fn router(state: AppState) -> Router {
         .route("/terminal/ws", get(routes::terminal_websocket))
         // ---- secrets ----
         .route("/secrets", get(routes::secrets_list))
+        .route("/secrets/ssh-key", post(routes::ssh_key_put))
         .route("/secrets", post(routes::secret_put))
         .route("/secrets/{id}/delete", post(routes::secret_delete))
         // ---- sources ----

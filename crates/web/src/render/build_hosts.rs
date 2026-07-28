@@ -351,11 +351,10 @@ pub fn build_host_form(existing: Option<&BuildHost>, secrets: &[Secret], csrf: &
                                 }
                             }
                         }
-                        @if secrets.is_empty() {
-                            span .hint {
-                                a href="/secrets" { "Store a private key" }
-                                " to let nudo reach this host."
-                            }
+                        span .hint {
+                            "Keys live in the secret store and are chosen by reference. "
+                            a href="/secrets#ssh-key" { "Add a key" }
+                            " if the one you need is not listed."
                         }
                     }
                     div .field {

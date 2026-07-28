@@ -4,6 +4,62 @@ use super::*;
 // Secrets
 // ---------------------------------------------------------------------------
 
+/// Storing an SSH private key.
+///
+/// The same store as an environment secret, asked for in the shape it actually
+/// has. A key is multi-line, so it needs a textarea rather than a single-line
+/// input; it is never an environment variable, so the name is not framed as one;
+/// and it is used to open a connection rather than written into an
+/// EnvironmentFile, so target and service scope do not apply and are not shown.
+///
+/// Write-only like everything else here: the textarea has no content and is
+/// never populated from a stored value, because a stored value cannot be read
+/// back.
+fn ssh_key_form(csrf: &str) -> Markup {
+    html! {
+        // Linked to from the target and build-host forms, which is where an
+        // operator discovers they need one.
+        form .card id="ssh-key" method="post" action="/secrets/ssh-key" {
+            (csrf_input(csrf))
+            h2 { "Add an SSH key" }
+            p .card-note {
+                "The private key nudo uses to reach a target or a build host. \
+                 Select it by name when adding one."
+            }
+
+            div .field style="margin-top:12px" {
+                label for="key_name" { "Name" }
+                input type="text" id="key_name" name="name" required
+                    placeholder="DEPLOY_KEY" autocomplete="off";
+                span .hint { "How you will recognise it in the key list." }
+            }
+
+            div .field style="margin-top:12px" {
+                label for="key_value" { "Private key" }
+                // Deliberately empty on every render, including when the form
+                // comes back after an error: this page never holds a value.
+                textarea id="key_value" name="value" rows="8" required
+                    spellcheck="false" autocomplete="off"
+                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" {}
+                span .hint {
+                    "The whole file, including the BEGIN and END lines. Encrypted \
+                     immediately and never shown again."
+                }
+            }
+
+            div .form-actions {
+                button .btn.primary type="submit" { "Store SSH key" }
+            }
+
+            p .card-note style="margin-top:12px" {
+                "Prefer not to paste a key into a browser? "
+                code { "nudo secrets set DEPLOY_KEY < ~/.ssh/id_ed25519" }
+                " reads from stdin, so it stays out of your shell history too."
+            }
+        }
+    }
+}
+
 /// The secret store.
 ///
 /// Values are write-only over the API, and this page keeps that property: there
@@ -14,6 +70,12 @@ use super::*;
 /// The digest prefix is what makes the page useful without being dangerous —
 /// two environments showing the same twelve characters hold the same secret, and
 /// twelve characters of a sha256 reveal nothing about the input.
+///
+/// Two forms, because the store holds one kind of thing but operators write two.
+/// A secret is a name and a value either way; an SSH key is not an environment
+/// variable, is multi-line, and has no meaningful target or service scope, so
+/// asking for it through a single-line field labelled "Becomes the environment
+/// variable name" is asking the wrong question.
 pub fn secrets_list(
     secrets: &[Secret],
     targets: &[Target],
@@ -25,14 +87,20 @@ pub fn secrets_list(
         div .content {
             (callout("info", "Values cannot be read back", html! {
                 "Once stored, a value is only ever decrypted on the way to a \
-                 target's EnvironmentFile. To change one, write it again — the \
-                 digest below tells you whether it actually changed."
+                 target's EnvironmentFile, or used to open an ssh connection. To \
+                 change one, write it again — the digest below tells you whether \
+                 it actually changed."
             }))
+
+            (ssh_key_form(csrf))
 
             form .card method="post" action="/secrets" {
                 (csrf_input(csrf))
-                h2 { "Add or replace a secret" }
-                p .card-note { "Writing an existing name replaces its value." }
+                h2 { "Add or replace an environment secret" }
+                p .card-note {
+                    "Resolved at deploy time into the unit's EnvironmentFile. \
+                     Writing an existing name replaces its value."
+                }
                 div .fields style="margin-top:12px" {
                     div .field {
                         label for="name" { "Name" }

@@ -398,3 +398,56 @@ fn latency_knobs_are_shown_prominently_only_when_set() {
 }
 
 // -- badges ------------------------------------------------------------
+
+#[test]
+fn the_ssh_key_textarea_renders_empty_and_is_never_prefilled() {
+    // The same write-only property as the value input, in the element a
+    // multi-line key needs. A textarea holds its content between its tags
+    // rather than in an attribute, so this is a different way to get it wrong.
+    let rendered = s(secrets_list(&[], &[], &[], "tok"));
+
+    let textarea = rendered
+        .split("id=\"key_value\"")
+        .nth(1)
+        .expect("the key textarea")
+        .split("</textarea>")
+        .next()
+        .expect("the closing tag");
+
+    let content = textarea.split('>').nth(1).unwrap_or("");
+    assert!(
+        content.trim().is_empty(),
+        "the key textarea must render empty: {content:?}"
+    );
+}
+
+#[test]
+fn the_ssh_key_form_does_not_offer_a_scope() {
+    // A key opens the connection, so scoping it to a target it is needed to
+    // reach is circular. Offering the field would invite that mistake.
+    let rendered = s(secrets_list(&[], &[], &[], "tok"));
+    let form = rendered
+        .split("id=\"ssh-key\"")
+        .nth(1)
+        .expect("the ssh key form")
+        .split("</form>")
+        .next()
+        .expect("the closing tag");
+
+    assert!(!form.contains("scope_target_id"), "got: {form}");
+    assert!(!form.contains("scope_service_id"), "got: {form}");
+    // And it posts somewhere that will not silently apply one.
+    assert!(rendered.contains("action=\"/secrets/ssh-key\""));
+}
+
+#[test]
+fn both_secret_forms_carry_a_csrf_token() {
+    // Two forms now write to the store, and a new one must not be able to
+    // arrive without one.
+    let rendered = s(secrets_list(&[], &[], &[], "tok-abc"));
+    assert_eq!(
+        rendered.matches("name=\"csrf\" value=\"tok-abc\"").count(),
+        2,
+        "the env-var form and the ssh key form each need a token"
+    );
+}
