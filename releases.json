@@ -12,6 +12,13 @@
   ],
   "releases": [
     {
+      "version": "0.2.0",
+      "published_at": "2026-07-28",
+      "url": "https://github.com/Loa212/nudo/releases/tag/v0.2.0",
+      "breaking": false,
+      "notes": "### Added\n\n- Builds can run on a host other than the control plane. Register one with\n  `nudo build-hosts add`, or from Build hosts in the dashboard, then point a\n  service at it or set an instance-wide default. The checkout is cloned on the\n  build host itself, so the control plane no longer needs the toolchain — or\n  the CPU — for a build.\n- A build host's SSH host key is pinned and verified on first use, on the same\n  terms as a deploy target's.\n- `nudo secrets rotate` replaces the value of a secret that already exists.\n\n### Changed\n\n- Storing a secret on a name that is already taken is refused rather than\n  silently overwriting it. A secret's value cannot be read back, so the old\n  one was unrecoverable. Use `nudo secrets rotate` — or the Rotate button on\n  the dashboard — to replace one deliberately.\n\n### Notes\n\n- Nothing that predates this release builds anywhere new: a service with no\n  build host set keeps building on the control plane.\n- A build host shared with latency-sensitive workloads is allowed, and warned\n  about rather than refused."
+    },
+    {
       "version": "0.1.1",
       "published_at": "2026-07-27",
       "url": "https://github.com/Loa212/nudo/releases/tag/v0.1.1",
