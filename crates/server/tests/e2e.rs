@@ -1885,6 +1885,26 @@ fn start_origin(port: u32, body: &str) {
     .expect("the origin should answer before the proxy is asked to route to it");
 }
 
+/// Requests a path through the proxy, over HTTPS.
+///
+/// Caddy redirects :80 to :443 for every site it serves, and for a `.localhost`
+/// name it issues a certificate from its own local CA rather than attempting
+/// ACME — which is what makes any of this testable inside a container. So the
+/// request has to speak HTTPS (`--resolve` points the name at loopback) and
+/// accept that CA (`-k`). Requesting plain HTTP and treating the 301 as a
+/// failure, which an earlier version of these tests did, reads correct
+/// behaviour as the proxy being broken.
+fn proxy_get(host: &str, path: &str) -> anyhow::Result<String> {
+    exec_in_container(&[
+        "bash",
+        "-c",
+        &format!(
+            "curl -sSkL --max-time 5 --resolve {host}:443:127.0.0.1 \
+             https://{host}{path} 2>/dev/null || true"
+        ),
+    ])
+}
+
 /// Registers the container as a target with managed ingress.
 async fn register_ingress_target(
     engine: &Engine,
@@ -2022,26 +2042,24 @@ async fn caddy_is_installed_and_serves_the_config_nudo_renders() {
     );
 
     // ---- and the proxy actually serves it ----
-    wait_for("caddy to answer", Duration::from_secs(30), || {
-        exec_in_container(&[
-            "bash",
-            "-c",
-            "curl -fsS -H 'Host: routed.localhost' http://127.0.0.1/ 2>/dev/null || true",
-        ])
-        .map(|body| body.contains("hello from the origin"))
-        .unwrap_or(false)
+    //
+    // Over HTTPS, following the redirect. Caddy redirects :80 to :443 for every
+    // site, and for a `.localhost` name it issues a certificate from its own
+    // local CA rather than attempting ACME — which is exactly what makes this
+    // testable inside a container. `-k` accepts that CA; `-L` follows the
+    // redirect. An earlier version of this test requested plain HTTP with `-f`
+    // and read the 301 as the proxy being broken.
+    wait_for("caddy to answer", Duration::from_secs(60), || {
+        proxy_get("routed.localhost", "/")
+            .map(|body| body.contains("hello from the origin"))
+            .unwrap_or(false)
     })
     .expect("the proxy should route the domain to the service");
 
     // ---- the path route reaches the other port ----
     // The same domain, a different backend, chosen by prefix. This is the case
     // a single domain-and-port field could not express at all.
-    let from_path = exec_in_container(&[
-        "bash",
-        "-c",
-        "curl -fsS -H 'Host: routed.localhost' http://127.0.0.1/api/ 2>/dev/null || true",
-    ])
-    .expect("request the path route");
+    let from_path = proxy_get("routed.localhost", "/api/").expect("request the path route");
     assert!(
         from_path.contains("hello from the api"),
         "/api should reach the second origin, got: {from_path:?}"
@@ -2147,16 +2165,18 @@ async fn a_grpc_route_reaches_the_backend_over_http2() {
         "a gRPC route should proxy over h2c: {on_disk}"
     );
 
-    // The assertion that matters: the backend reports HTTP/2.0, so the proxy
-    // did not downgrade. The backend echoes the protocol it actually saw, so
-    // this cannot pass by accident.
+    // Requested over HTTPS, which is how a gRPC client actually connects. What
+    // is being asserted is the *second* hop: the backend echoes the protocol it
+    // saw from the proxy, and that is the one `h2c://` decides. It reports
+    // HTTP/2.0 only if the proxy did not downgrade — which is the failure that
+    // breaks every gRPC call and looks like the service being broken.
     let mut seen = String::new();
-    wait_for("the proxy to route grpc", Duration::from_secs(30), || {
+    wait_for("the proxy to route grpc", Duration::from_secs(60), || {
         seen = exec_in_container(&[
             "bash",
             "-c",
-            "curl -fsS --http2-prior-knowledge -H 'Host: grpc.localhost' \
-             http://127.0.0.1/ 2>/dev/null || true",
+            "curl -sSkL --http2 --max-time 5 --resolve grpc.localhost:443:127.0.0.1 \
+             https://grpc.localhost/ 2>/dev/null || true",
         ])
         .unwrap_or_default();
         seen.contains("grpc backend saw")
