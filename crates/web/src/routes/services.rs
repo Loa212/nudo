@@ -202,6 +202,14 @@ pub struct ServiceForm {
     #[serde(default)]
     pub secret_ids: Vec<String>,
 
+    /// Where this service is reachable from outside, when the target has
+    /// ingress: one `domain[/path]:port` per line. Defaults so a form rendered
+    /// before this existed still deserializes.
+    #[serde(default)]
+    pub routes: String,
+    #[serde(default)]
+    pub grpc: Option<String>,
+
     #[serde(default)]
     pub allow_latency_critical: Option<String>,
     pub csrf: String,
@@ -285,6 +293,10 @@ impl ServiceForm {
             env: parse_labels(&self.env),
             current_release_id: String::new(),
             created_at: None,
+            // Lines that do not parse are dropped rather than guessed at; the
+            // server refuses anything malformed that does get through, and the
+            // operator sees which routes survived on the page that follows.
+            routes: parse_routes(&self.routes, self.grpc.is_some()),
         }
     }
 }
@@ -568,4 +580,48 @@ pub async fn services_stream(
     };
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Parses the routes textarea: one `domain[/path]:port` per line.
+///
+/// The same syntax `nudo services domain --route` takes, so what an operator
+/// learns in one place works in the other. Validation is the server's — this
+/// only splits the parts out, and a line it cannot split is left for the server
+/// to refuse by name rather than silently dropped.
+pub(super) fn parse_routes(raw: &str, grpc: bool) -> Vec<Route> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            // A pasted URL is the obvious mistake and its meaning is clear.
+            let line = line
+                .strip_prefix("https://")
+                .or_else(|| line.strip_prefix("http://"))
+                .unwrap_or(line);
+
+            let (host_and_path, port) = match line.rsplit_once(':') {
+                Some((host, port)) => (host, port.trim().parse().unwrap_or(0)),
+                // No port: kept with port 0 so the server reports which line is
+                // wrong, rather than the route vanishing without explanation.
+                None => (line, 0),
+            };
+
+            let (domain, path) = match host_and_path.split_once('/') {
+                Some((domain, path)) => (domain, format!("/{path}")),
+                None => (host_and_path, String::new()),
+            };
+
+            Route {
+                domain: domain.trim().to_string(),
+                path,
+                port,
+                protocol: if grpc {
+                    route::Protocol::H2c as i32
+                } else {
+                    route::Protocol::Unspecified as i32
+                },
+                ..Default::default()
+            }
+        })
+        .collect()
 }

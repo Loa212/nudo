@@ -193,6 +193,23 @@ pub fn router(state: AppState) -> Router {
             post(routes::target_accept_host_key),
         )
         .route("/targets/{id}/delete", post(routes::target_delete))
+        // ---- ingress, which is a property of a target ----
+        .route(
+            "/targets/{id}/ingress/enable",
+            post(routes::target_ingress_enable),
+        )
+        .route(
+            "/targets/{id}/ingress/disable",
+            post(routes::target_ingress_disable),
+        )
+        .route(
+            "/targets/{id}/ingress/reload",
+            post(routes::target_ingress_reload),
+        )
+        .route(
+            "/targets/{id}/ingress/config",
+            get(routes::target_ingress_config),
+        )
         // ---- build hosts ----
         .route("/build-hosts", get(routes::build_hosts_list))
         .route("/build-hosts/new", get(routes::build_host_new))

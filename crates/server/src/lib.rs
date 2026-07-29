@@ -15,6 +15,7 @@ pub mod events;
 pub mod git;
 pub mod github;
 pub mod health;
+pub mod ingress;
 pub mod logs;
 pub mod probe;
 pub mod serve;

@@ -25,6 +25,21 @@ fn a_target() -> Target {
     }
 }
 
+/// The same target with managed ingress active, which renders a different set
+/// of forms: reload and disable rather than enable.
+fn a_target_with_ingress() -> Target {
+    Target {
+        ingress: Some(nudo_proto::Ingress {
+            mode: nudo_proto::ingress::Mode::Managed as i32,
+            admin_port: nudo_proto::DEFAULT_ADMIN_PORT,
+            status: nudo_proto::ingress::Status::Active as i32,
+            version: "2.7.6".to_string(),
+            ..Default::default()
+        }),
+        ..a_target()
+    }
+}
+
 fn a_service() -> Service {
     Service {
         id: "svc_1".to_string(),

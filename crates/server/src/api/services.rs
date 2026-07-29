@@ -126,6 +126,26 @@ impl ServicesApi for ServicesApiService {
             .update_service(&request.id, &update, &request.update_mask)
             .await
             .map_err(super::invalid)?;
+
+        // A domain change takes effect now rather than at the next deploy.
+        // Setting a domain and finding the site still unreachable until
+        // something unrelated is deployed would be a confusing way to learn how
+        // this works.
+        //
+        // Compared against what was there before so an update that did not
+        // touch routing does not reload the proxy for nothing.
+        let route_changed = updated.routes != existing.routes;
+        if route_changed
+            && crate::ingress::is_managed(&target)
+            && let Err(error) = self.reload_ingress(&target).await
+        {
+            tracing::warn!(
+                %error,
+                service = %updated.name,
+                "reloading the proxy after a route change failed"
+            );
+        }
+
         Ok(Response::new(updated))
     }
 
@@ -217,6 +237,25 @@ impl ServicesApi for ServicesApiService {
             .await
             .map_err(super::invalid)?;
         self.context.bus.forget_service(&request.id);
+
+        // Take the route away after the row is gone, since the config is
+        // rendered from the database — doing it first would re-render a config
+        // that still contained this service. Only for a service that had a
+        // route: nothing else changes the proxy's config.
+        //
+        // A failure here does not fail the delete. The service is already gone,
+        // and the worst case is a route pointing at a port nothing answers on,
+        // which the target's ingress check reports.
+        if !existing.routes.is_empty()
+            && crate::ingress::is_managed(&target)
+            && let Err(error) = self.reload_ingress(&target).await
+        {
+            tracing::warn!(
+                %error,
+                service = %existing.name,
+                "removing the deleted service's route failed"
+            );
+        }
 
         Ok(Response::new(()))
     }
@@ -374,6 +413,50 @@ impl ServicesApi for ServicesApiService {
         };
 
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+impl ServicesApiService {
+    /// Re-renders and reloads a target's proxy config.
+    ///
+    /// Used when a service's route changed outside a deploy — a domain set or
+    /// cleared, or a routed service deleted. A deploy does this itself, on the
+    /// SSH connection it already has open.
+    ///
+    /// Returns `Ok(())` when the proxy rejected the config as well as when it
+    /// accepted it: the caller's own operation succeeded either way, and the
+    /// target is recorded as degraded so the failure is visible where an
+    /// operator looks for it.
+    async fn reload_ingress(&self, target: &Target) -> anyhow::Result<()> {
+        let services = self.context.store.routed_services(&target.id).await?;
+
+        let ssh_target = self.context.engine.ssh_target_for(target).await?;
+        let session = self
+            .context
+            .engine
+            .connect_ssh(&target.id, &ssh_target)
+            .await?;
+
+        let outcome = crate::ingress::reconcile::reload(&session, target, &services).await;
+        let _ = session.close().await;
+        let outcome = outcome?;
+
+        let status = if outcome.ok {
+            nudo_proto::ingress::Status::Active
+        } else {
+            nudo_proto::ingress::Status::Degraded
+        };
+        self.context
+            .store
+            .set_ingress_status(
+                &target.id,
+                status,
+                outcome.version.as_deref(),
+                &outcome.error,
+            )
+            .await?;
+
+        Ok(())
     }
 }
 

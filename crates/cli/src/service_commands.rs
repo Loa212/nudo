@@ -111,6 +111,76 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
                 format::releases_table(&list)
             });
         }
+
+        ServiceCommand::Domain {
+            id,
+            routes,
+            grpc,
+            clear,
+        } => {
+            if !clear && routes.is_empty() {
+                bail!(
+                    "pass --route DOMAIN[/PATH]:PORT to route this service, or \
+                     --clear to stop routing to it"
+                );
+            }
+
+            let parsed = if *clear {
+                Vec::new()
+            } else {
+                routes
+                    .iter()
+                    .map(|raw| parse_route(raw, *grpc))
+                    .collect::<anyhow::Result<Vec<_>>>()?
+            };
+
+            let updated = client
+                .update(authenticated(
+                    cli,
+                    UpdateServiceRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                        service: Some(Service {
+                            routes: parsed,
+                            ..Default::default()
+                        }),
+                        // Named explicitly: an empty mask means "apply every
+                        // field", which here would blank the rest of the service.
+                        update_mask: vec!["routes".to_string()],
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            if updated.routes.is_empty() {
+                println!(
+                    "{}{} is no longer routed",
+                    dry_run_prefix(cli),
+                    updated.name
+                );
+            } else {
+                println!("{}{} is reachable at:", dry_run_prefix(cli), updated.name);
+                for route in &updated.routes {
+                    let protocol = route.protocol_or_default();
+                    println!(
+                        "  https://{}{}  ->  {}:{}{}",
+                        route.domain,
+                        route.path,
+                        if protocol == route::Protocol::H2c {
+                            "h2c://127.0.0.1"
+                        } else {
+                            "127.0.0.1"
+                        },
+                        route.port,
+                        if protocol == route::Protocol::H2c {
+                            " (gRPC)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
@@ -146,4 +216,57 @@ async fn unit_action(
     println!("{}{verb} {service_id}", dry_run_prefix(cli));
     println!("{}", format::unit_status_line(&status));
     Ok(())
+}
+
+/// Parses `domain[/path]:port` into a route.
+///
+/// One flag rather than three, because a route's parts belong together: the
+/// alternative is `--domain a --path b --port c` repeated, where nothing in the
+/// syntax says which path goes with which domain.
+///
+/// The port is taken from the last colon so an IPv6-looking value fails on the
+/// domain validator rather than being silently mis-split.
+pub(crate) fn parse_route(raw: &str, grpc: bool) -> anyhow::Result<Route> {
+    let raw = raw.trim();
+    // A pasted URL is the obvious mistake; take the host part rather than
+    // refusing something whose meaning is unambiguous.
+    let raw = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .unwrap_or(raw);
+
+    let (host_and_path, port) = raw.rsplit_once(':').ok_or_else(|| {
+        anyhow!(
+            "{raw:?} needs a port, as DOMAIN[/PATH]:PORT — nudo has to know what \
+             port the service listens on to route to it"
+        )
+    })?;
+
+    let port: u32 = port
+        .parse()
+        .with_context(|| format!("{port:?} in {raw:?} is not a port number"))?;
+
+    let (domain, path) = match host_and_path.split_once('/') {
+        Some((domain, path)) => (domain, format!("/{path}")),
+        None => (host_and_path, String::new()),
+    };
+
+    let route = Route {
+        domain: domain.trim().to_string(),
+        path,
+        port,
+        protocol: if grpc {
+            route::Protocol::H2c as i32
+        } else {
+            route::Protocol::Unspecified as i32
+        },
+        ..Default::default()
+    };
+
+    // Refused here as well as server-side so the message names the argument
+    // that is wrong rather than arriving as a gRPC status.
+    route
+        .validate()
+        .map_err(|error| anyhow!("{raw:?}: {error}"))?;
+    Ok(route)
 }

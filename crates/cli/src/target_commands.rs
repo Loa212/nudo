@@ -160,6 +160,184 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
                 bail!("target {id} has an unreviewed host-key change");
             }
         }
+
+        TargetCommand::Ingress(command) => ingress(cli, &mut client, command).await?,
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// targets ingress
+// ---------------------------------------------------------------------------
+
+async fn ingress(
+    cli: &Cli,
+    client: &mut targets_client::TargetsClient<tonic::transport::Channel>,
+    command: &IngressCommand,
+) -> anyhow::Result<()> {
+    match command {
+        IngressCommand::Enable {
+            target,
+            mode,
+            acme_email,
+            admin_port,
+        } => {
+            let parsed = ingress::Mode::parse(mode.trim());
+            if parsed == ingress::Mode::Unspecified {
+                bail!("unknown mode {mode:?}: expected `managed` or `external`");
+            }
+
+            let updated = client
+                .enable_ingress(authenticated(
+                    cli,
+                    EnableIngressRequest {
+                        mutation: Some(mutation(cli)),
+                        target_id: target.clone(),
+                        mode: parsed as i32,
+                        admin_port: admin_port.unwrap_or(0),
+                        acme_email: acme_email.clone().unwrap_or_default(),
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            let state = updated.ingress.clone().unwrap_or_default();
+            println!(
+                "{}{} ingress on {} ({})",
+                dry_run_prefix(cli),
+                parsed.as_str(),
+                updated.name,
+                ingress::Status::try_from(state.status)
+                    .unwrap_or(ingress::Status::Unspecified)
+                    .as_str()
+            );
+
+            // Enabling stores the setting even when the host could not be
+            // reached, so say why rather than reporting a success that did not
+            // reach the machine.
+            if !state.last_error.is_empty() {
+                println!();
+                println!("the proxy is not serving yet: {}", state.last_error);
+                println!("fix that and run `nudo targets ingress reload {target}`");
+            }
+        }
+
+        IngressCommand::Disable { target } => {
+            let updated = client
+                .disable_ingress(authenticated(
+                    cli,
+                    DisableIngressRequest {
+                        mutation: Some(mutation(cli)),
+                        target_id: target.clone(),
+                    },
+                ))
+                .await?
+                .into_inner();
+            println!(
+                "{}disabled ingress on {}; its config is left on the host",
+                dry_run_prefix(cli),
+                updated.name
+            );
+        }
+
+        IngressCommand::Show { target } => {
+            let response = client
+                .render_ingress(authenticated(
+                    cli,
+                    RenderIngressRequest {
+                        target_id: target.clone(),
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            match cli.output {
+                Output::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&JsonIngressConfig::from(&response))?
+                ),
+                // The config alone, so it can be redirected to a file or piped
+                // into a proxy the operator runs themselves.
+                Output::Table => print!("{}", response.config),
+            }
+        }
+
+        IngressCommand::Reload { target } => {
+            let response = client
+                .reload_ingress(authenticated(
+                    cli,
+                    ReloadIngressRequest {
+                        mutation: Some(mutation(cli)),
+                        target_id: target.clone(),
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            if response.ok {
+                println!(
+                    "{}reloaded the proxy on {target}: {} route{}",
+                    dry_run_prefix(cli),
+                    response.routes.len(),
+                    if response.routes.len() == 1 { "" } else { "s" }
+                );
+                for route in &response.routes {
+                    println!("  {} -> :{}", route.domain, route.port);
+                }
+            } else {
+                // Non-zero exit so a CI step that sets a domain and expects it
+                // to be serving does not carry on as if it were.
+                bail!(
+                    "the proxy rejected the config and is still serving the \
+                     previous one: {}",
+                    response.error
+                );
+            }
+        }
+
+        IngressCommand::Check { target } => {
+            let response = client
+                .check_ingress(authenticated(
+                    cli,
+                    CheckIngressRequest {
+                        target_id: target.clone(),
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            match cli.output {
+                Output::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&JsonChecks::from(&response))?
+                ),
+                Output::Table => {
+                    for check in &response.checks {
+                        println!(
+                            "{} {:<24} {}",
+                            if check.ok { "ok  " } else { "FAIL" },
+                            check.name,
+                            check.detail
+                        );
+                    }
+                    // Warnings after the checks and clearly apart from them: a
+                    // domain that does not resolve yet is the single most common
+                    // way this feature disappoints someone, and it is not a
+                    // failure — the record may be minutes away.
+                    if !response.warnings.is_empty() {
+                        println!();
+                        for warning in &response.warnings {
+                            println!("note: {warning}");
+                        }
+                    }
+                }
+            }
+
+            if !response.ok {
+                bail!("ingress on {target} is not ready");
+            }
+        }
     }
 
     Ok(())

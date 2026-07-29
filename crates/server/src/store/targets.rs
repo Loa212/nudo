@@ -1,7 +1,7 @@
 //! Target persistence — the machines we deploy to.
 
 use anyhow::bail;
-use nudo_proto::{HostKey, Target, target};
+use nudo_proto::{HostKey, Ingress, Target, ingress, target};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
@@ -338,17 +338,109 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Turns ingress on for a target, or changes its settings.
+    ///
+    /// Only the settings — mode, admin port, ACME email. Observed state
+    /// (`status`, `version`, `last_error`) is written by whatever observed it,
+    /// never by the operator configuring it, so those columns are deliberately
+    /// not touched here beyond resetting status to pending when the mode
+    /// changes: a target whose mode just changed has not yet been reconciled,
+    /// whatever it reported about the previous mode.
+    pub async fn set_ingress(
+        &self,
+        id: &str,
+        mode: ingress::Mode,
+        admin_port: u32,
+        acme_email: &str,
+    ) -> anyhow::Result<()> {
+        // Port 0 means the caller did not choose one, not "port zero".
+        let admin_port = if admin_port == 0 {
+            nudo_proto::DEFAULT_ADMIN_PORT
+        } else {
+            admin_port
+        };
+        if mode != ingress::Mode::Unspecified {
+            nudo_proto::validate_port(admin_port).map_err(|error| anyhow::anyhow!(error))?;
+        }
+
+        let result = sqlx::query(
+            "UPDATE targets
+                SET ingress_mode = ?1,
+                    ingress_admin_port = ?2,
+                    ingress_acme_email = ?3,
+                    ingress_status = CASE
+                        WHEN ingress_mode = ?1 THEN ingress_status
+                        ELSE 'pending'
+                    END,
+                    ingress_last_error = CASE
+                        WHEN ingress_mode = ?1 THEN ingress_last_error
+                        ELSE ''
+                    END
+              WHERE id = ?4",
+        )
+        .bind(mode.as_str())
+        .bind(admin_port as i64)
+        .bind(acme_email.trim())
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            bail!("no such target: {id}");
+        }
+        Ok(())
+    }
+
+    /// Records what a reload or a check observed.
+    ///
+    /// Separate from [`Store::set_ingress`] because the two have different
+    /// writers: an operator sets the configuration, and the reconciler records
+    /// what came back. Collapsing them would let a failed reload quietly
+    /// rewrite the admin port.
+    pub async fn set_ingress_status(
+        &self,
+        id: &str,
+        status: ingress::Status,
+        version: Option<&str>,
+        error: &str,
+    ) -> anyhow::Result<()> {
+        // Only a successful reload advances the timestamp: it means "serving
+        // what nudo last wrote", so a failed attempt must leave it alone.
+        let reloaded_at = (status == ingress::Status::Active).then(now_string);
+
+        sqlx::query(
+            "UPDATE targets
+                SET ingress_status = ?1,
+                    ingress_version = COALESCE(?2, ingress_version),
+                    ingress_last_error = ?3,
+                    ingress_last_reload_at = COALESCE(?4, ingress_last_reload_at)
+              WHERE id = ?5",
+        )
+        .bind(status.as_str())
+        .bind(version)
+        .bind(error)
+        .bind(reloaded_at)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
 }
 
 const TARGET_SELECT: &str = "SELECT id, name, host, port, user, ssh_key_id, latency_critical, \
      labels, status, last_seen_at, created_at, host_key, host_key_fingerprint, \
      host_key_pinned_at, pending_host_key, pending_host_key_fingerprint, \
-     pending_host_key_seen_at FROM targets";
+     pending_host_key_seen_at, ingress_mode, ingress_admin_port, ingress_acme_email, \
+     ingress_status, ingress_version, ingress_last_reload_at, ingress_last_error \
+     FROM targets";
 
 const TARGET_SELECT_BY_ID: &str = "SELECT id, name, host, port, user, ssh_key_id, \
      latency_critical, labels, status, last_seen_at, created_at, host_key, \
      host_key_fingerprint, host_key_pinned_at, pending_host_key, \
-     pending_host_key_fingerprint, pending_host_key_seen_at FROM targets WHERE id = ?1";
+     pending_host_key_fingerprint, pending_host_key_seen_at, ingress_mode, \
+     ingress_admin_port, ingress_acme_email, ingress_status, ingress_version, \
+     ingress_last_reload_at, ingress_last_error FROM targets WHERE id = ?1";
 
 fn row_to_target(row: &SqliteRow) -> Target {
     Target {
@@ -370,7 +462,35 @@ fn row_to_target(row: &SqliteRow) -> Target {
             &row.get::<String, _>("created_at"),
         )),
         host_key: row_to_host_key(row),
+        ingress: row_to_ingress(row),
     }
+}
+
+/// The ingress half of a target row.
+///
+/// `None` when the mode is 'none', so a target nobody has configured ingress on
+/// reads as having none rather than as having a disabled one. That distinction
+/// is what lets the dashboard show "no ingress" and "ingress off" differently,
+/// and it keeps every target that predates this feature reading exactly as it
+/// did.
+fn row_to_ingress(row: &SqliteRow) -> Option<Ingress> {
+    let mode = ingress::Mode::parse(&row.get::<String, _>("ingress_mode"));
+    if mode == ingress::Mode::Unspecified {
+        return None;
+    }
+
+    Some(Ingress {
+        mode: mode as i32,
+        admin_port: row.get::<i64, _>("ingress_admin_port") as u32,
+        acme_email: row.get("ingress_acme_email"),
+        status: ingress::Status::parse(&row.get::<String, _>("ingress_status")) as i32,
+        version: row.get("ingress_version"),
+        last_reload_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
+            row.get::<Option<String>, _>("ingress_last_reload_at")
+                .as_deref(),
+        )),
+        last_error: row.get("ingress_last_error"),
+    })
 }
 
 /// The host-key half of a target row.

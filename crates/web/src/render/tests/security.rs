@@ -256,6 +256,23 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
         ),
         ("login_page", s(login_page(None, token))),
         ("setup_page", s(setup_page(None, token))),
+        // The ingress card posts to enable, reload and disable.
+        (
+            "target_detail",
+            s(target_detail(&target, &[], &HashMap::new(), None, token)),
+        ),
+        // And once ingress is on, the reload and disable forms replace the
+        // enable one — a different set of forms, all of which need a token.
+        (
+            "target_detail_with_ingress",
+            s(target_detail(
+                &a_target_with_ingress(),
+                &[],
+                &HashMap::new(),
+                None,
+                token,
+            )),
+        ),
     ];
 
     for (what, rendered) in screens {
@@ -265,8 +282,13 @@ fn every_post_form_on_every_screen_carries_a_csrf_token() {
 
 #[test]
 fn a_read_only_screen_posts_nothing_and_so_needs_no_token() {
-    // Running the preflight checks probes the target and changes nothing, so
-    // it is a link. A screen with no POST form has nothing to forge.
+    // A screen with no POST form has nothing to forge.
+    //
+    // `target_detail` used to be in this list. It is not any more: the ingress
+    // card posts to enable, reload and disable, so it is covered by
+    // `every_post_form_on_every_screen_carries_a_csrf_token` instead. Running
+    // the preflight checks is still a link, because it probes the target and
+    // changes nothing.
     let rendered = s(target_detail(
         &a_target(),
         &[],
@@ -274,7 +296,6 @@ fn a_read_only_screen_posts_nothing_and_so_needs_no_token() {
         None,
         "csrf",
     ));
-    assert!(!rendered.contains("method=\"post\""));
     assert!(rendered.contains("Run checks"));
     assert!(rendered.contains("href=\"/targets/tgt_1?check=1\""));
 

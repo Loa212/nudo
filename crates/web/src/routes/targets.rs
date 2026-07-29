@@ -248,6 +248,173 @@ pub async fn target_delete(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ingress
+//
+// Under `/targets/{id}/ingress/...` because ingress is a property of the
+// target: there is exactly one per host, and it has no life of its own.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+pub struct IngressEnableForm {
+    pub csrf: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub acme_email: String,
+    #[serde(default)]
+    pub allow_latency_critical: Option<String>,
+}
+
+pub async fn target_ingress_enable(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    user: CurrentUser,
+    Form(form): Form<IngressEnableForm>,
+) -> Response {
+    if let Err(rejection) = check_csrf(&user, &form.csrf) {
+        return rejection.into_response();
+    }
+
+    // Defaults to managed, which is what the form offers first and what
+    // somebody who does not know the difference wants.
+    let mode = match form.mode.trim() {
+        "external" => ingress::Mode::External,
+        _ => ingress::Mode::Managed,
+    };
+
+    let mut client = match state.api.targets().await {
+        Ok(client) => client,
+        Err(status) => return grpc_error(status),
+    };
+
+    match client
+        .enable_ingress(EnableIngressRequest {
+            mutation: Some(mutation(
+                &user,
+                &MutationFlags {
+                    allow_latency_critical: form.allow_latency_critical,
+                },
+            )),
+            target_id: id.clone(),
+            mode: mode as i32,
+            // Caddy's default, filled in server-side.
+            admin_port: 0,
+            acme_email: form.acme_email.trim().to_string(),
+        })
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/targets/{id}")).into_response(),
+        Err(status) => grpc_error(status),
+    }
+}
+
+pub async fn target_ingress_disable(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    user: CurrentUser,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(rejection) = check_csrf(&user, &form.csrf) {
+        return rejection.into_response();
+    }
+
+    let mut client = match state.api.targets().await {
+        Ok(client) => client,
+        Err(status) => return grpc_error(status),
+    };
+
+    match client
+        .disable_ingress(DisableIngressRequest {
+            mutation: Some(mutation(
+                &user,
+                &MutationFlags {
+                    allow_latency_critical: form.allow_latency_critical,
+                },
+            )),
+            target_id: id.clone(),
+        })
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/targets/{id}")).into_response(),
+        Err(status) => grpc_error(status),
+    }
+}
+
+pub async fn target_ingress_reload(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    user: CurrentUser,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(rejection) = check_csrf(&user, &form.csrf) {
+        return rejection.into_response();
+    }
+
+    let mut client = match state.api.targets().await {
+        Ok(client) => client,
+        Err(status) => return grpc_error(status),
+    };
+
+    // A rejected config is not an error page: the reason is recorded against
+    // the target and the card shows it, which is where somebody looking at this
+    // host will find it — and where it stays visible after the redirect.
+    match client
+        .reload_ingress(ReloadIngressRequest {
+            mutation: Some(mutation(
+                &user,
+                &MutationFlags {
+                    allow_latency_critical: form.allow_latency_critical,
+                },
+            )),
+            target_id: id.clone(),
+        })
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/targets/{id}")).into_response(),
+        Err(status) => grpc_error(status),
+    }
+}
+
+/// The proxy config this target would be given.
+///
+/// The `View unit` of ingress, and the whole of what external mode offers:
+/// render it, copy it, run your own proxy.
+pub async fn target_ingress_config(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    _user: CurrentUser,
+) -> Response {
+    let mut client = match state.api.targets().await {
+        Ok(client) => client,
+        Err(status) => return grpc_error(status),
+    };
+
+    let response = match client
+        .render_ingress(RenderIngressRequest {
+            target_id: id.clone(),
+        })
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(status) => return grpc_error(status),
+    };
+
+    // The name rather than the id in the heading, falling back to the id when
+    // the target has gone between the render and this lookup.
+    let name = client
+        .get(GetTargetRequest { id: id.clone() })
+        .await
+        .map(|target| target.into_inner().name)
+        .unwrap_or_else(|_| id.clone());
+
+    page(
+        "Proxy config",
+        Nav::Targets,
+        render::ingress_config(&id, &name, &response),
+    )
+}
+
 /// Parses the labels textarea, one `key=value` per line.
 pub(super) fn parse_labels(raw: &str) -> std::collections::HashMap<String, String> {
     raw.lines()

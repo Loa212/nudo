@@ -19,9 +19,10 @@ observability story that, until now, only containerised workloads had.
 │                              │ ───────► │                     │
 │  nudo-server   gRPC API      │          │  OS + systemd       │
 │  nudo-web      dashboard     │          │  your binary        │
-│  nudo-mcp      agent tools   │          │  ...and nothing     │
-│  nudo          CLI           │          │     else            │
-└──────────────┬───────────────┘          └─────────────────────┘
+│  nudo-mcp      agent tools   │          │  (+ Caddy, if you   │
+│  nudo          CLI           │          │   asked for a       │
+└──────────────┬───────────────┘          │   domain)           │
+               │                          └─────────────────────┘
                │ ssh (optional)
                ▼
 ┌──────────────────────────────┐
@@ -34,7 +35,7 @@ observability story that, until now, only containerised workloads had.
 **No agent is installed on a target.** Everything — probing, writing units,
 uploading releases, reading the journal, opening a shell — is an SSH channel
 opened from the control plane. A target runs the OS, systemd, and the binary you
-deployed.
+deployed — plus Caddy, if you asked nudo to put a service on a domain.
 
 ---
 
@@ -333,6 +334,144 @@ acceptable, that machine should not be a build host.
 
 ---
 
+## Custom domains and HTTPS
+
+By default a deployed service is reached by IP and port, and putting a domain
+and a certificate in front of it is your problem. Ingress makes it nudo's: give
+a service a domain, and it is served over HTTPS with a valid certificate.
+
+nudo manages [Caddy](https://caddyserver.com) as a systemd unit on the target —
+installed, configured and reloaded the same way it manages anything else on a
+host. Caddy because its automatic HTTPS is a default rather than a
+configuration, which means **nudo implements no ACME and never handles a
+certificate or its private key**. Certificates are Caddy's problem entirely.
+
+Turn it on for a target, then give a service a domain and the port it listens
+on:
+
+```sh
+nudo targets ingress enable tgt_abc123 --acme-email ops@example.com
+nudo services domain svc_abc123 --route api.example.com:8080
+```
+
+Point an `A` record at the target and that is the whole of it. The certificate
+is issued on the first request to the domain.
+
+A service can answer on several addresses — routes are replaced by what you
+pass, not added to:
+
+```sh
+# an apex and its www, both reaching the same port
+nudo services domain svc_abc123 --route example.com:8080 \
+                                --route www.example.com:8080
+
+# a path under a domain whose root is served by something else
+nudo services domain svc_api --route example.com/api:9090
+
+# stop routing to it
+nudo services domain svc_abc123 --clear
+```
+
+A path is **stripped** before the request reaches the service: routed at
+`/api`, it sees `/users` rather than `/api/users`. A service that needs the
+prefix intact should be routed at the domain root instead.
+
+```sh
+nudo targets ingress check tgt_abc123    # is the proxy up, does DNS point here
+nudo targets ingress show tgt_abc123     # the config nudo would write
+nudo targets ingress reload tgt_abc123   # re-apply it
+```
+
+A deploy re-renders its target's routes on the connection it already has, so a
+domain follows its service without a separate step. Changing a route reloads
+immediately rather than waiting for the next deploy.
+
+### gRPC
+
+A gRPC server needs HTTP/2 all the way through. A proxy that terminates HTTP/2
+at the edge and talks HTTP/1.1 to the backend breaks every call — so nudo has
+to be told, rather than guessing:
+
+```sh
+nudo services domain svc_grpc --route grpc.example.com:50051 --grpc
+```
+
+That renders `reverse_proxy h2c://127.0.0.1:50051`, which is cleartext HTTP/2 to
+the service and TLS at the edge. The dashboard's routing card has the same
+checkbox, and marks such routes **gRPC** in the route table.
+
+Worth knowing if you are coming from Coolify: it has no equivalent. Its label
+generation emits HTTP routers only — no `h2c`, no TCP or UDP routers — so a gRPC
+service behind Coolify is reached over HTTP/1.1.
+
+Raw TCP and UDP are **not** supported. Caddy can do it with the `layer4` plugin,
+which is not in the standard binary; a service that is neither HTTP nor gRPC
+still needs its port reached directly.
+
+### DNS is the thing that goes wrong
+
+A domain whose record does not point at the target cannot be issued a
+certificate, and Caddy will retry indefinitely without saying so anywhere
+obvious. `ingress check` diagnoses it explicitly:
+
+```
+ok   installed                caddy 2.7.6
+ok   running                  caddy.service is active
+ok   admin_api                answering on 127.0.0.1:2019
+ok   config                   the config on the host is what nudo would write
+FAIL api.example.com          does not resolve
+
+note: api.example.com does not resolve yet. Create an A or AAAA record pointing
+      it at this host, or a certificate cannot be issued.
+```
+
+The lookup runs from the target rather than from the control plane, because what
+matters for issuance is what that host and the world see. A domain resolving
+somewhere that is not this host is reported as a note rather than a failure —
+that is what a CDN or a load balancer in front looks like, and nudo cannot tell
+the difference from here.
+
+### If a reload fails
+
+The config is written to a temporary path and validated *before* it replaces the
+live one, so a typo in a domain is caught while the proxy is still serving what
+it was serving. If it is rejected anyway, Caddy keeps the previous config: the
+site stays up, the target is marked **degraded**, and the reason is on the
+target's page.
+
+That is worth knowing because a degraded proxy is easy to miss — the site works,
+it is just serving the routes from before your change. A deploy reports it and
+carries on rather than failing: the service is up and healthy, and only the
+routing did not take.
+
+### Ports
+
+Once services declare ports, nudo can see that two on the same host both want
+`8080`, and it refuses the second with a message naming the first. It does not
+assign ports — that stays your choice. The same port on two different targets is
+fine.
+
+### Bringing your own proxy
+
+If you already run nginx or Traefik and are not giving it up, use external mode:
+
+```sh
+nudo targets ingress enable tgt_abc123 --mode external
+nudo targets ingress show tgt_abc123 > /etc/caddy/Caddyfile
+```
+
+nudo renders the config from your services' domains and never touches the host.
+You apply it however you like.
+
+### Ingress on a latency-critical host
+
+Refused without `--allow-latency-critical`, like every other mutation of such a
+host. A reverse proxy adds a hop to every request and a process competing for
+CPU and cache; on a box tuned for latency that may be exactly wrong. It is
+allowed if you say so explicitly.
+
+---
+
 ## GitHub CD
 
 Under **Sources**, create a GitHub App. nudo generates the manifest, hands your
@@ -417,6 +556,8 @@ Set on the service, in the dashboard or over the API:
   path, or a CLI upload.
 - **Build host** — where a git build runs: the instance default, the control
   plane, or a named [build host](#build-hosts). Never the deploy target.
+- **Domain and port** — where the service is reachable from outside, on targets
+  with [ingress](#custom-domains-and-https) enabled. Both or neither.
 - **Unit** — description, exec args, working directory, user, group, restart
   policy, ordering, and the latency knobs (`CPUAffinity`, `Nice`,
   `IOSchedulingClass`) plus arbitrary extra directives written verbatim.
@@ -527,7 +668,14 @@ deploy log does not say where the build ran, and that the workspace is gone
 afterwards — on the failing path as well as the succeeding one. It also pushes a
 second commit whose build produces a service that never becomes ready, and
 asserts the rollback restored the *previously built* release and that it is
-serving again:
+serving again.
+
+The ingress tests install a real Caddy in the container, render the config from
+a service's domain, start it, and confirm a request to that domain reaches the
+service — Caddy accepting what nudo renders is not something a unit test can
+establish. They also assert a hand-edited config is replaced by the rendered
+one, and that a domain which does not resolve produces a warning rather than a
+failed check.
 
 ```sh
 cargo test -p nudo-server --features e2e --test e2e -- --test-threads=1

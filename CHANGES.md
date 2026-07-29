@@ -52,6 +52,33 @@ a latency-critical build host is a choice an operator made, and folding it into
 the checks would fail a CI step gating on readiness for a host that is working
 exactly as configured.
 
+**A second addition: ingress.** No new service — ingress is configured per
+target and there is exactly one per target, so its five RPCs
+(`EnableIngress`, `DisableIngress`, `RenderIngress`, `ReloadIngress`,
+`CheckIngress`) go on `Targets`. Along with them:
+
+- `Ingress`, and `Target.ingress` (field 14). Unset means no ingress, which is
+  what every target that predates this has and what a new one gets until an
+  operator asks otherwise.
+- `Service.routes` (field 13), a repeated `Route`. Empty — every existing
+  service — means not routed, which is exactly what is true of every service
+  today. Nothing that predates this becomes reachable by domain.
+- `Route`, carrying a domain, an optional path, a port and a protocol. It is
+  both the stored model and what the render and check RPCs return, so a caller
+  can show a table of what is routed where rather than parse a Caddyfile.
+- `Route.Protocol`, whose only non-default value is `H2C` — cleartext HTTP/2,
+  which is what a gRPC server speaks.
+
+`CheckIngressResponse` carries `warnings` for the same reason
+`CheckBuildHostResponse` does, and the case is the DNS one: a domain whose
+record does not point here yet cannot be issued a certificate, but the record
+may be minutes away, and failing the check would break a CI step on a normal
+step of setting this up.
+
+`EnableIngress` and `DisableIngress` return `Target` rather than a response
+message of their own, matching `Create`, `Update` and `AcceptHostKey` — a caller
+sees the resulting state in one round trip.
+
 Two places where the proto leaves a gap are handled without changing it:
 
 - **`DeployRequest.auto_rollback_on_failure`** is documented as "default true
@@ -172,6 +199,136 @@ a property of how that host is run — one-shot container, ephemeral VM, fresh
 instance per build — not something nudo can implement inside itself. The risk is
 that registering a build host *reads* as a sandbox, so the dashboard says
 otherwise on every build host's page, not only shared ones.
+
+### Ingress
+
+The issue that asked for custom domains left four questions open, and one
+observation that decides the rest: Coolify routes by pushing Traefik labels onto
+a container and letting the proxy read them off the Docker socket. That does not
+translate. nudo's unit of deployment is a systemd process on a host it does not
+otherwise manage, so there is no ambient proxy watching anything and no socket
+to attach a label to. The same feature has to *manage a proxy* rather than
+*annotate a container*, and everything below follows from that.
+
+**Caddy, and only Caddy.** Coolify offers Traefik, Nginx, Caddy and None.
+Starting with one done well beats four done partly, and Caddy is the one whose
+automatic HTTPS is a default rather than a configuration — which is what lets
+nudo implement no ACME at all and never handle a certificate or its private key.
+It is also a single static binary, so installing it is the thing this tool
+already knows how to do.
+
+**Ingress is a property of the target, not a service.** Making Caddy an ordinary
+nudo service was the tempting answer: it would have reused the deploy engine,
+health checks, releases and rollback for free. It was rejected because the proxy
+is the thing every *other* service's traffic passes through — its failure takes
+the whole host offline rather than one app — and being a service would have made
+it deletable, rollback-able and deployable through the paths meant for a
+workload. It also has no artifact source that fits: Caddy comes from its own
+release page, not a git build, a URL or an upload.
+
+**A latency-critical target needs the opt-in, like everything else.** This is
+the one place the answer was already written: ingress is configured *on* a
+target, so `EnableIngress` goes through the same `authorize()` as every other
+mutation of that host. Adding a warn-instead-of-refuse rule here — as build
+hosts have — would have meant two rules to learn for the same flag. The
+dashboard says so before the form is submitted, because a form that submits and
+fails is a worse way to learn it.
+
+**A service has a list of routes, not a domain and a port.** The first version of
+this had the pair on the service, which read like Coolify's UI. Reading its
+`fqdnLabelsForTraefik` rather than its screenshots showed the model is different:
+each entry is parsed as a *URL*, and host, path and port are pulled back out of
+it. A single pair could express none of what that allows — several domains for
+one service, a path under a domain whose root is served by something else, or a
+port that differs per domain. `Service.routes` is a repeated `Route`, which is
+the same model as a comma-separated list of URLs with the parts named instead of
+parsed.
+
+**A path is stripped before the request reaches the service.** Routed at `/api`,
+a service sees `/users` rather than `/api/users` — `handle_path` rather than
+`handle`. This is what Coolify does by default and almost always what is wanted;
+a service needing the prefix intact is routed at the domain root instead. Routes
+are ordered longest-path-first within a domain, because Caddy tries `handle`
+blocks in order and the root has to be the fallback.
+
+**gRPC is a protocol on the route, stated rather than guessed.** gRPC needs
+HTTP/2 end to end; a proxy that terminates HTTP/2 at the edge and speaks
+HTTP/1.1 to the backend breaks every call, silently and in a way that looks like
+the service being broken. Caddy needs one scheme prefix for this — `h2c://` — so
+the cost is small and the failure it prevents is not. Coolify has no equivalent:
+its label generation emits HTTP routers only, with no `h2c` and no TCP or UDP
+routers anywhere, so a gRPC service behind Coolify is reached over HTTP/1.1.
+Raw TCP and UDP remain out of scope, because Caddy needs the `layer4` plugin for
+them and that is not in the standard binary.
+
+**Port collisions are refused, not warned about.** Once services declare a port,
+two on one target claiming the same one is detectable, and the second one can
+never work. The check lives in the store rather than the schema, so the message
+can name the service already holding it — a bare `UNIQUE constraint failed`
+sends an operator to the wrong place. A service may reuse its own port across
+routes, since an apex and its `www` reaching one port is not a collision; only
+another service claiming it is.
+
+**nudo does not implement rollback for the proxy, because Caddy already has
+one.** Its `/load` endpoint restores the previous config if the new one fails,
+without dropping connections. So the discipline here is narrower and better: the
+config is staged to a temporary path, `caddy validate` runs against it while the
+proxy is still serving the old one, and only then is it moved into place and
+reloaded. A typo in a domain is caught before the proxy is ever offered it.
+
+**A reload, never a restart.** A restart drops every connection on the host,
+including those of services nobody was changing. The reload goes through the
+admin API rather than `systemctl reload` so the failure is Caddy's own message
+rather than a systemd exit code.
+
+**A rejected config does not fail the deploy that triggered it.** The service is
+up and healthy; the proxy is still serving its previous routes. Failing the
+deploy would misreport what happened. The target is recorded as degraded with
+the reason, and the dashboard says so — which matters because a degraded proxy
+is easy to miss precisely *because* the site still works.
+
+**The admin API is bound to loopback, always.** It can rewrite the entire
+config, so binding it anywhere reachable would hand over the host. Routes point
+at `127.0.0.1:<port>` for the mirror-image reason: routing to `0.0.0.0` would
+work and would also mean anyone who can reach the host on that port bypasses TLS
+entirely.
+
+**Domains and paths are validated, and the renderer validates them again.** Both
+go into a Caddyfile — the domain as a site address, the path as a matcher — so a
+value carrying a brace or a newline would not merely be wrong: it would let
+whoever set it write arbitrary directives into the config of a proxy that binds
+`:443`. The store refuses those on the way in, and `render` re-checks every route
+and drops any that fails rather than trusting that it did.
+
+Three bugs were caught here by tests written for exactly this. The first version
+of the renderer interpolated the domain raw. The second normalised an invalid
+path to an empty one, which turned "this path is not one nudo will write" into
+"route the whole domain" — silently *widening* what the service receives instead
+of dropping the route. The third echoed the offending value back into the config
+as a skipped-route comment; inert, because it is flattened onto one comment line,
+but there is no reason to carry attacker-controlled text in a file the proxy
+reads, so it now names the service and the reason only.
+
+**DNS that does not point here yet is a warning, not a failure.** It is the
+single most common way this feature disappoints someone — Caddy retries
+indefinitely and says so nowhere an operator looks — so it is diagnosed
+explicitly. But it is a normal state while somebody is still creating the
+record, and failing the check would break a CI step gating on readiness for a
+host that is fine. The lookup runs from the target rather than the control
+plane: split-horizon DNS is common, and what matters for issuance is what the
+host sees. A mismatch is only reported when the host's own addresses are known,
+because behind NAT the public address is not one it can see, and reporting every
+such domain as misconfigured would make the check useless where it is needed.
+
+**External mode exists so an operator with nginx is not asked to give it up.**
+nudo renders the config it *would* write and never touches the host. That is the
+whole of the mode, and it costs almost nothing: the renderer already had to
+exist for the preview.
+
+**Load balancing across targets is out of scope, and the model does not preclude
+it.** Each target gets its own proxy, so a domain lives on one host. The unique
+index on `domain` is what enforces that today; relaxing it later to a domain
+with several backends does not require moving ingress off the target.
 
 ### The latency-critical guardrail
 
@@ -645,10 +802,13 @@ delivered code.
 
 **Pull-request preview environments.** `pull_request` deliveries are
 authenticated, acknowledged with 200 so GitHub does not retry and disable the
-hook, and recorded — but they do not deploy. A preview environment needs an
-addressing scheme, DNS or a proxy, and a lifecycle for tearing it down; on
-bare-metal systemd targets it also needs port allocation. Coolify's
-implementation of this is substantial and assumes Docker for the isolation.
+hook, and recorded — but they do not deploy. Ingress removes one of the
+blockers: there is now a proxy to put a preview behind, and a domain is a
+property a service can carry. What remains is an addressing scheme (a
+per-PR subdomain, which means a wildcard certificate or one issuance per PR), a
+lifecycle for tearing it down when the PR closes, and port allocation, since
+nudo detects a collision but does not assign a free port. Coolify's
+implementation is substantial and assumes Docker for the isolation.
 
 **Fork-PR author-association gating.** Follows from the above; there is nothing
 to gate.

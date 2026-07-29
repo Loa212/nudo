@@ -480,3 +480,74 @@ fn storing_and_rotating_a_secret_are_different_commands() {
         "--replace must not be silently accepted"
     );
 }
+
+// ---- route parsing ----
+
+#[test]
+fn a_route_is_parsed_from_domain_and_port() {
+    let route = crate::service_commands::parse_route("api.example.com:8080", false).expect("parse");
+    assert_eq!(route.domain, "api.example.com");
+    assert_eq!(route.port, 8080);
+    assert!(route.path.is_empty());
+    assert_eq!(route.protocol_or_default(), route::Protocol::Unspecified);
+}
+
+#[test]
+fn a_route_can_carry_a_path() {
+    let route = crate::service_commands::parse_route("example.com/api:9090", false).expect("parse");
+    assert_eq!(route.domain, "example.com");
+    assert_eq!(route.path, "/api");
+    assert_eq!(route.port, 9090);
+}
+
+#[test]
+fn a_pasted_url_is_accepted_rather_than_refused() {
+    // The obvious mistake, and its meaning is unambiguous.
+    for raw in [
+        "https://api.example.com:8080",
+        "http://api.example.com:8080",
+    ] {
+        let route = crate::service_commands::parse_route(raw, false).expect("parse");
+        assert_eq!(route.domain, "api.example.com");
+        assert_eq!(route.port, 8080);
+    }
+}
+
+#[test]
+fn the_grpc_flag_sets_the_protocol() {
+    let route =
+        crate::service_commands::parse_route("grpc.example.com:50051", true).expect("parse");
+    assert_eq!(
+        route.protocol_or_default(),
+        route::Protocol::H2c,
+        "gRPC needs HTTP/2 end to end, so the protocol has to reach the server"
+    );
+}
+
+#[test]
+fn a_route_without_a_port_is_refused_where_the_argument_is() {
+    // Refused in the CLI so the message names the argument, rather than
+    // arriving as a gRPC status about a field.
+    let error = crate::service_commands::parse_route("api.example.com", false)
+        .expect_err("a port is required");
+    assert!(format!("{error:#}").contains("needs a port"), "{error:#}");
+}
+
+#[test]
+fn a_route_with_a_bad_domain_is_refused_before_it_is_sent() {
+    assert!(crate::service_commands::parse_route("not a domain:8080", false).is_err());
+    assert!(crate::service_commands::parse_route("localhost:8080", false).is_err());
+    assert!(crate::service_commands::parse_route("api.example.com:abc", false).is_err());
+    assert!(crate::service_commands::parse_route("api.example.com:0", false).is_err());
+}
+
+#[test]
+fn a_route_that_could_inject_proxy_config_is_refused() {
+    assert!(
+        crate::service_commands::parse_route("evil.com {\n\trespond \"x\"\n}:8080", false).is_err()
+    );
+    assert!(
+        crate::service_commands::parse_route("api.example.com/a b:8080", false).is_err(),
+        "a path with whitespace must not reach the renderer"
+    );
+}
