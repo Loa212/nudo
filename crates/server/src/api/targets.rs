@@ -424,6 +424,31 @@ impl Targets for TargetsService {
             .await
             .map_err(super::invalid)?;
 
+        let target = self.context.require_target(&request.target_id).await?;
+
+        // Install and start the proxy now, so enabling ingress is one step
+        // rather than a setting plus a reload somebody has to know to run.
+        //
+        // A failure here does not fail the request: the configuration is
+        // already stored and correct, and the host may simply be down. The
+        // target is left pending with the reason recorded, and the next reload
+        // or deploy retries — which is a better outcome than refusing to
+        // remember what the operator asked for.
+        if mode == ingress::Mode::Managed
+            && let Err(error) = self.provision(&target).await
+        {
+            let message = format!("{error:#}");
+            tracing::warn!(%message, target = %target.name, "provisioning ingress failed");
+            if let Err(error) = self
+                .context
+                .store
+                .set_ingress_status(&target.id, ingress::Status::Pending, None, &message)
+                .await
+            {
+                tracing::warn!(%error, "recording ingress status failed");
+            }
+        }
+
         Ok(Response::new(
             self.context.require_target(&request.target_id).await?,
         ))
@@ -614,6 +639,45 @@ impl TargetsService {
             .connect_ssh(&target.id, &ssh_target)
             .await
             .map_err(|error| Status::failed_precondition(format!("{error:#}")))
+    }
+
+    /// Installs the proxy, writes the current config and starts it.
+    ///
+    /// The whole of "enable ingress" against a real host, in the order that
+    /// keeps it safe to repeat: install is idempotent, the config is written
+    /// and validated before the proxy is asked to serve it, and starting an
+    /// already-running unit is a no-op.
+    async fn provision(&self, target: &Target) -> anyhow::Result<()> {
+        let session = self
+            .connect_for_ingress(target)
+            .await
+            .map_err(|status| anyhow::anyhow!("{}", status.message()))?;
+
+        let result = async {
+            let version = crate::ingress::reconcile::install(&session).await?;
+            let services = self.context.store.routed_services(&target.id).await?;
+
+            // Writes the config and brings the proxy up: on a host where it is
+            // not running yet — every host, the first time — starting it is how
+            // the config gets applied, and `reload` does that rather than
+            // talking to an admin API that is not listening.
+            let outcome = crate::ingress::reconcile::reload(&session, target, &services).await?;
+            if !outcome.ok {
+                anyhow::bail!("the proxy rejected the config: {}", outcome.error);
+            }
+
+            anyhow::Ok(version)
+        }
+        .await;
+
+        let _ = session.close().await;
+        let version = result?;
+
+        self.context
+            .store
+            .set_ingress_status(&target.id, ingress::Status::Active, Some(&version), "")
+            .await?;
+        Ok(())
     }
 
     /// Records what a reload did against the target.

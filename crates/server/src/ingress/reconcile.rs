@@ -90,6 +90,28 @@ pub async fn reload(
         .require_success("installing the proxy config")?;
 
     // ---- reload ----
+    // A reload needs something to reload: `caddy reload` talks to the admin API
+    // of a running process, and against a stopped one it fails with a message
+    // about the admin endpoint — which would report a perfectly good config as
+    // rejected. On a host where the proxy is not up yet, which is every host
+    // the first time, starting it *is* the way to apply the config.
+    if !is_running(session).await {
+        return match start(session).await {
+            Ok(()) => Ok(ReloadOutcome {
+                ok: true,
+                error: String::new(),
+                routes,
+                version: caddy_version(session).await,
+            }),
+            Err(error) => Ok(ReloadOutcome {
+                ok: false,
+                error: format!("{error:#}"),
+                routes,
+                version: None,
+            }),
+        };
+    }
+
     // Through the admin API rather than `systemctl reload`, so the failure is
     // Caddy's own message rather than a systemd exit code. `--force` because
     // Caddy skips a reload it believes is a no-op, and "the config on disk
@@ -206,23 +228,31 @@ async fn install_unit(session: &SshSession) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Starts the proxy if it is not running.
-pub async fn ensure_running(session: &SshSession) -> anyhow::Result<()> {
-    let active = session
+/// Whether the proxy unit is currently up.
+///
+/// A failure to ask is reported as "not running": the caller uses this to
+/// decide between starting and reloading, and starting something already up is
+/// a no-op while reloading something that is down is an error.
+pub async fn is_running(session: &SshSession) -> bool {
+    session
         .exec(&format!(
             "systemctl is-active --quiet {} && echo running || echo stopped",
             quote(UNIT_NAME)
         ))
-        .await?;
+        .await
+        .map(|result| result.trimmed() == "running")
+        .unwrap_or(false)
+}
 
-    if active.trimmed() == "running" {
-        return Ok(());
-    }
-
+/// Starts the proxy, reporting its own diagnostics if it will not come up.
+pub async fn start(session: &SshSession) -> anyhow::Result<()> {
     let start = session
         .exec(&format!("systemctl start {}", quote(UNIT_NAME)))
         .await?;
+
     if !start.ok() {
+        // The unit's own output rather than a bare exit code, since that is
+        // what says why — a config it will not accept, a port already bound.
         let status = session
             .exec(&format!(
                 "systemctl status --no-pager --lines=20 {} 2>&1 || true",

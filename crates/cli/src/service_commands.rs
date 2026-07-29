@@ -111,6 +111,69 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
                 format::releases_table(&list)
             });
         }
+
+        ServiceCommand::Domain {
+            id,
+            domain,
+            port,
+            clear,
+        } => {
+            // Both or neither, refused here rather than server-side so the
+            // message names the flag that is missing.
+            if !clear {
+                match (domain, port) {
+                    (Some(_), Some(_)) => {}
+                    (None, None) => bail!(
+                        "pass --domain and --port to route this service, or \
+                         --clear to stop routing to it"
+                    ),
+                    (Some(_), None) => bail!(
+                        "--domain needs --port: nudo has to know what port the \
+                         service listens on to route to it"
+                    ),
+                    (None, Some(_)) => bail!("--port needs --domain to route from"),
+                }
+            }
+
+            let updated = client
+                .update(authenticated(
+                    cli,
+                    UpdateServiceRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                        service: Some(Service {
+                            domain: if *clear {
+                                String::new()
+                            } else {
+                                domain.clone().unwrap_or_default()
+                            },
+                            port: if *clear { 0 } else { port.unwrap_or(0) },
+                            ..Default::default()
+                        }),
+                        // Named explicitly: an empty mask means "apply every
+                        // field", which here would blank the rest of the service.
+                        update_mask: vec!["domain".to_string(), "port".to_string()],
+                    },
+                ))
+                .await?
+                .into_inner();
+
+            if updated.domain.is_empty() {
+                println!(
+                    "{}{} is no longer routed",
+                    dry_run_prefix(cli),
+                    updated.name
+                );
+            } else {
+                println!(
+                    "{}{} -> https://{} (proxied to :{})",
+                    dry_run_prefix(cli),
+                    updated.name,
+                    updated.domain,
+                    updated.port
+                );
+            }
+        }
     }
 
     Ok(())

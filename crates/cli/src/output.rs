@@ -393,6 +393,64 @@ impl From<&CheckBuildHostResponse> for JsonChecks {
     }
 }
 
+impl From<&CheckIngressResponse> for JsonChecks {
+    fn from(response: &CheckIngressResponse) -> Self {
+        Self {
+            ok: response.ok,
+            checks: response
+                .checks
+                .iter()
+                .map(|c| JsonCheck {
+                    name: c.name.clone(),
+                    ok: c.ok,
+                    detail: c.detail.clone(),
+                })
+                .collect(),
+            // A domain that does not resolve here yet is the common case while
+            // someone is still creating the record, so it warns rather than
+            // failing the check.
+            warnings: response.warnings.clone(),
+        }
+    }
+}
+
+/// The rendered proxy config, for `--output json`.
+#[derive(serde::Serialize)]
+pub(super) struct JsonIngressConfig {
+    config: String,
+    path: String,
+    routes: Vec<JsonRoute>,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct JsonRoute {
+    service_id: String,
+    service_name: String,
+    domain: String,
+    port: u32,
+}
+
+impl From<&RenderIngressResponse> for JsonIngressConfig {
+    fn from(response: &RenderIngressResponse) -> Self {
+        Self {
+            config: response.config.clone(),
+            path: response.path.clone(),
+            routes: response.routes.iter().map(JsonRoute::from).collect(),
+        }
+    }
+}
+
+impl From<&Route> for JsonRoute {
+    fn from(route: &Route) -> Self {
+        Self {
+            service_id: route.service_id.clone(),
+            service_name: route.service_name.clone(),
+            domain: route.domain.clone(),
+            port: route.port,
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub(super) struct JsonLogLine {
     at: String,

@@ -213,6 +213,48 @@ enum TargetCommand {
         #[arg(long, conflicts_with = "accept")]
         forget: bool,
     },
+    /// Put services on this host behind a domain over HTTPS.
+    #[command(subcommand)]
+    Ingress(IngressCommand),
+}
+
+/// Ingress: the reverse proxy that puts a service on a domain.
+///
+/// Under `targets` rather than as its own noun because there is exactly one per
+/// target and it is a property of the host, not a thing that exists on its own.
+///
+/// Certificates are Caddy's problem — nudo implements no ACME and never handles
+/// a private key for one. What nudo does is install Caddy, write its config
+/// from the domains your services declare, and reload it.
+#[derive(Subcommand, Debug)]
+enum IngressCommand {
+    /// Install and start the proxy on this target.
+    Enable {
+        target: String,
+        /// `managed` for nudo to install and drive Caddy, `external` to render
+        /// the config for a proxy you run yourself without nudo touching it.
+        #[arg(long, default_value = "managed")]
+        mode: String,
+        /// Where Let's Encrypt sends expiry warnings. Optional, but without it
+        /// the first notice of an expiring certificate is the outage.
+        #[arg(long)]
+        acme_email: Option<String>,
+        /// Caddy's admin API port, on loopback.
+        #[arg(long)]
+        admin_port: Option<u32>,
+    },
+    /// Stop the proxy, leaving its config on disk.
+    Disable { target: String },
+    /// Print the proxy config nudo would write, without writing it.
+    Show { target: String },
+    /// Write the config and reload the proxy.
+    ///
+    /// A deploy does this for its own target, so this is for when the host and
+    /// the database have drifted — a rebuilt machine, a hand-edited config — or
+    /// to retry a reload that failed.
+    Reload { target: String },
+    /// Check the proxy is up and the domains resolve here.
+    Check { target: String },
 }
 
 /// Build hosts: where a build runs when it does not run on the control plane.
@@ -343,6 +385,23 @@ enum ServiceCommand {
     /// Show a service's retained releases.
     Releases {
         id: String,
+    },
+    /// Put this service on a domain, or take it off one.
+    ///
+    /// Needs ingress enabled on the service's target — see
+    /// `nudo targets ingress enable`. The proxy is reloaded immediately, so the
+    /// domain works as soon as DNS points at the host.
+    Domain {
+        id: String,
+        /// The hostname to route, e.g. `api.example.com`.
+        #[arg(long, conflicts_with = "clear")]
+        domain: Option<String>,
+        /// The port the service listens on, on the target's loopback.
+        #[arg(long, conflicts_with = "clear")]
+        port: Option<u32>,
+        /// Stop routing to this service.
+        #[arg(long)]
+        clear: bool,
     },
 }
 
