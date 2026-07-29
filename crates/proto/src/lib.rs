@@ -256,6 +256,127 @@ impl build_host::Status {
     }
 }
 
+impl ingress::Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "none",
+            Self::Managed => "managed",
+            Self::External => "external",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "managed" => Self::Managed,
+            "external" => Self::External,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+impl ingress::Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Degraded => "degraded",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "pending" => Self::Pending,
+            "active" => Self::Active,
+            "degraded" => Self::Degraded,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+/// Caddy's own default admin port, used when a target does not name one.
+pub const DEFAULT_ADMIN_PORT: u32 = 2019;
+
+/// Checks a domain is one that can safely be written into a proxy config.
+///
+/// This is a validator rather than a sanitiser on purpose. The domain ends up
+/// inside a Caddyfile as a site address, so a value containing whitespace, a
+/// brace or a newline would not merely be wrong — it would let whoever set it
+/// write arbitrary directives into the config of a proxy running as root. There
+/// is no useful "clean up and continue" for that, so anything not obviously a
+/// hostname is refused here, at the edge, and the renderer downstream can treat
+/// what it receives as safe.
+///
+/// Deliberately stricter than the DNS specification: no trailing dot, no
+/// underscores, no IP literals. Someone with an exotic hostname is inconvenienced
+/// and can say so; the alternative failure mode is a config injection.
+pub fn validate_domain(domain: &str) -> Result<(), String> {
+    let domain = domain.trim();
+
+    if domain.is_empty() {
+        return Err("a domain is required".to_string());
+    }
+    if domain.len() > 253 {
+        return Err(format!(
+            "{domain:?} is longer than the 253 characters DNS allows"
+        ));
+    }
+
+    // A wildcard is legitimate and Caddy supports it, but only as the leftmost
+    // label — "*.example.com", never "a.*.example.com".
+    let body = domain.strip_prefix("*.").unwrap_or(domain);
+    if body.contains('*') {
+        return Err(format!(
+            "{domain:?} may only use a wildcard as its first label, as in \
+             \"*.example.com\""
+        ));
+    }
+
+    if !body.contains('.') {
+        return Err(format!(
+            "{domain:?} is not a fully qualified domain — a certificate cannot \
+             be issued for a bare name"
+        ));
+    }
+
+    for label in body.split('.') {
+        if label.is_empty() {
+            return Err(format!("{domain:?} has an empty label"));
+        }
+        if label.len() > 63 {
+            return Err(format!(
+                "{domain:?} has a label longer than the 63 characters DNS allows"
+            ));
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(format!("{domain:?} has a label starting or ending with '-'"));
+        }
+        if !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err(format!(
+                "{domain:?} contains something other than letters, digits, \
+                 '-' and '.'"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks a port is one a service can actually be routed to.
+///
+/// Zero means unset rather than a port, and anything above 65535 cannot be
+/// bound. Both are refused here so the renderer never has to consider them.
+pub fn validate_port(port: u32) -> Result<(), String> {
+    match port {
+        0 => Err("a port is required to route to a service".to_string()),
+        1..=65535 => Ok(()),
+        _ => Err(format!("{port} is not a port; the highest is 65535")),
+    }
+}
+
 impl source::Kind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -385,6 +506,92 @@ mod tests {
         ] {
             assert_eq!(build_host::Status::parse(status.as_str()), status);
         }
+    }
+
+    #[test]
+    fn ingress_mode_and_status_round_trip_through_their_string_forms() {
+        for mode in [
+            ingress::Mode::Unspecified,
+            ingress::Mode::Managed,
+            ingress::Mode::External,
+        ] {
+            assert_eq!(ingress::Mode::parse(mode.as_str()), mode);
+        }
+        for status in [
+            ingress::Status::Pending,
+            ingress::Status::Active,
+            ingress::Status::Degraded,
+        ] {
+            assert_eq!(ingress::Status::parse(status.as_str()), status);
+        }
+    }
+
+    #[test]
+    fn ordinary_domains_are_accepted() {
+        for domain in [
+            "example.com",
+            "api.example.com",
+            "a.b.c.d.example.com",
+            "xn--bcher-kva.example.com", // punycode, already ascii
+            "*.example.com",
+            "service-1.example.com",
+        ] {
+            assert!(
+                validate_domain(domain).is_ok(),
+                "{domain} should be accepted: {:?}",
+                validate_domain(domain)
+            );
+        }
+    }
+
+    #[test]
+    fn a_domain_that_could_inject_caddy_directives_is_refused() {
+        // The whole reason this validator exists. Each of these, written into a
+        // Caddyfile unescaped, ends the site block and starts something the
+        // operator did not ask for — in the config of a proxy running as root.
+        for attack in [
+            "example.com {\n  respond \"pwned\"\n}",
+            "example.com }\nimport /etc/passwd\n{",
+            "example.com\nexample.org",
+            "example.com respond",
+            "example.com # comment",
+            "exam ple.com",
+            "example.com\t{",
+        ] {
+            assert!(
+                validate_domain(attack).is_err(),
+                "{attack:?} must be refused — it can rewrite the proxy config"
+            );
+        }
+    }
+
+    #[test]
+    fn a_domain_that_is_merely_malformed_is_refused_with_a_reason() {
+        assert!(validate_domain("").is_err());
+        assert!(validate_domain("   ").is_err());
+        // A bare name cannot be issued a certificate.
+        assert!(validate_domain("localhost").is_err());
+        // A wildcard is only legitimate as the leftmost label.
+        assert!(validate_domain("a.*.example.com").is_err());
+        assert!(validate_domain("*example.com").is_err());
+        // Empty labels, and the trailing dot this deliberately does not accept.
+        assert!(validate_domain("example..com").is_err());
+        assert!(validate_domain("example.com.").is_err());
+        // Labels may not start or end with a hyphen.
+        assert!(validate_domain("-bad.example.com").is_err());
+        assert!(validate_domain("bad-.example.com").is_err());
+        // Length limits.
+        assert!(validate_domain(&format!("{}.example.com", "a".repeat(64))).is_err());
+        assert!(validate_domain(&format!("{}.com", "a.".repeat(200))).is_err());
+    }
+
+    #[test]
+    fn a_port_outside_the_bindable_range_is_refused() {
+        assert!(validate_port(0).is_err(), "zero means unset, not a port");
+        assert!(validate_port(65536).is_err());
+        assert!(validate_port(1).is_ok());
+        assert!(validate_port(8080).is_ok());
+        assert!(validate_port(65535).is_ok());
     }
 
     #[test]

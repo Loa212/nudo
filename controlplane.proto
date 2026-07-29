@@ -71,6 +71,67 @@ message Target {
   // The pinned SSH host key, trusted on first use and verified on every
   // connection after that. Public key material, so it is safe to return.
   HostKey host_key = 13;
+
+  // How traffic reaches the services on this host, if nudo is involved at all.
+  // Unset means no ingress, which is what every target that predates this
+  // field has and what a new one gets until an operator asks for otherwise.
+  Ingress ingress = 14;
+}
+
+// A target's reverse proxy: whether nudo manages one, and what state it is in.
+//
+// Deliberately a property of the target rather than a service of its own. A
+// proxy is not another workload on the box — it is the thing every workload's
+// traffic passes through, so its failure takes the whole host offline rather
+// than one app. Modelling it as a service would have reused the deploy engine,
+// but it would also have made it deletable, rollback-able and deployable by the
+// same paths as an ordinary app, which is exactly the handling it should not
+// get. It has no artifact source either: Caddy comes from its own release page,
+// not from a git build or an upload.
+message Ingress {
+  enum Mode {
+    // No ingress. Reaching a service is the operator's problem, as it was
+    // before this existed.
+    MODE_UNSPECIFIED = 0;
+    // nudo installs Caddy, writes its config, and reloads it.
+    MANAGED = 1;
+    // A proxy is already on this host and the operator drives it. nudo renders
+    // the config it *would* write, so it can be copied, but never touches the
+    // host. For someone with an existing nginx they are not giving up.
+    EXTERNAL = 2;
+  }
+  Mode mode = 1;
+
+  // Where Caddy's admin API listens. Loopback-only; the reload goes through it
+  // rather than through a restart, because a restart drops connections for
+  // every other service on the host.
+  uint32 admin_port = 2;
+
+  // The email Let's Encrypt gets for expiry warnings. Optional — Caddy issues
+  // certificates without one — but strongly wanted, since without it the only
+  // notice of an expiring certificate is the outage.
+  string acme_email = 3;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    // Configured but nudo has not yet installed or reached it.
+    PENDING = 1;
+    // Installed, reachable, and serving the config nudo last wrote.
+    ACTIVE = 2;
+    // Installed but the last reload failed, or it is not answering. The routes
+    // it is serving are the previous ones.
+    DEGRADED = 3;
+  }
+  Status status = 4;
+
+  // Caddy's version, as it reports itself. Empty until first installed.
+  string version = 5;
+
+  google.protobuf.Timestamp last_reload_at = 6;
+  // Why the last reload failed, empty when it did not. Kept rather than only
+  // logged: a degraded proxy is found by looking at the target, not by
+  // remembering which deploy broke it.
+  string last_error = 7;
 }
 
 // A target's pinned host key, and any change waiting to be reviewed.
@@ -169,6 +230,102 @@ message CheckTargetResponse {
     string detail = 3;
   }
   repeated Check checks = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Ingress — how traffic from the outside reaches a service
+// ---------------------------------------------------------------------------
+
+// Turns ingress on for a target, or changes its settings.
+//
+// Installing a proxy on a host is a mutation of that host, so it goes through
+// the same authorization as any other: on a latency-critical target it needs
+// `allow_latency_critical`. That is deliberate rather than incidental — putting
+// a proxy in front of a latency-tuned box is precisely the kind of change the
+// flag exists to make somebody say out loud.
+message EnableIngressRequest {
+  Mutation mutation = 1;
+  string target_id = 2;
+  Ingress.Mode mode = 3;
+  // Defaults to 2019, Caddy's own default, when zero.
+  uint32 admin_port = 4;
+  string acme_email = 5;
+}
+
+// Turns ingress off. The proxy is stopped and disabled but its config is left on
+// disk: an operator turning ingress off to debug something should not have to
+// reconstruct it, and the file is inert once the unit is not running.
+message DisableIngressRequest {
+  Mutation mutation = 1;
+  string target_id = 2;
+}
+
+// The config nudo would write for this target, without writing it.
+//
+// The `RenderUnit` of ingress, and for the same reason: the operator sees what
+// is about to be applied before it is applied. It is also the whole of what
+// EXTERNAL mode offers — render it, copy it, run your own proxy.
+message RenderIngressRequest { string target_id = 1; }
+
+message RenderIngressResponse {
+  string config = 1;
+  // Where it would be written on the target.
+  string path = 2;
+  // The routes the config encodes, in the order they appear. Lets a caller show
+  // a table rather than parse a Caddyfile.
+  repeated Route routes = 3;
+}
+
+// One service's route through the proxy.
+message Route {
+  string service_id = 1;
+  string service_name = 2;
+  string domain = 3;
+  uint32 port = 4;
+}
+
+// Writes the config and reloads the proxy.
+//
+// Normally implicit: a deploy re-renders the routes for its target, so an
+// operator rarely calls this. It exists for the case where the proxy and the
+// database have drifted — a host rebuilt underneath nudo, a hand-edited config
+// — and for retrying a reload that failed.
+message ReloadIngressRequest {
+  Mutation mutation = 1;
+  string target_id = 2;
+}
+
+message ReloadIngressResponse {
+  bool ok = 1;
+  // What the proxy said when it rejected the config, empty when it did not.
+  string error = 2;
+  repeated Route routes = 3;
+}
+
+// Diagnoses whether ingress on this target can actually serve its domains.
+//
+// The check that matters is DNS: a domain whose A record does not point at this
+// host cannot be issued a certificate, and Caddy will retry indefinitely
+// without saying why in a place anyone looks. That failure is the single most
+// common way this feature disappoints someone, so it is diagnosed explicitly
+// rather than left as a pending state.
+message CheckIngressRequest { string target_id = 1; }
+
+message CheckIngressResponse {
+  bool ok = 1;
+  message Check {
+    // "installed", "running", "admin_api", "config", or a domain name for the
+    // per-domain DNS checks.
+    string name = 1;
+    bool ok = 2;
+    string detail = 3;
+  }
+  repeated Check checks = 2;
+  // Non-fatal notes: a domain that does not resolve here yet is a warning
+  // rather than a failure, because the operator may be about to create the
+  // record. Kept out of `ok` for the same reason as on a build host — a CI step
+  // gating on readiness should not fail on a state that is merely early.
+  repeated string warnings = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +561,19 @@ message Service {
 
   string current_release_id = 11;
   google.protobuf.Timestamp created_at = 12;
+
+  // Where this service is reachable from the outside, if anywhere.
+  //
+  // `domain` is the hostname the proxy routes on ("api.example.com"); `port` is
+  // where the service listens on the target's loopback. Both or neither: a
+  // domain without a port has nothing to route to, and a port without a domain
+  // is just documentation.
+  //
+  // Only meaningful when the target has ingress enabled. Set on a target with
+  // no ingress it is stored and refused at the point it would be used, rather
+  // than silently ignored.
+  string domain = 13;
+  uint32 port = 14;
 }
 
 message CreateServiceRequest {
@@ -810,6 +980,16 @@ service Targets {
   // Host-key pinning. A change is refused until it is accepted here.
   rpc AcceptHostKey(AcceptHostKeyRequest) returns (Target);
   rpc ForgetHostKey(ForgetHostKeyRequest) returns (Target);
+
+  // Ingress. On `Targets` rather than a service of its own because ingress is
+  // a property of the host: it is configured per target, and there is exactly
+  // one per target.
+  rpc EnableIngress(EnableIngressRequest) returns (Target);
+  rpc DisableIngress(DisableIngressRequest) returns (Target);
+  // Renders the proxy config without writing it — the `RenderUnit` of ingress.
+  rpc RenderIngress(RenderIngressRequest) returns (RenderIngressResponse);
+  rpc ReloadIngress(ReloadIngressRequest) returns (ReloadIngressResponse);
+  rpc CheckIngress(CheckIngressRequest) returns (CheckIngressResponse);
 }
 
 service BuildHosts {
