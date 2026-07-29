@@ -60,11 +60,14 @@ target and there is exactly one per target, so its five RPCs
 - `Ingress`, and `Target.ingress` (field 14). Unset means no ingress, which is
   what every target that predates this has and what a new one gets until an
   operator asks otherwise.
-- `Service.domain` (field 13) and `Service.port` (field 14). Both unset — every
-  existing service — means not routed, which is exactly what is true of every
-  service today. Nothing that predates this becomes reachable by domain.
-- `Route`, which lets a caller render a table of what is routed where rather
-  than parse a Caddyfile.
+- `Service.routes` (field 13), a repeated `Route`. Empty — every existing
+  service — means not routed, which is exactly what is true of every service
+  today. Nothing that predates this becomes reachable by domain.
+- `Route`, carrying a domain, an optional path, a port and a protocol. It is
+  both the stored model and what the render and check RPCs return, so a caller
+  can show a table of what is routed where rather than parse a Caddyfile.
+- `Route.Protocol`, whose only non-default value is `H2C` — cleartext HTTP/2,
+  which is what a gRPC server speaks.
 
 `CheckIngressResponse` carries `warnings` for the same reason
 `CheckBuildHostResponse` does, and the case is the DNS one: a domain whose
@@ -231,12 +234,40 @@ hosts have — would have meant two rules to learn for the same flag. The
 dashboard says so before the form is submitted, because a form that submits and
 fails is a worse way to learn it.
 
+**A service has a list of routes, not a domain and a port.** The first version of
+this had the pair on the service, which read like Coolify's UI. Reading its
+`fqdnLabelsForTraefik` rather than its screenshots showed the model is different:
+each entry is parsed as a *URL*, and host, path and port are pulled back out of
+it. A single pair could express none of what that allows — several domains for
+one service, a path under a domain whose root is served by something else, or a
+port that differs per domain. `Service.routes` is a repeated `Route`, which is
+the same model as a comma-separated list of URLs with the parts named instead of
+parsed.
+
+**A path is stripped before the request reaches the service.** Routed at `/api`,
+a service sees `/users` rather than `/api/users` — `handle_path` rather than
+`handle`. This is what Coolify does by default and almost always what is wanted;
+a service needing the prefix intact is routed at the domain root instead. Routes
+are ordered longest-path-first within a domain, because Caddy tries `handle`
+blocks in order and the root has to be the fallback.
+
+**gRPC is a protocol on the route, stated rather than guessed.** gRPC needs
+HTTP/2 end to end; a proxy that terminates HTTP/2 at the edge and speaks
+HTTP/1.1 to the backend breaks every call, silently and in a way that looks like
+the service being broken. Caddy needs one scheme prefix for this — `h2c://` — so
+the cost is small and the failure it prevents is not. Coolify has no equivalent:
+its label generation emits HTTP routers only, with no `h2c` and no TCP or UDP
+routers anywhere, so a gRPC service behind Coolify is reached over HTTP/1.1.
+Raw TCP and UDP remain out of scope, because Caddy needs the `layer4` plugin for
+them and that is not in the standard binary.
+
 **Port collisions are refused, not warned about.** Once services declare a port,
 two on one target claiming the same one is detectable, and the second one can
-never work. A partial unique index scoped to the target does it: the same port
-on two different hosts is ordinary and stays allowed. Both indexes exempt the
-unset value, so the many services with no route do not collide with each other —
-without that, every service predating this feature would fail to insert.
+never work. The check lives in the store rather than the schema, so the message
+can name the service already holding it — a bare `UNIQUE constraint failed`
+sends an operator to the wrong place. A service may reuse its own port across
+routes, since an apex and its `www` reaching one port is not a collision; only
+another service claiming it is.
 
 **nudo does not implement rollback for the proxy, because Caddy already has
 one.** Its `/load` endpoint restores the previous config if the new one fails,
@@ -262,13 +293,21 @@ at `127.0.0.1:<port>` for the mirror-image reason: routing to `0.0.0.0` would
 work and would also mean anyone who can reach the host on that port bypasses TLS
 entirely.
 
-**Domains are validated, and the renderer validates them again.** A domain goes
-into a Caddyfile as a site address, so a value carrying a brace or a newline
-would not merely be wrong — it would let whoever set it write arbitrary
-directives into the config of a proxy that binds `:443`. The store refuses those
-on the way in, and `render` re-checks every domain and drops any route that
-fails rather than trusting that it did. The first version of the renderer
-interpolated the domain raw and a test caught it.
+**Domains and paths are validated, and the renderer validates them again.** Both
+go into a Caddyfile — the domain as a site address, the path as a matcher — so a
+value carrying a brace or a newline would not merely be wrong: it would let
+whoever set it write arbitrary directives into the config of a proxy that binds
+`:443`. The store refuses those on the way in, and `render` re-checks every route
+and drops any that fails rather than trusting that it did.
+
+Three bugs were caught here by tests written for exactly this. The first version
+of the renderer interpolated the domain raw. The second normalised an invalid
+path to an empty one, which turned "this path is not one nudo will write" into
+"route the whole domain" — silently *widening* what the service receives instead
+of dropping the route. The third echoed the offending value back into the config
+as a skipped-route comment; inert, because it is flattened onto one comment line,
+but there is no reason to carry attacker-controlled text in a file the proxy
+reads, so it now names the service and the reason only.
 
 **DNS that does not point here yet is a warning, not a failure.** It is the
 single most common way this feature disappoints someone — Caddy retries

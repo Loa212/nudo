@@ -351,22 +351,62 @@ on:
 
 ```sh
 nudo targets ingress enable tgt_abc123 --acme-email ops@example.com
-nudo services domain svc_abc123 --domain api.example.com --port 8080
+nudo services domain svc_abc123 --route api.example.com:8080
 ```
 
 Point an `A` record at the target and that is the whole of it. The certificate
 is issued on the first request to the domain.
 
+A service can answer on several addresses — routes are replaced by what you
+pass, not added to:
+
+```sh
+# an apex and its www, both reaching the same port
+nudo services domain svc_abc123 --route example.com:8080 \
+                                --route www.example.com:8080
+
+# a path under a domain whose root is served by something else
+nudo services domain svc_api --route example.com/api:9090
+
+# stop routing to it
+nudo services domain svc_abc123 --clear
+```
+
+A path is **stripped** before the request reaches the service: routed at
+`/api`, it sees `/users` rather than `/api/users`. A service that needs the
+prefix intact should be routed at the domain root instead.
+
 ```sh
 nudo targets ingress check tgt_abc123    # is the proxy up, does DNS point here
 nudo targets ingress show tgt_abc123     # the config nudo would write
 nudo targets ingress reload tgt_abc123   # re-apply it
-nudo services domain svc_abc123 --clear  # stop routing to this service
 ```
 
 A deploy re-renders its target's routes on the connection it already has, so a
-domain follows its service without a separate step. Setting or clearing a domain
-reloads immediately rather than waiting for the next deploy.
+domain follows its service without a separate step. Changing a route reloads
+immediately rather than waiting for the next deploy.
+
+### gRPC
+
+A gRPC server needs HTTP/2 all the way through. A proxy that terminates HTTP/2
+at the edge and talks HTTP/1.1 to the backend breaks every call — so nudo has
+to be told, rather than guessing:
+
+```sh
+nudo services domain svc_grpc --route grpc.example.com:50051 --grpc
+```
+
+That renders `reverse_proxy h2c://127.0.0.1:50051`, which is cleartext HTTP/2 to
+the service and TLS at the edge. The dashboard's routing card has the same
+checkbox, and marks such routes **gRPC** in the route table.
+
+Worth knowing if you are coming from Coolify: it has no equivalent. Its label
+generation emits HTTP routers only — no `h2c`, no TCP or UDP routers — so a gRPC
+service behind Coolify is reached over HTTP/1.1.
+
+Raw TCP and UDP are **not** supported. Caddy can do it with the `layer4` plugin,
+which is not in the standard binary; a service that is neither HTTP nor gRPC
+still needs its port reached directly.
 
 ### DNS is the thing that goes wrong
 
