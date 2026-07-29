@@ -45,7 +45,11 @@ pub const CONFIG_PATH: &str = "/etc/caddy/Caddyfile";
 /// install.
 pub const UNIT_NAME: &str = "caddy.service";
 
-/// Where the binary is installed.
+/// Where nudo puts the binary when it downloads one itself.
+///
+/// Not where Caddy necessarily *is*: the distribution package installs to
+/// `/usr/bin/caddy`, so anything that needs to run it resolves the path on the
+/// host rather than assuming this one.
 pub const BINARY_PATH: &str = "/usr/local/bin/caddy";
 
 /// The routes a target's services define, in the order they will be rendered.
@@ -168,11 +172,17 @@ fn comment_safe(value: &str) -> String {
 
 /// The systemd unit for Caddy.
 ///
+/// Takes the binary's path rather than assuming [`BINARY_PATH`]: the package
+/// installs to `/usr/bin/caddy` and only nudo's own download uses
+/// `/usr/local/bin`. A unit naming the wrong one fails to start with a message
+/// about a missing executable, which is a confusing way to find out that the
+/// install worked.
+///
 /// Deliberately not rendered through [`crate::systemd::render_unit`]: that
 /// builds a unit for a nudo *service*, with a release root, a `current` symlink
 /// and an EnvironmentFile of resolved secrets. Caddy has none of those. Sharing
 /// the renderer would mean teaching it about a case that is not a service.
-pub fn render_unit() -> String {
+pub fn render_unit(binary: &str) -> String {
     let mut out = String::new();
     out.push_str("[Unit]\n");
     out.push_str("Description=Caddy (managed by nudo)\n");
@@ -186,12 +196,12 @@ pub fn render_unit() -> String {
     out.push_str("User=caddy\n");
     out.push_str("Group=caddy\n");
     out.push_str(&format!(
-        "ExecStart={BINARY_PATH} run --environ --config {CONFIG_PATH}\n"
+        "ExecStart={binary} run --environ --config {CONFIG_PATH}\n"
     ));
     // A reload rather than a restart, so a config change does not drop every
     // connection on the host.
     out.push_str(&format!(
-        "ExecReload={BINARY_PATH} reload --config {CONFIG_PATH} --force\n"
+        "ExecReload={binary} reload --config {CONFIG_PATH} --force\n"
     ));
     out.push_str("TimeoutStopSec=5s\n");
     out.push_str("Restart=on-abnormal\n");

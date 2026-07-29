@@ -49,6 +49,12 @@ pub async fn reload(
     let config = render(target, services);
     let routes = routes_for(services);
 
+    // Resolved once: the package and the download put the binary in different
+    // places, and every command below has to name the one that is actually here.
+    let binary = caddy_binary(session)
+        .await
+        .unwrap_or_else(|| BINARY_PATH.to_string());
+
     // ---- stage ----
     session
         .write_file(STAGED_CONFIG_PATH, config.as_bytes(), Some("0644"))
@@ -59,7 +65,7 @@ pub async fn reload(
     let validate = session
         .exec(&format!(
             "{} validate --config {} --adapter caddyfile 2>&1",
-            quote(BINARY_PATH),
+            quote(&binary),
             quote(STAGED_CONFIG_PATH)
         ))
         .await
@@ -120,7 +126,7 @@ pub async fn reload(
     let reload = session
         .exec(&format!(
             "{} reload --config {} --adapter caddyfile --address 127.0.0.1:{} --force 2>&1",
-            quote(BINARY_PATH),
+            quote(&binary),
             quote(CONFIG_PATH),
             admin
         ))
@@ -155,20 +161,35 @@ pub async fn install(session: &SshSession) -> anyhow::Result<String> {
         return Ok(version);
     }
 
-    // The distribution package is preferred over downloading a binary: it comes
-    // with the `caddy` user this unit runs as, and it is what an operator would
-    // have installed by hand. Falling back to a direct download would mean
-    // creating the user too, and picking an architecture — more moving parts in
-    // the step most likely to run unattended.
+    // Caddy is not in Debian's, Ubuntu's or RHEL's own repositories, so the
+    // package path means adding Caddy's first. That is what the project's own
+    // install instructions say to do, and it is what an operator installing by
+    // hand would end up with — including the `caddy` user and the state
+    // directory the unit expects.
+    //
+    // The static binary is the fallback rather than the default for the same
+    // reason: it works everywhere, but it arrives without that user, so taking
+    // it first would mean nudo creating system accounts on hosts where the
+    // native package would have done it properly.
     let install = session
         .exec(
             "set -e; \
              if command -v apt-get >/dev/null 2>&1; then \
-               apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy; \
+               apt-get update -qq; \
+               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                 debian-keyring debian-archive-keyring apt-transport-https curl gpg; \
+               curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+                 | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg; \
+               curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+                 > /etc/apt/sources.list.d/caddy-stable.list; \
+               chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+                         /etc/apt/sources.list.d/caddy-stable.list; \
+               apt-get update -qq; \
+               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy; \
              elif command -v dnf >/dev/null 2>&1; then \
+               dnf install -y -q 'dnf-command(copr)'; \
+               dnf copr enable -y @caddy/caddy; \
                dnf install -y -q caddy; \
-             elif command -v yum >/dev/null 2>&1; then \
-               yum install -y -q caddy; \
              elif command -v apk >/dev/null 2>&1; then \
                apk add --no-cache caddy; \
              else \
@@ -179,11 +200,19 @@ pub async fn install(session: &SshSession) -> anyhow::Result<String> {
         .context("installing caddy")?;
 
     if !install.ok() {
-        bail!(
-            "could not install Caddy on this host: {}. Install it yourself and \
-             re-run, or set ingress to external and manage the proxy directly",
-            first_useful_line(&install.stdout, &install.stderr)
-        );
+        // The package path failed — no network to Caddy's repository, an
+        // unsupported distribution, a pinned apt. The static binary needs
+        // neither a repository nor a package manager, so it is worth trying
+        // before giving up and making this the operator's problem.
+        install_static_binary(session).await.map_err(|fallback| {
+            anyhow::anyhow!(
+                "could not install Caddy on this host. The package manager said: {}. \
+                 Downloading the binary instead failed too: {fallback:#}. Install \
+                 Caddy yourself and re-run, or set ingress to external and manage \
+                 the proxy directly",
+                first_useful_line(&install.stdout, &install.stderr)
+            )
+        })?;
     }
 
     install_unit(session).await?;
@@ -193,6 +222,40 @@ pub async fn install(session: &SshSession) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Caddy installed but does not report a version"))
 }
 
+/// Downloads a static Caddy binary, for hosts the package path cannot serve.
+///
+/// Caddy's download endpoint builds and returns a binary for the platform named
+/// in the query string, so this is one request rather than resolving a release
+/// asset. The architecture comes from the host itself: guessing it produces a
+/// binary that installs cleanly and then will not execute.
+async fn install_static_binary(session: &SshSession) -> anyhow::Result<()> {
+    let result = session
+        .exec(&format!(
+            "set -e; \
+             arch=$(uname -m); \
+             case \"$arch\" in \
+               x86_64|amd64) arch=amd64 ;; \
+               aarch64|arm64) arch=arm64 ;; \
+               armv7l) arch=armv7 ;; \
+               *) echo \"unsupported architecture: $arch\" >&2; exit 1 ;; \
+             esac; \
+             url=\"https://caddyserver.com/api/download?os=linux&arch=$arch\"; \
+             tmp=$(mktemp); \
+             curl -fsSL \"$url\" -o \"$tmp\"; \
+             chmod 0755 \"$tmp\"; \
+             mv \"$tmp\" {binary}; \
+             {binary} version >/dev/null",
+            binary = quote(BINARY_PATH)
+        ))
+        .await
+        .context("downloading the caddy binary")?;
+
+    if !result.ok() {
+        bail!("{}", first_useful_line(&result.stdout, &result.stderr));
+    }
+    Ok(())
+}
+
 /// Writes nudo's unit and enables it.
 ///
 /// Overwrites whatever unit the package shipped. That is deliberate: nudo's has
@@ -200,9 +263,13 @@ pub async fn install(session: &SshSession) -> anyhow::Result<String> {
 /// this depends on, and a package unit that differs would make the proxy behave
 /// differently depending on how it was installed.
 async fn install_unit(session: &SshSession) -> anyhow::Result<()> {
+    let binary = caddy_binary(session)
+        .await
+        .unwrap_or_else(|| BINARY_PATH.to_string());
+
     let unit_path = format!("/etc/systemd/system/{UNIT_NAME}");
     session
-        .write_file(&unit_path, render_unit().as_bytes(), Some("0644"))
+        .write_file(&unit_path, render_unit(&binary).as_bytes(), Some("0644"))
         .await
         .context("writing the proxy unit")?;
 
@@ -303,7 +370,7 @@ pub async fn check(
         ok: version.is_some(),
         detail: match &version {
             Some(version) => format!("caddy {version}"),
-            None => format!("no caddy binary at {BINARY_PATH}"),
+            None => format!("no caddy binary on this host, at {BINARY_PATH} or on PATH"),
         },
     });
 
@@ -421,28 +488,40 @@ pub async fn check(
 
 /// Caddy's version, or `None` when it is not installed.
 async fn caddy_version(session: &SshSession) -> Option<String> {
+    let binary = caddy_binary(session).await?;
     let result = session
-        .exec(&format!(
-            "{} version 2>/dev/null || true",
-            quote(BINARY_PATH)
-        ))
+        .exec(&format!("{} version 2>/dev/null || true", quote(&binary)))
         .await
         .ok()?;
 
     let line = result.trimmed();
     if line.is_empty() {
-        // The package installs to /usr/bin, a direct download to /usr/local/bin.
-        let fallback = session
-            .exec("caddy version 2>/dev/null || true")
-            .await
-            .ok()?;
-        let line = fallback.trimmed();
-        if line.is_empty() {
-            return None;
-        }
-        return Some(first_word(line));
+        return None;
     }
     Some(first_word(line))
+}
+
+/// Where Caddy actually is on this host.
+///
+/// The package installs to `/usr/bin/caddy`; the static-binary fallback writes
+/// `/usr/local/bin/caddy`. The unit's `ExecStart` has to name the one that
+/// exists — a unit pointing at the other path fails to start with a message
+/// about a missing executable, which is a confusing way to discover that the
+/// proxy installed fine.
+async fn caddy_binary(session: &SshSession) -> Option<String> {
+    let result = session
+        .exec(&format!(
+            "if [ -x {binary} ]; then echo {binary}; else command -v caddy 2>/dev/null || true; fi",
+            binary = quote(BINARY_PATH)
+        ))
+        .await
+        .ok()?;
+
+    let path = result.trimmed();
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// The addresses this host answers on, for comparing against DNS.

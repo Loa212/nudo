@@ -176,7 +176,7 @@ fn a_service_name_cannot_escape_its_comment() {
 
 #[test]
 fn the_unit_binds_privileged_ports_without_running_as_root() {
-    let unit = render_unit();
+    let unit = render_unit("/usr/bin/caddy");
     assert!(unit.contains("User=caddy"), "{unit}");
     assert!(
         unit.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE"),
@@ -192,16 +192,43 @@ fn the_unit_binds_privileged_ports_without_running_as_root() {
 fn the_unit_reloads_rather_than_restarts() {
     // A restart drops every connection on the host, including those of services
     // that were not being changed.
-    let unit = render_unit();
+    let unit = render_unit("/usr/bin/caddy");
     assert!(unit.contains("ExecReload="), "{unit}");
     assert!(unit.contains("reload --config"), "{unit}");
+}
+
+#[test]
+fn the_unit_runs_the_binary_that_is_actually_on_the_host() {
+    // The distribution package installs to /usr/bin/caddy; only nudo's own
+    // download uses /usr/local/bin. A unit hardcoding either one fails to start
+    // on hosts that got Caddy the other way, with a message about a missing
+    // executable — a confusing way to find out the install worked.
+    let packaged = render_unit("/usr/bin/caddy");
+    assert!(
+        packaged.contains("ExecStart=/usr/bin/caddy run"),
+        "{packaged}"
+    );
+    assert!(
+        packaged.contains("ExecReload=/usr/bin/caddy reload"),
+        "{packaged}"
+    );
+    assert!(
+        !packaged.contains("/usr/local/bin/caddy"),
+        "the unit must not name a path the binary is not at: {packaged}"
+    );
+
+    let downloaded = render_unit(BINARY_PATH);
+    assert!(
+        downloaded.contains("ExecStart=/usr/local/bin/caddy run"),
+        "{downloaded}"
+    );
 }
 
 #[test]
 fn the_unit_keeps_its_certificates_across_a_restart() {
     // Losing them means re-issuing everything, which hits Let's Encrypt's rate
     // limits quickly.
-    let unit = render_unit();
+    let unit = render_unit("/usr/bin/caddy");
     assert!(unit.contains("StateDirectory=caddy"), "{unit}");
 }
 
