@@ -376,6 +376,153 @@ pub fn validate_port(port: u32) -> Result<(), String> {
     }
 }
 
+/// Normalises and checks a route's path prefix.
+///
+/// Returns the canonical form: empty for "the whole domain", otherwise a
+/// leading slash and no trailing one, so `/api/`, `api` and `/api` are one
+/// route rather than three that collide confusingly.
+///
+/// Validated for the same reason the domain is: the path is written into a
+/// Caddyfile matcher, so a value carrying a brace, whitespace or a newline
+/// could end the block and start directives of its own. The character set is
+/// deliberately narrow — the unreserved URL characters plus `/`, `%` and a few
+/// separators. A path needing more than that is rare enough to be worth an
+/// error rather than a hole.
+pub fn normalize_path(path: &str) -> Result<String, String> {
+    let path = path.trim();
+
+    // The whole domain. Both spellings mean the same thing and normalise to the
+    // same stored value.
+    if path.is_empty() || path == "/" {
+        return Ok(String::new());
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    let with_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+
+    if with_slash.len() > 255 {
+        return Err(format!("the path {path:?} is longer than 255 characters"));
+    }
+    // `..` would let a route claim a prefix it does not look like it claims.
+    if with_slash.contains("..") {
+        return Err(format!("the path {path:?} may not contain '..'"));
+    }
+    if with_slash.contains("//") {
+        return Err(format!("the path {path:?} has an empty segment"));
+    }
+
+    if !with_slash
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/-._~%+".contains(c))
+    {
+        return Err(format!(
+            "the path {path:?} contains something other than letters, digits and \
+             '/-._~%+'"
+        ));
+    }
+
+    Ok(with_slash)
+}
+
+impl route::Protocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "http",
+            Self::H2c => "h2c",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            // `grpc` is what an operator calls it; `h2c` is what it is. Both
+            // accepted so nobody has to know the second one.
+            "h2c" | "grpc" => Self::H2c,
+            _ => Self::Unspecified,
+        }
+    }
+
+    /// How Caddy is told to reach the backend.
+    ///
+    /// The whole of gRPC support: gRPC needs HTTP/2 end to end, and a proxy
+    /// that downgrades to HTTP/1.1 breaks every call.
+    pub fn upstream_scheme(self) -> &'static str {
+        match self {
+            Self::Unspecified => "",
+            Self::H2c => "h2c://",
+        }
+    }
+}
+
+/// Every route a set of services defines, in the order they are rendered.
+///
+/// Here rather than in the server because the dashboard shows the same list and
+/// the two must agree: a table whose order differs from the config it describes
+/// is a table nobody can check against the config.
+///
+/// Sorted by domain, then longest path first — Caddy matches its `handle`
+/// blocks in order, so `/api/v2` has to be tried before `/api`, and the domain
+/// root is the fallback.
+pub fn routes_of(services: &[Service]) -> Vec<Route> {
+    let mut routes: Vec<Route> = services
+        .iter()
+        .flat_map(|service| {
+            service.routes.iter().map(|route| Route {
+                // Stamped here rather than trusted from the caller, so a route
+                // always reports the service it actually belongs to.
+                service_id: service.id.clone(),
+                service_name: service.name.clone(),
+                domain: route.domain.trim().to_string(),
+                // The *original* path when it does not normalise, not an empty
+                // one: falling back to empty would turn "this path is not one
+                // nudo will write" into "route the whole domain", quietly
+                // widening what the service receives instead of dropping it.
+                path: normalize_path(&route.path).unwrap_or_else(|_| route.path.clone()),
+                port: route.port,
+                protocol: route.protocol,
+            })
+        })
+        .collect();
+
+    routes.sort_by(|a, b| {
+        a.domain
+            .cmp(&b.domain)
+            .then_with(|| b.path.len().cmp(&a.path.len()))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    routes
+}
+
+impl Route {
+    /// The protocol, defaulting to HTTP when unset or unrecognised.
+    pub fn protocol_or_default(&self) -> route::Protocol {
+        route::Protocol::try_from(self.protocol).unwrap_or(route::Protocol::Unspecified)
+    }
+
+    /// Checks a route is one that can safely be written into a proxy config.
+    ///
+    /// The single place a route is judged, so the store, the API and the
+    /// renderer cannot disagree about what is acceptable.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_domain(&self.domain)?;
+        validate_port(self.port)?;
+        normalize_path(&self.path)?;
+        Ok(())
+    }
+
+    /// How this route is identified when reporting a collision: the domain, and
+    /// the path when it has one.
+    pub fn label(&self) -> String {
+        match normalize_path(&self.path) {
+            Ok(path) if !path.is_empty() => format!("{}{}", self.domain.trim(), path),
+            _ => self.domain.trim().to_string(),
+        }
+    }
+}
+
 impl source::Kind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -591,6 +738,138 @@ mod tests {
         assert!(validate_port(1).is_ok());
         assert!(validate_port(8080).is_ok());
         assert!(validate_port(65535).is_ok());
+    }
+
+    #[test]
+    fn a_path_is_normalised_to_one_canonical_form() {
+        // So '/api/', 'api' and '/api' are one route rather than three that
+        // collide confusingly.
+        for input in ["/api", "api", "/api/", "api/", "  /api  "] {
+            assert_eq!(normalize_path(input).expect("valid"), "/api", "{input:?}");
+        }
+        // The whole domain, both spellings.
+        assert_eq!(normalize_path("").expect("valid"), "");
+        assert_eq!(normalize_path("/").expect("valid"), "");
+    }
+
+    #[test]
+    fn a_path_that_could_inject_caddy_directives_is_refused() {
+        // The path lands in a Caddyfile matcher, so it is a second way in
+        // beside the domain.
+        for attack in [
+            "/api {\n\trespond \"owned\"\n}",
+            "/api\nrespond",
+            "/a b",
+            "/api\t{",
+            "/api#comment",
+        ] {
+            assert!(
+                normalize_path(attack).is_err(),
+                "{attack:?} must be refused — it can rewrite the proxy config"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_is_merely_malformed_is_refused() {
+        assert!(normalize_path("/api/../admin").is_err(), "traversal");
+        assert!(normalize_path("/api//v2").is_err(), "empty segment");
+        assert!(normalize_path(&format!("/{}", "a".repeat(300))).is_err());
+    }
+
+    #[test]
+    fn grpc_and_h2c_both_name_the_same_protocol() {
+        // `grpc` is what an operator calls it; `h2c` is what it is.
+        assert_eq!(route::Protocol::parse("grpc"), route::Protocol::H2c);
+        assert_eq!(route::Protocol::parse("h2c"), route::Protocol::H2c);
+        assert_eq!(route::Protocol::parse("http"), route::Protocol::Unspecified);
+        assert_eq!(route::Protocol::parse(""), route::Protocol::Unspecified);
+    }
+
+    #[test]
+    fn only_a_grpc_route_gets_the_h2c_upstream_scheme() {
+        // h2c on an ordinary HTTP backend breaks it in the other direction.
+        assert_eq!(route::Protocol::H2c.upstream_scheme(), "h2c://");
+        assert_eq!(route::Protocol::Unspecified.upstream_scheme(), "");
+    }
+
+    #[test]
+    fn routes_are_ordered_so_the_longest_path_matches_first() {
+        // Caddy tries handle blocks in order, so /api/v2 has to come before
+        // /api, and the domain root is the fallback.
+        let service = Service {
+            id: "svc_1".to_string(),
+            name: "api".to_string(),
+            routes: vec![
+                Route {
+                    domain: "example.com".into(),
+                    path: String::new(),
+                    port: 8080,
+                    ..Default::default()
+                },
+                Route {
+                    domain: "example.com".into(),
+                    path: "/api/v2".into(),
+                    port: 8082,
+                    ..Default::default()
+                },
+                Route {
+                    domain: "example.com".into(),
+                    path: "/api".into(),
+                    port: 8081,
+                    ..Default::default()
+                },
+                Route {
+                    domain: "a.example.com".into(),
+                    path: String::new(),
+                    port: 8083,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let ordered = routes_of(&[service]);
+        let labels: Vec<String> = ordered
+            .iter()
+            .map(|r| format!("{}{}", r.domain, r.path))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "a.example.com",
+                "example.com/api/v2",
+                "example.com/api",
+                "example.com",
+            ]
+        );
+        // And every route reports the service it came from.
+        assert!(ordered.iter().all(|r| r.service_name == "api"));
+    }
+
+    #[test]
+    fn an_unwritable_path_is_kept_rather_than_silently_widened() {
+        // Falling back to an empty path would turn "this path is not one nudo
+        // will write" into "route the whole domain", quietly widening what the
+        // service receives instead of dropping the route.
+        let service = Service {
+            id: "svc_1".to_string(),
+            name: "api".to_string(),
+            routes: vec![Route {
+                domain: "example.com".into(),
+                path: "/api {\n\trespond \"owned\"\n}".into(),
+                port: 8080,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let ordered = routes_of(&[service]);
+        assert!(
+            !ordered[0].path.is_empty(),
+            "the invalid path must survive so validation drops the route"
+        );
+        assert!(ordered[0].validate().is_err());
     }
 
     #[test]

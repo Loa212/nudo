@@ -134,7 +134,7 @@ impl ServicesApi for ServicesApiService {
         //
         // Compared against what was there before so an update that did not
         // touch routing does not reload the proxy for nothing.
-        let route_changed = updated.domain != existing.domain || updated.port != existing.port;
+        let route_changed = updated.routes != existing.routes;
         if route_changed
             && crate::ingress::is_managed(&target)
             && let Err(error) = self.reload_ingress(&target).await
@@ -246,7 +246,7 @@ impl ServicesApi for ServicesApiService {
         // A failure here does not fail the delete. The service is already gone,
         // and the worst case is a route pointing at a port nothing answers on,
         // which the target's ingress check reports.
-        if !existing.domain.trim().is_empty()
+        if !existing.routes.is_empty()
             && crate::ingress::is_managed(&target)
             && let Err(error) = self.reload_ingress(&target).await
         {

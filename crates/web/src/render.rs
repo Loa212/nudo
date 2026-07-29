@@ -27,8 +27,8 @@ use std::collections::HashMap;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use nudo_proto::{
     AuditEntry, BuildHost, CheckBuildHostResponse, CheckTargetResponse, Deployment, HostKey,
-    LogLine, Release, RenderIngressResponse, Secret, Service, Source, Target, UnitStatus,
-    build_host, deployment, ingress, source, target,
+    LogLine, Release, RenderIngressResponse, Route, Secret, Service, Source, Target, UnitStatus,
+    build_host, deployment, ingress, route, source, target,
 };
 
 // ---------------------------------------------------------------------------

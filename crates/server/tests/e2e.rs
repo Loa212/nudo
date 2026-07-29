@@ -22,7 +22,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nudo_proto::{
-    ArtifactSource, HealthCheck, Service, SystemdUnit, artifact_source, deployment, health_check,
+    ArtifactSource, HealthCheck, Route, Service, SystemdUnit, artifact_source, deployment,
+    health_check,
 };
 use nudo_server::crypto::SecretKey;
 use nudo_server::deploy::{DeployOptions, Engine};
@@ -80,12 +81,23 @@ impl Fixture {
 
         // The apt install inside the container takes a while; systemd is only
         // usable once it has finished and taken over as PID 1.
-        wait_for("systemd to come up", Duration::from_secs(240), || {
-            exec_in_container(&["systemctl", "is-system-running", "--wait"])
+        //
+        // Deliberately *not* `is-system-running --wait`, which blocks inside the
+        // container until systemd settles. Each poll could then hang for most of
+        // the budget while the apt install was still running, and the timeout
+        // fired against a container that was simply not up yet — an intermittent
+        // failure that took out every test in the file, not only the slow ones.
+        // The non-blocking form returns immediately with whatever the state is
+        // now, so the retry loop here does the waiting and can actually observe
+        // progress.
+        wait_for("systemd to come up", Duration::from_secs(300), || {
+            exec_in_container(&["systemctl", "is-system-running"])
                 .map(|output| {
                     // "degraded" is fine in a container: some units cannot
                     // start there and that does not affect what is tested.
-                    output.contains("running") || output.contains("degraded")
+                    // "starting" is not ready yet, and must not count.
+                    let state = output.trim();
+                    state == "running" || state == "degraded"
                 })
                 .unwrap_or(false)
         })?;
@@ -1808,6 +1820,71 @@ where
 // rather than only configured to be.
 // ---------------------------------------------------------------------------
 
+/// Starts something for the proxy to route to, on a port of its own.
+///
+/// Caddy itself, in its own systemd unit. The first version of this reached for
+/// `python3 -m http.server` with a netcat fallback and chained the two with
+/// `or_else`, which was wrong twice: the image has neither, and the fallback
+/// hid that. The test then asserted that the proxy routed to a port where
+/// nothing was listening, and failed thirty seconds later saying the proxy was
+/// at fault.
+///
+/// Caddy is the one thing guaranteed to be here, because the test under way
+/// installed it. `respond` needs no content on disk and no other tool.
+///
+/// Panics rather than returning a Result: a test whose fixture did not start
+/// cannot produce a meaningful result, and the previous silence is the whole
+/// reason this function exists.
+fn start_origin(port: u32, body: &str) {
+    let unit = format!("nudo-e2e-origin-{port}");
+    let config = format!("/etc/{unit}.caddy");
+
+    exec_in_container(&[
+        "bash",
+        "-c",
+        &format!(
+            "cat > {config} <<'EOF'\n\
+             {{\n\
+             \tadmin off\n\
+             \tauto_https off\n\
+             }}\n\
+             :{port} {{\n\
+             \trespond \"{body}\"\n\
+             }}\n\
+             EOF",
+        ),
+    ])
+    .expect("write the origin's config");
+
+    exec_in_container(&[
+        "bash",
+        "-c",
+        &format!(
+            "systemd-run --unit={unit} --collect \
+             $(command -v caddy) run --config {config} --adapter caddyfile"
+        ),
+    ])
+    .expect("start the origin");
+
+    // Confirmed listening before the test goes on to assert anything about the
+    // proxy in front of it, so a failure names the origin rather than blaming
+    // the routing.
+    wait_for(
+        &format!("the origin on :{port}"),
+        Duration::from_secs(30),
+        || {
+            exec_in_container(&[
+                "bash",
+                "-c",
+                &format!("curl -fsS --max-time 2 http://127.0.0.1:{port}/ 2>/dev/null || true"),
+            ])
+            .map(|out| out.contains(body))
+            .unwrap_or(false)
+        },
+    )
+    .expect("the origin should answer before the proxy is asked to route to it");
+}
+
 /// Registers the container as a target with managed ingress.
 async fn register_ingress_target(
     engine: &Engine,
@@ -1865,27 +1942,25 @@ async fn caddy_is_installed_and_serves_the_config_nudo_renders() {
     let (engine, _dir) = engine(secret_key.clone()).await;
 
     let target = register_ingress_target(&engine, &secret_key, &fixture, "e2e-ingress").await;
+    let session = engine.connect(&target).await.expect("connect");
+
+    // ---- install ----
+    // Before the origin, because the origin is a second Caddy and needs the
+    // binary this step puts there.
+    let version = nudo_server::ingress::reconcile::install(&session)
+        .await
+        .expect("install caddy");
+    eprintln!("installed caddy {version}");
+    assert!(!version.is_empty());
 
     // Something for the proxy to route to. A plain listener rather than a nudo
     // service: what is under test is the proxy, not the deploy engine.
-    exec_in_container(&[
-        "bash",
-        "-c",
-        "printf '%s' 'hello from the origin' > /tmp/index.html && \
-         (cd /tmp && nohup python3 -m http.server 8080 >/dev/null 2>&1 &) ; sleep 1",
-    ])
-    .or_else(|_| {
-        // Debian's slim image has no python; fall back to a tiny netcat loop.
-        exec_in_container(&[
-            "bash",
-            "-c",
-            "nohup bash -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\n\
-             Content-Length: 20\\r\\n\\r\\nhello from the origin\" | nc -l -p 8080 -q 1; done' \
-             >/dev/null 2>&1 & sleep 1",
-        ])
-    })
-    .expect("start an origin on :8080");
+    start_origin(8080, "hello from the origin");
+    start_origin(8081, "hello from the api");
 
+    // Two routes on one service, and a path under one of them — the shape a
+    // single domain and port could not express, and the reason the model is a
+    // list.
     let service = engine
         .store
         .create_service(&Service {
@@ -1899,21 +1974,23 @@ async fn caddy_is_installed_and_serves_the_config_nudo_renders() {
             // domain cannot be issued a certificate in a container. `.localhost`
             // is reserved, resolves locally, and Caddy serves it over plain
             // HTTP without attempting ACME — which is what makes this testable.
-            domain: "routed.localhost".to_string(),
-            port: 8080,
+            routes: vec![
+                Route {
+                    domain: "routed.localhost".to_string(),
+                    port: 8080,
+                    ..Default::default()
+                },
+                Route {
+                    domain: "routed.localhost".to_string(),
+                    path: "/api".to_string(),
+                    port: 8081,
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         })
         .await
         .expect("create the routed service");
-
-    let session = engine.connect(&target).await.expect("connect");
-
-    // ---- install ----
-    let version = nudo_server::ingress::reconcile::install(&session)
-        .await
-        .expect("install caddy");
-    eprintln!("installed caddy {version}");
-    assert!(!version.is_empty());
 
     // ---- write the config and start ----
     let services = engine
@@ -1956,6 +2033,142 @@ async fn caddy_is_installed_and_serves_the_config_nudo_renders() {
     })
     .expect("the proxy should route the domain to the service");
 
+    // ---- the path route reaches the other port ----
+    // The same domain, a different backend, chosen by prefix. This is the case
+    // a single domain-and-port field could not express at all.
+    let from_path = exec_in_container(&[
+        "bash",
+        "-c",
+        "curl -fsS -H 'Host: routed.localhost' http://127.0.0.1/api/ 2>/dev/null || true",
+    ])
+    .expect("request the path route");
+    assert!(
+        from_path.contains("hello from the api"),
+        "/api should reach the second origin, got: {from_path:?}"
+    );
+
+    let _ = service;
+    let _ = session.close().await;
+}
+
+#[tokio::test]
+async fn a_grpc_route_reaches_the_backend_over_http2() {
+    // gRPC needs HTTP/2 end to end. A proxy that downgrades to HTTP/1.1 breaks
+    // every call, which is why the protocol is stated on the route rather than
+    // guessed — and why this asserts the wire protocol rather than only that
+    // the config mentions h2c.
+    let fixture = Fixture::start().expect("start the container");
+    let secret_key = SecretKey::generate();
+    let (engine, _dir) = engine(secret_key.clone()).await;
+
+    let target = register_ingress_target(&engine, &secret_key, &fixture, "e2e-grpc").await;
+    let session = engine.connect(&target).await.expect("connect");
+
+    nudo_server::ingress::reconcile::install(&session)
+        .await
+        .expect("install caddy");
+
+    // An h2c backend: Caddy serving cleartext HTTP/2, which is what a gRPC
+    // server looks like on the wire.
+    exec_in_container(&[
+        "bash",
+        "-c",
+        "cat > /etc/nudo-e2e-h2c.caddy <<'EOF'\n\
+         {\n\
+         \tadmin off\n\
+         \tauto_https off\n\
+         \tservers {\n\
+         \t\tprotocols h1 h2c\n\
+         \t}\n\
+         }\n\
+         :9090 {\n\
+         \trespond \"grpc backend saw {http.request.proto}\"\n\
+         }\n\
+         EOF",
+    ])
+    .expect("write the h2c backend config");
+
+    exec_in_container(&[
+        "bash",
+        "-c",
+        "systemd-run --unit=nudo-e2e-h2c --collect \
+         $(command -v caddy) run --config /etc/nudo-e2e-h2c.caddy --adapter caddyfile",
+    ])
+    .expect("start the h2c backend");
+
+    wait_for("the h2c backend", Duration::from_secs(30), || {
+        exec_in_container(&[
+            "bash",
+            "-c",
+            "curl -fsS --http2-prior-knowledge --max-time 2 http://127.0.0.1:9090/ \
+             2>/dev/null || true",
+        ])
+        .map(|out| out.contains("grpc backend saw"))
+        .unwrap_or(false)
+    })
+    .expect("the h2c backend should answer over http/2");
+
+    let service = engine
+        .store
+        .create_service(&Service {
+            target_id: target.id.clone(),
+            name: "e2e-grpc".to_string(),
+            release_root: "/opt/e2e-grpc".to_string(),
+            routes: vec![Route {
+                domain: "grpc.localhost".to_string(),
+                port: 9090,
+                protocol: nudo_proto::route::Protocol::H2c as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .await
+        .expect("create the grpc service");
+
+    let services = engine
+        .store
+        .routed_services(&target.id)
+        .await
+        .expect("routed services");
+
+    let outcome = nudo_server::ingress::reconcile::reload(&session, &target, &services)
+        .await
+        .expect("reload");
+    assert!(
+        outcome.ok,
+        "Caddy rejected the h2c config: {}",
+        outcome.error
+    );
+
+    let on_disk =
+        exec_in_container(&["cat", nudo_server::ingress::CONFIG_PATH]).expect("read the config");
+    assert!(
+        on_disk.contains("reverse_proxy h2c://127.0.0.1:9090"),
+        "a gRPC route should proxy over h2c: {on_disk}"
+    );
+
+    // The assertion that matters: the backend reports HTTP/2.0, so the proxy
+    // did not downgrade. The backend echoes the protocol it actually saw, so
+    // this cannot pass by accident.
+    let mut seen = String::new();
+    wait_for("the proxy to route grpc", Duration::from_secs(30), || {
+        seen = exec_in_container(&[
+            "bash",
+            "-c",
+            "curl -fsS --http2-prior-knowledge -H 'Host: grpc.localhost' \
+             http://127.0.0.1/ 2>/dev/null || true",
+        ])
+        .unwrap_or_default();
+        seen.contains("grpc backend saw")
+    })
+    .expect("the proxy should route the grpc domain");
+
+    assert!(
+        seen.contains("HTTP/2.0"),
+        "the backend should have been reached over HTTP/2, not downgraded to \
+         HTTP/1.1 — gRPC breaks if it is. Got: {seen:?}"
+    );
+
     let _ = service;
     let _ = session.close().await;
 }
@@ -1981,8 +2194,11 @@ async fn a_rejected_config_leaves_the_previous_routes_serving() {
         target_id: target.id.clone(),
         name: "e2e-good".to_string(),
         release_root: "/opt/e2e-good".to_string(),
-        domain: "good.localhost".to_string(),
-        port: 8080,
+        routes: vec![Route {
+            domain: "good.localhost".to_string(),
+            port: 8080,
+            ..Default::default()
+        }],
         ..Default::default()
     };
     let outcome = nudo_server::ingress::reconcile::reload(&session, &target, &[good.clone()])
@@ -2074,9 +2290,12 @@ async fn the_ingress_check_reports_what_is_wrong_and_warns_about_dns() {
         target_id: target.id.clone(),
         name: "e2e-nodns".to_string(),
         release_root: "/opt/e2e-nodns".to_string(),
-        // Reserved for exactly this: guaranteed never to resolve.
-        domain: "nothing.invalid".to_string(),
-        port: 8080,
+        routes: vec![Route {
+            // Reserved for exactly this: guaranteed never to resolve.
+            domain: "nothing.invalid".to_string(),
+            port: 8080,
+            ..Default::default()
+        }],
         ..Default::default()
     };
 

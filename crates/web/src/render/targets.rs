@@ -208,10 +208,11 @@ fn ingress_card(target: &Target, services: &[Service], csrf: &str) -> Markup {
     let mode = ingress::Mode::try_from(state.mode).unwrap_or(ingress::Mode::Unspecified);
     let status = ingress::Status::try_from(state.status).unwrap_or(ingress::Status::Unspecified);
 
-    let routed: Vec<&Service> = services
-        .iter()
-        .filter(|service| !service.domain.trim().is_empty())
-        .collect();
+    // Flattened to routes rather than services, because one service can hold
+    // several and the table is a list of ways in, not a list of services.
+    // Sorted the same way the renderer sorts them, so the page and the config
+    // read in the same order.
+    let routed: Vec<Route> = nudo_proto::routes_of(services);
 
     html! {
         div .card {
@@ -265,22 +266,32 @@ fn ingress_card(target: &Target, services: &[Service], csrf: &str) -> Markup {
                         }
                     } @else {
                         table .table style="margin-top:12px" {
-                            thead { tr { th { "Domain" } th { "Service" } th { "Port" } } }
+                            thead { tr { th { "Address" } th { "Service" } th { "Backend" } } }
                             tbody {
-                                @for service in &routed {
+                                @for route in &routed {
                                     tr {
                                         td {
-                                            a href=(format!("https://{}", service.domain))
+                                            a href=(format!("https://{}{}", route.domain, route.path))
                                               target="_blank" rel="noreferrer noopener" {
-                                                (service.domain)
+                                                (route.domain) (route.path)
                                             }
                                         }
                                         td {
-                                            a href=(format!("/services/{}", service.id)) {
-                                                (service.name)
+                                            a href=(format!("/services/{}", route.service_id)) {
+                                                (route.service_name)
                                             }
                                         }
-                                        td .mono { (service.port) }
+                                        td .mono.small {
+                                            ":" (route.port)
+                                            // Named on the row rather than in a
+                                            // legend: a gRPC route reached over
+                                            // HTTP/1.1 fails in a way that looks
+                                            // like the service being broken.
+                                            @if route.protocol_or_default() == route::Protocol::H2c {
+                                                span .sep { " · " }
+                                                span .muted { "gRPC" }
+                                            }
+                                        }
                                     }
                                 }
                             }

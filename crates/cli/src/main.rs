@@ -386,19 +386,39 @@ enum ServiceCommand {
     Releases {
         id: String,
     },
-    /// Put this service on a domain, or take it off one.
+    /// Put this service on one or more domains, or take it off them.
     ///
     /// Needs ingress enabled on the service's target — see
-    /// `nudo targets ingress enable`. The proxy is reloaded immediately, so the
+    /// `nudo targets ingress enable`. The proxy is reloaded immediately, so a
     /// domain works as soon as DNS points at the host.
+    ///
+    /// Routes are replaced, not added to: what you pass becomes the whole list.
+    ///
+    ///   nudo services domain svc_1 --route api.example.com:8080
+    ///   nudo services domain svc_1 --route example.com:8080 \
+    ///                              --route www.example.com:8080
+    ///   nudo services domain svc_1 --route example.com/api:9090
+    ///   nudo services domain svc_1 --route grpc.example.com:50051 --grpc
+    ///   nudo services domain svc_1 --clear
     Domain {
         id: String,
-        /// The hostname to route, e.g. `api.example.com`.
+        /// A route, as `domain[/path]:port`. Repeatable.
+        ///
+        /// The path, when given, is stripped before the request reaches the
+        /// service: routed at `/api`, it sees `/users` rather than
+        /// `/api/users`.
+        #[arg(
+            long = "route",
+            value_name = "DOMAIN[/PATH]:PORT",
+            conflicts_with = "clear"
+        )]
+        routes: Vec<String>,
+        /// This service speaks gRPC, so the proxy must reach it over HTTP/2.
+        ///
+        /// gRPC needs HTTP/2 end to end; a proxy that downgrades to HTTP/1.1
+        /// breaks every call. Applies to every `--route` in this command.
         #[arg(long, conflicts_with = "clear")]
-        domain: Option<String>,
-        /// The port the service listens on, on the target's loopback.
-        #[arg(long, conflicts_with = "clear")]
-        port: Option<u32>,
+        grpc: bool,
         /// Stop routing to this service.
         #[arg(long)]
         clear: bool,

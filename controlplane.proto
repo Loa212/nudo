@@ -277,11 +277,48 @@ message RenderIngressResponse {
 }
 
 // One service's route through the proxy.
+// One way in to a service: a hostname, optionally a path under it, and the port
+// behind it.
+//
+// A service has a list of these rather than a single domain and port, because
+// one service legitimately answers on several: an apex and its `www`, a public
+// domain and an internal one, or `/api` on a domain whose root is served by
+// something else. Coolify stores the same thing as a comma-separated list of
+// URLs and parses host, path and port back out of each; this is that, with the
+// parts named.
 message Route {
-  string service_id = 1;
-  string service_name = 2;
-  string domain = 3;
-  uint32 port = 4;
+  // The hostname to route on ("api.example.com"). Required.
+  string domain = 1;
+
+  // The path prefix, if this route is only part of a domain. Empty or "/" means
+  // the whole domain.
+  //
+  // The prefix is stripped before the request reaches the service, so a service
+  // routed at "/api" sees "/users", not "/api/users". That matches what Coolify
+  // does by default and is almost always what is wanted; a service that needs
+  // the prefix intact should be routed at the domain root instead.
+  string path = 2;
+
+  // Where the service listens on the target's loopback.
+  uint32 port = 3;
+
+  // What the service speaks, which decides how the proxy talks to it.
+  enum Protocol {
+    // HTTP/1.1 and HTTP/2 over TLS at the edge, HTTP/1.1 to the service. The
+    // default, and right for anything serving a website or a REST API.
+    PROTOCOL_UNSPECIFIED = 0;
+    // Cleartext HTTP/2 to the service — what a gRPC server speaks. gRPC
+    // requires HTTP/2 end to end, and a proxy that downgrades to HTTP/1.1
+    // silently breaks every call, so this has to be stated rather than
+    // guessed.
+    H2C = 1;
+  }
+  Protocol protocol = 4;
+
+  // Set on the way out, not stored: which service this route belongs to. Lets a
+  // caller render a table of a target's routes without joining anything.
+  string service_id = 5;
+  string service_name = 6;
 }
 
 // Writes the config and reloads the proxy.
@@ -564,16 +601,17 @@ message Service {
 
   // Where this service is reachable from the outside, if anywhere.
   //
-  // `domain` is the hostname the proxy routes on ("api.example.com"); `port` is
-  // where the service listens on the target's loopback. Both or neither: a
-  // domain without a port has nothing to route to, and a port without a domain
-  // is just documentation.
+  // Empty — every service that predates ingress — means not routed, which is
+  // what is true of every service that reaches its target by IP and port.
   //
-  // Only meaningful when the target has ingress enabled. Set on a target with
-  // no ingress it is stored and refused at the point it would be used, rather
-  // than silently ignored.
-  string domain = 13;
-  uint32 port = 14;
+  // Only meaningful when the target has ingress enabled. Routes on a target
+  // with no ingress are stored and refused at the point they would be used,
+  // rather than silently ignored.
+  //
+  // Replaced on update as a whole rather than merged: a route has no id, so
+  // there is nothing to merge against, and "set the routes to exactly this" is
+  // the operation every caller actually wants.
+  repeated Route routes = 13;
 }
 
 message CreateServiceRequest {

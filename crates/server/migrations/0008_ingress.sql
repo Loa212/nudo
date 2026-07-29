@@ -2,8 +2,8 @@
 --
 -- Until now nudo deployed a service and stopped there: getting a domain and a
 -- certificate in front of it was entirely the operator's problem. This adds a
--- reverse proxy that nudo installs and configures, and a domain and port on the
--- service that says what to route where.
+-- reverse proxy that nudo installs and configures, and routes on the service
+-- that say what to send where.
 --
 -- Ingress is a property of the target, not a service of its own. The tempting
 -- alternative — Caddy as an ordinary nudo service — would have reused the
@@ -57,22 +57,49 @@ ALTER TABLE targets ADD COLUMN ingress_last_error TEXT NOT NULL DEFAULT '';
 
 -- Where a service is reachable from the outside.
 --
--- Both or neither: a domain with no port has nothing to route to, and a port
--- with no domain is documentation. Empty domain and zero port — what every
--- existing service gets — means this service is not routed, which is exactly
--- what is true of every service today.
-ALTER TABLE services ADD COLUMN domain TEXT NOT NULL DEFAULT '';
-ALTER TABLE services ADD COLUMN port INTEGER NOT NULL DEFAULT 0;
-
--- One domain, one service. Two services claiming the same hostname is not a
--- configuration nudo can render: whichever came second would silently never
--- receive traffic, and the operator would be debugging DNS for a problem that
--- is in the database.
+-- A table rather than a `domain` and `port` on `services`, because one service
+-- legitimately answers on several: an apex and its `www`, a public domain and
+-- an internal one, or `/api` on a domain whose root is served by something
+-- else. Coolify stores this as a comma-separated list of URLs on the
+-- application row and parses host, path and port back out of each; the parts
+-- are named here instead, which is the same model without the parsing.
 --
--- A partial index so the empty string — every unrouted service — is exempt.
--- Without the WHERE clause the second service without a domain would collide
--- with the first.
-CREATE UNIQUE INDEX services_domain_unique ON services(domain) WHERE domain != '';
+-- A service with no rows here is not routed, which is what is true of every
+-- service that predates this.
+CREATE TABLE service_routes (
+    id          TEXT PRIMARY KEY,
+    service_id  TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+
+    -- Denormalised from the service so the uniqueness constraint below can be
+    -- scoped to a host without a join. Kept in step by the store, which is the
+    -- only writer; a service cannot move between targets, so it cannot go
+    -- stale.
+    target_id   TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+
+    domain      TEXT NOT NULL,
+    -- '' means the whole domain. Otherwise a leading slash and no trailing one,
+    -- normalised on the way in so '/api/', 'api' and '/api' are one route
+    -- rather than three that collide confusingly.
+    path        TEXT NOT NULL DEFAULT '',
+    port        INTEGER NOT NULL,
+
+    -- 'http' or 'h2c'. gRPC needs HTTP/2 end to end, and a proxy that
+    -- downgrades to HTTP/1.1 silently breaks every call — so which one a
+    -- service speaks is recorded rather than guessed.
+    protocol    TEXT NOT NULL DEFAULT 'http',
+
+    created_at  TEXT NOT NULL
+);
+
+-- One domain-and-path, one service. Two services claiming the same hostname and
+-- prefix is not a configuration nudo can render: whichever came second would
+-- silently never receive traffic, and the operator would be debugging DNS for a
+-- problem that is in the database.
+--
+-- Scoped to include the path, so `example.com/api` and `example.com/admin` can
+-- be different services — which is the point of having a path at all.
+CREATE UNIQUE INDEX service_routes_domain_path_unique
+    ON service_routes(domain, path);
 
 -- One port per target. Two services on one host both listening on 8080 is a
 -- collision that predates this feature, but until now nudo had no reason to
@@ -80,5 +107,10 @@ CREATE UNIQUE INDEX services_domain_unique ON services(domain) WHERE domain != '
 -- generating a config whose second route can never work.
 --
 -- Scoped to the target because the same port on two different hosts is fine and
--- common. Zero is exempt for the same reason the empty domain is.
-CREATE UNIQUE INDEX services_target_port_unique ON services(target_id, port) WHERE port != 0;
+-- common. Not unique on (target_id, port) alone: one service can legitimately
+-- have several routes to the same port — an apex and its `www` both reaching
+-- 8080 — so the constraint is that no *other* service claims it, which the
+-- store checks rather than the schema.
+CREATE INDEX service_routes_target_port ON service_routes(target_id, port);
+
+CREATE INDEX service_routes_service ON service_routes(service_id);

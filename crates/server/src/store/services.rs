@@ -44,8 +44,6 @@ impl Store {
         let unit = service.unit.clone().unwrap_or_default();
         let artifact = ArtifactColumns::from_proto(service.artifact.as_ref());
         let health = HealthColumns::from_proto(service.health_check.as_ref());
-        let route = RouteColumns::from_proto(&service.domain, service.port)?;
-
         sqlx::query(
             "INSERT INTO services (
                 id, target_id, name,
@@ -57,8 +55,7 @@ impl Store {
                 health_kind, health_http_url, health_command,
                 health_timeout_seconds, health_retries, health_initial_delay_seconds,
                 release_root, keep_releases, secret_ids, env,
-                current_release_id, created_at, git_build_host_id,
-                domain, port
+                current_release_id, created_at, git_build_host_id
              ) VALUES (
                 ?1, ?2, ?3,
                 ?4, ?5, ?6, ?7, ?8,
@@ -69,8 +66,7 @@ impl Store {
                 ?25, ?26, ?27,
                 ?28, ?29, ?30,
                 ?31, ?32, ?33, ?34,
-                '', ?35, ?36,
-                ?37, ?38
+                '', ?35, ?36
              )",
         )
         .bind(&id)
@@ -121,11 +117,22 @@ impl Store {
         .bind(encode_map(&service.env))
         .bind(now_string())
         .bind(&artifact.build_host_id)
-        .bind(&route.domain)
-        .bind(route.port as i64)
         .execute(self.pool())
         .await
-        .map_err(|e| friendly_service_error(e, name, &route))?;
+        .map_err(|e| friendly_service_error(e, name))?;
+
+        // After the row, because a route references it. A rejected route rolls
+        // the whole creation back rather than leaving a service that looks
+        // configured and is not in the proxy.
+        if !service.routes.is_empty()
+            && let Err(error) = self.replace_routes(&id, &service.routes).await
+        {
+            let _ = sqlx::query("DELETE FROM services WHERE id = ?1")
+                .bind(&id)
+                .execute(self.pool())
+                .await;
+            return Err(error);
+        }
 
         self.get_service(&id)
             .await?
@@ -137,7 +144,13 @@ impl Store {
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.as_ref().map(row_to_service))
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut service = row_to_service(&row);
+        service.routes = self.routes_for_service(id).await?;
+        Ok(Some(service))
     }
 
     /// Lists services, optionally restricted to one target.
@@ -167,7 +180,9 @@ impl Store {
             .await?
         };
 
-        Ok(rows.iter().map(row_to_service).collect())
+        let mut services: Vec<Service> = rows.iter().map(row_to_service).collect();
+        self.attach_routes(&mut services).await?;
+        Ok(services)
     }
 
     pub async fn count_services(&self) -> anyhow::Result<i64> {
@@ -364,26 +379,202 @@ impl Store {
                 .await?;
         }
 
-        // The route is one field in two columns. A mask naming either updates
-        // both, because the pair has to stay consistent: setting `domain` alone
-        // is what would produce the "routed to nothing" state `RouteColumns`
-        // exists to refuse, and it would do it while passing validation, since
-        // the port it validated against is the one already in the row.
-        if touch("domain") || touch("port") {
-            let route = RouteColumns::from_proto(&service.domain, service.port)?;
-            sqlx::query("UPDATE services SET domain = ?1, port = ?2 WHERE id = ?3")
-                .bind(&route.domain)
-                .bind(route.port as i64)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|error| friendly_service_error(error, service.name.trim(), &route))?;
+        transaction.commit().await?;
+
+        // Routes are their own table, so they are replaced after the masked
+        // column updates commit rather than inside that transaction. A rejected
+        // route leaves the other fields applied and reports why, which is the
+        // same shape as any other validation failure here.
+        if touch("routes") {
+            self.replace_routes(id, &service.routes).await?;
         }
 
-        transaction.commit().await?;
         self.get_service(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("service {id} vanished during update"))
+    }
+
+    /// Replaces a service's routes with exactly this list.
+    ///
+    /// Replace rather than merge: a route has no id of its own, so there is
+    /// nothing to merge against, and "the routes are now exactly these" is the
+    /// operation every caller wants. An empty list means not routed.
+    ///
+    /// Collisions are checked here rather than left to the schema, because the
+    /// error has to name the service that already holds the domain or the port
+    /// — a bare `UNIQUE constraint failed` sends an operator to the wrong
+    /// place.
+    pub async fn replace_routes(
+        &self,
+        service_id: &str,
+        routes: &[nudo_proto::Route],
+    ) -> anyhow::Result<()> {
+        let service = self
+            .get_service(service_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no such service: {service_id}"))?;
+
+        // Normalised and validated before anything is written, so a bad route
+        // in the middle of the list cannot leave the first few applied.
+        let mut prepared = Vec::with_capacity(routes.len());
+        for route in routes {
+            route.validate().map_err(|error| anyhow::anyhow!(error))?;
+            let path =
+                nudo_proto::normalize_path(&route.path).map_err(|error| anyhow::anyhow!(error))?;
+            prepared.push((
+                route.domain.trim().to_string(),
+                path,
+                route.port,
+                route.protocol_or_default().as_str().to_string(),
+            ));
+        }
+
+        // A list that collides with itself would otherwise fail halfway through
+        // with a constraint error naming no service at all.
+        for (index, (domain, path, _, _)) in prepared.iter().enumerate() {
+            if let Some(other) = prepared[..index]
+                .iter()
+                .find(|(d, p, _, _)| d == domain && p == path)
+            {
+                bail!(
+                    "this service lists {}{} twice",
+                    other.0,
+                    if other.1.is_empty() { "" } else { &other.1 }
+                );
+            }
+        }
+
+        let mut transaction = self.pool().begin().await?;
+
+        sqlx::query("DELETE FROM service_routes WHERE service_id = ?1")
+            .bind(service_id)
+            .execute(&mut *transaction)
+            .await?;
+
+        for (domain, path, port, protocol) in &prepared {
+            // Another service holding this domain-and-path. Checked inside the
+            // transaction and after the delete, so re-saving a service's own
+            // unchanged routes is not a collision with itself.
+            let taken: Option<(String,)> = sqlx::query_as(
+                "SELECT s.name FROM service_routes r
+                   JOIN services s ON s.id = r.service_id
+                  WHERE r.domain = ?1 AND r.path = ?2",
+            )
+            .bind(domain)
+            .bind(path)
+            .fetch_optional(&mut *transaction)
+            .await?;
+
+            if let Some((other,)) = taken {
+                bail!(
+                    "{domain}{path} is already routed to the service {other:?}. A \
+                     domain can only point at one service, so change that one \
+                     first or pick another domain"
+                );
+            }
+
+            // And another service on this host already listening on this port.
+            // Scoped to the target, because the same port on two hosts is fine.
+            // A service may reuse its own port across several routes — an apex
+            // and its `www` — which the delete above has already made true.
+            let port_taken: Option<(String,)> = sqlx::query_as(
+                "SELECT s.name FROM service_routes r
+                   JOIN services s ON s.id = r.service_id
+                  WHERE r.target_id = ?1 AND r.port = ?2 AND r.service_id <> ?3",
+            )
+            .bind(&service.target_id)
+            .bind(*port as i64)
+            .bind(service_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+
+            if let Some((other,)) = port_taken {
+                bail!(
+                    "port {port} on this target is already claimed by the service \
+                     {other:?}. Two services cannot listen on the same port on one \
+                     host"
+                );
+            }
+
+            sqlx::query(
+                "INSERT INTO service_routes
+                   (id, service_id, target_id, domain, path, port, protocol, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .bind(new_id("rt"))
+            .bind(service_id)
+            .bind(&service.target_id)
+            .bind(domain)
+            .bind(path)
+            .bind(*port as i64)
+            .bind(protocol)
+            .bind(now_string())
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// A service's routes, in a stable order.
+    ///
+    /// Ordered by domain then path so the rendered config is byte-identical for
+    /// the same set of routes. That is what makes "did this deploy change the
+    /// proxy config" answerable by comparing two renders.
+    pub async fn routes_for_service(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<Vec<nudo_proto::Route>> {
+        let rows = sqlx::query(
+            "SELECT r.domain, r.path, r.port, r.protocol, r.service_id, s.name
+               FROM service_routes r
+               JOIN services s ON s.id = r.service_id
+              WHERE r.service_id = ?1
+              ORDER BY r.domain ASC, r.path ASC",
+        )
+        .bind(service_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows.iter().map(row_to_route).collect())
+    }
+
+    /// Fills in the routes for a batch of services.
+    ///
+    /// One query for the whole set rather than one per service: the dashboard's
+    /// service list renders every service on an instance, and a query each
+    /// would make the page cost scale with the number of services.
+    async fn attach_routes(&self, services: &mut [Service]) -> anyhow::Result<()> {
+        if services.is_empty() {
+            return Ok(());
+        }
+
+        let rows = sqlx::query(
+            "SELECT r.domain, r.path, r.port, r.protocol, r.service_id, s.name
+               FROM service_routes r
+               JOIN services s ON s.id = r.service_id
+              ORDER BY r.domain ASC, r.path ASC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut by_service: std::collections::HashMap<String, Vec<nudo_proto::Route>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let route = row_to_route(row);
+            by_service
+                .entry(route.service_id.clone())
+                .or_default()
+                .push(route);
+        }
+
+        for service in services.iter_mut() {
+            if let Some(routes) = by_service.remove(&service.id) {
+                service.routes = routes;
+            }
+        }
+        Ok(())
     }
 
     /// The services on a target that have a route, in a stable order.
@@ -394,13 +585,17 @@ impl Store {
     /// looking like a change when nothing moved.
     pub async fn routed_services(&self, target_id: &str) -> anyhow::Result<Vec<Service>> {
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "{SERVICE_SELECT} WHERE target_id = ?1 AND domain <> '' AND port <> 0 \
-             ORDER BY domain ASC"
+            "{SERVICE_SELECT} WHERE target_id = ?1 \
+               AND EXISTS (SELECT 1 FROM service_routes r WHERE r.service_id = services.id) \
+             ORDER BY name ASC"
         )))
         .bind(target_id)
         .fetch_all(self.pool())
         .await?;
-        Ok(rows.iter().map(row_to_service).collect())
+
+        let mut services: Vec<Service> = rows.iter().map(row_to_service).collect();
+        self.attach_routes(&mut services).await?;
+        Ok(services)
     }
 
     pub async fn delete_service(&self, id: &str) -> anyhow::Result<()> {
@@ -438,8 +633,7 @@ const SERVICE_SELECT: &str = "SELECT
     cpu_affinity, nice, io_scheduling_class, extra_directives,
     health_kind, health_http_url, health_command,
     health_timeout_seconds, health_retries, health_initial_delay_seconds,
-    release_root, keep_releases, secret_ids, env, current_release_id, created_at,
-    domain, port
+    release_root, keep_releases, secret_ids, env, current_release_id, created_at
   FROM services";
 
 /// The artifact `oneof` flattened into columns.
@@ -539,80 +733,29 @@ impl HealthColumns {
     }
 }
 
-/// Where a service is reachable from outside, validated.
-///
-/// Both fields or neither. A domain with no port has nothing to route to, and a
-/// port with no domain routes from nowhere — both are almost certainly a
-/// half-finished edit, and storing one silently would produce a service that
-/// looks configured in the dashboard and is not in the proxy.
-struct RouteColumns {
-    domain: String,
-    port: u32,
-}
-
-impl RouteColumns {
-    fn from_proto(domain: &str, port: u32) -> anyhow::Result<Self> {
-        let domain = domain.trim();
-
-        match (domain.is_empty(), port == 0) {
-            // Not routed. The state of every service that predates ingress.
-            (true, true) => Ok(Self {
-                domain: String::new(),
-                port: 0,
-            }),
-            (false, false) => {
-                // Validated here rather than only at the API edge because the
-                // renderer downstream treats what it reads from the database as
-                // safe to write into a proxy config.
-                nudo_proto::validate_domain(domain).map_err(|error| anyhow::anyhow!(error))?;
-                nudo_proto::validate_port(port).map_err(|error| anyhow::anyhow!(error))?;
-                Ok(Self {
-                    domain: domain.to_string(),
-                    port,
-                })
-            }
-            (false, true) => bail!(
-                "service has a domain ({domain}) but no port — nudo needs to know \
-                 what port it listens on to route to it"
-            ),
-            (true, false) => bail!(
-                "service has a port ({port}) but no domain — set a domain to route \
-                 to it, or clear the port"
-            ),
-        }
-    }
-}
-
 /// Turns a unique-constraint violation into something an operator can act on.
 ///
-/// Three different constraints can fire here and they mean entirely different
-/// things. Reporting them all as a name collision — which is what happened
-/// before ingress added two more — sends someone looking for a duplicate name
-/// that does not exist.
-fn friendly_service_error(error: sqlx::Error, name: &str, route: &RouteColumns) -> anyhow::Error {
-    if !super::targets::is_unique_violation(&error) {
-        return error.into();
+/// Only the service-name constraint reaches here now — route collisions are
+/// checked in `replace_routes`, where the offending route is in hand and can be
+/// named. Reporting a route collision as a duplicate service name, which an
+/// earlier version did, sends someone looking for a service that does not
+/// exist.
+fn friendly_service_error(error: sqlx::Error, name: &str) -> anyhow::Error {
+    if super::targets::is_unique_violation(&error) {
+        return anyhow::anyhow!("a service named {name:?} already exists on that target");
     }
+    error.into()
+}
 
-    // The message names the column, so match on it rather than guessing.
-    let text = error.to_string();
-    if text.contains("services.domain") {
-        return anyhow::anyhow!(
-            "the domain {:?} is already routed to another service. A domain can \
-             only point at one service, so change that one first or pick another \
-             domain",
-            route.domain
-        );
+fn row_to_route(row: &SqliteRow) -> nudo_proto::Route {
+    nudo_proto::Route {
+        domain: row.get("domain"),
+        path: row.get("path"),
+        port: row.get::<i64, _>("port") as u32,
+        protocol: nudo_proto::route::Protocol::parse(&row.get::<String, _>("protocol")) as i32,
+        service_id: row.get("service_id"),
+        service_name: row.get("name"),
     }
-    if text.contains("services.port") {
-        return anyhow::anyhow!(
-            "port {} is already claimed by another service on this target. Two \
-             services cannot listen on the same port on one host",
-            route.port
-        );
-    }
-
-    anyhow::anyhow!("a service named {name:?} already exists on that target")
 }
 
 fn row_to_service(row: &SqliteRow) -> Service {
@@ -674,8 +817,9 @@ fn row_to_service(row: &SqliteRow) -> Service {
         env: decode_map(&row.get::<String, _>("env")),
         current_release_id: row.get("current_release_id"),
         created_at: nudo_proto::to_timestamp_opt(from_db_time(&row.get::<String, _>("created_at"))),
-        domain: row.get("domain"),
-        port: row.get::<i64, _>("port") as u32,
+        // Filled in by the caller: routes live in their own table, so a row
+        // alone cannot produce them.
+        routes: Vec::new(),
     }
 }
 

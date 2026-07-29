@@ -1,5 +1,5 @@
 use super::*;
-use nudo_proto::{Ingress, Service, Target, ingress};
+use nudo_proto::{Ingress, Route, Service, Target, ingress, route};
 
 fn target(mode: ingress::Mode, admin_port: u32, email: &str) -> Target {
     Target {
@@ -17,12 +17,26 @@ fn target(mode: ingress::Mode, admin_port: u32, email: &str) -> Target {
 }
 
 fn service(name: &str, domain: &str, port: u32) -> Service {
+    routed(name, &[(domain, "", port, route::Protocol::Unspecified)])
+}
+
+/// A service with an explicit list of routes.
+fn routed(name: &str, routes: &[(&str, &str, u32, route::Protocol)]) -> Service {
     Service {
         id: format!("svc_{name}"),
         target_id: "tgt_1".to_string(),
         name: name.to_string(),
-        domain: domain.to_string(),
-        port,
+        routes: routes
+            .iter()
+            .filter(|(domain, _, _, _)| !domain.is_empty())
+            .map(|(domain, path, port, protocol)| Route {
+                domain: domain.to_string(),
+                path: path.to_string(),
+                port: *port,
+                protocol: *protocol as i32,
+                ..Default::default()
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -258,4 +272,159 @@ fn routes_carry_the_service_they_came_from() {
     assert_eq!(routes[0].service_id, "svc_api");
     assert_eq!(routes[0].domain, "api.example.com");
     assert_eq!(routes[0].port, 8080);
+}
+
+// ---- multiple routes, paths and protocols ----
+
+#[test]
+fn several_domains_on_one_service_share_a_site_block_each() {
+    // The apex-and-www case. Two domains, one service, one port.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[routed(
+            "web",
+            &[
+                ("example.com", "", 8080, route::Protocol::Unspecified),
+                ("www.example.com", "", 8080, route::Protocol::Unspecified),
+            ],
+        )],
+    );
+
+    assert!(config.contains("example.com {"), "{config}");
+    assert!(config.contains("www.example.com {"), "{config}");
+    assert_eq!(
+        config.matches("reverse_proxy 127.0.0.1:8080").count(),
+        2,
+        "each domain gets its own upstream: {config}"
+    );
+}
+
+#[test]
+fn two_routes_on_one_domain_share_a_single_site_block() {
+    // A Caddyfile has one block per hostname. Two blocks for the same domain
+    // would be a config Caddy refuses.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[
+            routed(
+                "web",
+                &[("example.com", "", 8080, route::Protocol::Unspecified)],
+            ),
+            routed(
+                "api",
+                &[("example.com", "/api", 9090, route::Protocol::Unspecified)],
+            ),
+        ],
+    );
+
+    assert_eq!(
+        config.matches("example.com {").count(),
+        1,
+        "one site block for one hostname: {config}"
+    );
+    assert!(config.contains("handle_path /api/*"), "{config}");
+    assert!(config.contains("reverse_proxy 127.0.0.1:9090"), "{config}");
+    assert!(config.contains("reverse_proxy 127.0.0.1:8080"), "{config}");
+}
+
+#[test]
+fn a_longer_path_is_matched_before_a_shorter_one() {
+    // Caddy tries handle blocks in order, so /api/v2 has to come before /api or
+    // it would never be reached. The domain root sorts last of all.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[routed(
+            "api",
+            &[
+                ("example.com", "", 8080, route::Protocol::Unspecified),
+                ("example.com", "/api", 8081, route::Protocol::Unspecified),
+                ("example.com", "/api/v2", 8082, route::Protocol::Unspecified),
+            ],
+        )],
+    );
+
+    let v2 = config.find("/api/v2/*").expect("v2 block");
+    let api = config.find("handle_path /api/*").expect("api block");
+    let root = config.find("\thandle {").expect("root block");
+    assert!(v2 < api, "the longer prefix must be tried first:\n{config}");
+    assert!(api < root, "the root must be the fallback:\n{config}");
+}
+
+#[test]
+fn a_grpc_route_proxies_over_h2c() {
+    // The whole of gRPC support: HTTP/2 end to end. A proxy that downgrades to
+    // HTTP/1.1 breaks every call.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[routed(
+            "grpc",
+            &[("grpc.example.com", "", 50051, route::Protocol::H2c)],
+        )],
+    );
+
+    assert!(
+        config.contains("reverse_proxy h2c://127.0.0.1:50051"),
+        "a gRPC route needs the h2c scheme: {config}"
+    );
+}
+
+#[test]
+fn an_http_route_does_not_get_the_h2c_scheme() {
+    // h2c on an ordinary HTTP backend breaks it in the opposite direction, so
+    // the default has to stay plain.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[service("api", "api.example.com", 8080)],
+    );
+    assert!(config.contains("reverse_proxy 127.0.0.1:8080"), "{config}");
+    assert!(!config.contains("h2c://"), "{config}");
+}
+
+#[test]
+fn a_path_that_would_inject_directives_drops_its_route() {
+    // The path lands in a Caddyfile matcher, so it is a second injection route
+    // beside the domain. Same defence: the route is dropped rather than
+    // written in a mangled form.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[routed(
+            "api",
+            &[(
+                "api.example.com",
+                "/api {\n\trespond \"owned\"\n}",
+                8080,
+                route::Protocol::Unspecified,
+            )],
+        )],
+    );
+
+    for line in config.lines().filter(|line| line.contains("respond")) {
+        assert!(
+            line.trim_start().starts_with('#'),
+            "a path escaped into configuration: {line:?}\n{config}"
+        );
+    }
+    assert!(config.contains("skipped api"), "{config}");
+}
+
+#[test]
+fn one_bad_route_does_not_take_the_others_with_it() {
+    // The other services on this host keep working; the missing route is
+    // visible in the preview rather than silently absent.
+    let config = render(
+        &target(ingress::Mode::Managed, 0, ""),
+        &[
+            routed(
+                "good",
+                &[("good.example.com", "", 8080, route::Protocol::Unspecified)],
+            ),
+            routed(
+                "bad",
+                &[("not a domain", "", 8081, route::Protocol::Unspecified)],
+            ),
+        ],
+    );
+
+    assert!(config.contains("good.example.com {"), "{config}");
+    assert!(config.contains("skipped bad"), "{config}");
 }

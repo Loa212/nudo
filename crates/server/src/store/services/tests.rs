@@ -1,5 +1,6 @@
 use super::*;
 use crate::store::TargetInput;
+use nudo_proto::{Route, route};
 
 async fn store_with_target() -> (Store, String) {
     let store = Store::open_in_memory().await.expect("open");
@@ -539,65 +540,99 @@ async fn repo_matching_is_case_insensitive_but_branch_matching_is_not() {
 
 // ---- routing ----
 
-#[tokio::test]
-async fn a_service_needs_both_a_domain_and_a_port_or_neither() {
-    // Half of a route is almost certainly a half-finished edit. Storing it
-    // silently would produce a service that looks configured in the dashboard
-    // and is absent from the proxy.
-    let (store, target_id) = store_with_target().await;
-
-    let error = store
-        .create_service(&Service {
-            domain: "api.example.com".to_string(),
-            ..service(&target_id)
-        })
-        .await
-        .expect_err("a domain with no port is refused");
-    assert!(format!("{error:#}").contains("no port"), "got: {error:#}");
-
-    let error = store
-        .create_service(&Service {
-            port: 8080,
-            ..service(&target_id)
-        })
-        .await
-        .expect_err("a port with no domain is refused");
-    assert!(format!("{error:#}").contains("no domain"), "got: {error:#}");
-
-    // Neither is the ordinary state of every service that is not routed.
-    store
-        .create_service(&service(&target_id))
-        .await
-        .expect("an unrouted service is fine");
-}
-
-#[tokio::test]
-async fn many_services_can_be_unrouted_without_colliding() {
-    // The partial indexes exist so the empty domain and the zero port do not
-    // count as duplicates. Without them the second unrouted service would be
-    // refused, which is every service that predates this feature.
-    let (store, target_id) = store_with_target().await;
-    for name in ["one", "two", "three"] {
-        store
-            .create_service(&Service {
-                name: name.to_string(),
-                ..service(&target_id)
-            })
-            .await
-            .expect("unrouted services do not collide");
+fn route(domain: &str, path: &str, port: u32) -> Route {
+    Route {
+        domain: domain.to_string(),
+        path: path.to_string(),
+        port,
+        ..Default::default()
     }
 }
 
 #[tokio::test]
-async fn two_services_cannot_claim_the_same_domain() {
+async fn a_service_can_answer_on_several_domains() {
+    // The case a single domain-and-port field could not express, and the reason
+    // the model is a list: an apex and its `www`, both reaching one port.
+    let (store, target_id) = store_with_target().await;
+    let created = store
+        .create_service(&Service {
+            routes: vec![
+                route("example.com", "", 8080),
+                route("www.example.com", "", 8080),
+            ],
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    assert_eq!(created.routes.len(), 2);
+    // Ordered by domain, so the render is stable.
+    assert_eq!(created.routes[0].domain, "example.com");
+    assert_eq!(created.routes[1].domain, "www.example.com");
+}
+
+#[tokio::test]
+async fn one_domain_can_be_split_between_services_by_path() {
+    let (store, target_id) = store_with_target().await;
+    store
+        .create_service(&Service {
+            name: "web".to_string(),
+            routes: vec![route("example.com", "", 8080)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("web");
+
+    let api = store
+        .create_service(&Service {
+            name: "api".to_string(),
+            routes: vec![route("example.com", "/api", 9090)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("the same domain under a different path is a different route");
+
+    assert_eq!(api.routes[0].path, "/api");
+}
+
+#[tokio::test]
+async fn a_path_is_normalised_so_one_route_is_not_three() {
+    let (store, target_id) = store_with_target().await;
+    let created = store
+        .create_service(&Service {
+            routes: vec![route("example.com", "api/", 8080)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    assert_eq!(
+        created.routes[0].path, "/api",
+        "a leading slash is added and a trailing one removed, so '/api/', 'api' \
+         and '/api' are one route"
+    );
+
+    // And the root is stored as empty rather than as "/".
+    let root = store
+        .create_service(&Service {
+            name: "root".to_string(),
+            routes: vec![route("other.example.com", "/", 8081)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+    assert!(root.routes[0].path.is_empty());
+}
+
+#[tokio::test]
+async fn two_services_cannot_claim_the_same_domain_and_path() {
     // Whichever came second would silently never receive traffic, and the
     // operator would be debugging DNS for a problem that is in the database.
     let (store, target_id) = store_with_target().await;
     store
         .create_service(&Service {
             name: "one".to_string(),
-            domain: "api.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("api.example.com", "", 8080)],
             ..service(&target_id)
         })
         .await
@@ -606,8 +641,7 @@ async fn two_services_cannot_claim_the_same_domain() {
     let error = store
         .create_service(&Service {
             name: "two".to_string(),
-            domain: "api.example.com".to_string(),
-            port: 9090,
+            routes: vec![route("api.example.com", "", 9090)],
             ..service(&target_id)
         })
         .await
@@ -616,20 +650,36 @@ async fn two_services_cannot_claim_the_same_domain() {
     let message = format!("{error:#}");
     assert!(message.contains("already routed"), "got: {message}");
     assert!(
-        !message.contains("already exists on that target"),
-        "a domain collision must not be reported as a duplicate name — that \
-         sends someone looking for a service that does not exist: {message}"
+        message.contains("\"one\""),
+        "the message should name the service holding it, so somebody knows \
+         where to look: {message}"
     );
 }
 
 #[tokio::test]
-async fn two_services_on_one_target_cannot_claim_the_same_port() {
+async fn a_service_may_reuse_its_own_port_across_routes() {
+    // An apex and its `www` reaching one port is not a collision. Only another
+    // service claiming the port is.
+    let (store, target_id) = store_with_target().await;
+    store
+        .create_service(&Service {
+            routes: vec![
+                route("example.com", "", 8080),
+                route("www.example.com", "", 8080),
+            ],
+            ..service(&target_id)
+        })
+        .await
+        .expect("one service, one port, two domains");
+}
+
+#[tokio::test]
+async fn another_service_cannot_claim_a_port_already_in_use_on_that_target() {
     let (store, target_id) = store_with_target().await;
     store
         .create_service(&Service {
             name: "one".to_string(),
-            domain: "one.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("one.example.com", "", 8080)],
             ..service(&target_id)
         })
         .await
@@ -638,8 +688,7 @@ async fn two_services_on_one_target_cannot_claim_the_same_port() {
     let error = store
         .create_service(&Service {
             name: "two".to_string(),
-            domain: "two.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("two.example.com", "", 8080)],
             ..service(&target_id)
         })
         .await
@@ -652,8 +701,6 @@ async fn two_services_on_one_target_cannot_claim_the_same_port() {
 
 #[tokio::test]
 async fn the_same_port_on_two_targets_is_fine() {
-    // Two hosts each running something on 8080 is ordinary, and scoping the
-    // constraint to the target is what allows it.
     let (store, first) = store_with_target().await;
     let second = store
         .create_target(&TargetInput {
@@ -667,8 +714,7 @@ async fn the_same_port_on_two_targets_is_fine() {
     store
         .create_service(&Service {
             name: "one".to_string(),
-            domain: "one.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("one.example.com", "", 8080)],
             ..service(&first)
         })
         .await
@@ -676,12 +722,52 @@ async fn the_same_port_on_two_targets_is_fine() {
     store
         .create_service(&Service {
             name: "two".to_string(),
-            domain: "two.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("two.example.com", "", 8080)],
             ..service(&second.id)
         })
         .await
         .expect("the same port on another host is fine");
+}
+
+#[tokio::test]
+async fn a_service_listing_the_same_route_twice_is_refused() {
+    // Would otherwise fail halfway through with a constraint error naming no
+    // service at all.
+    let (store, target_id) = store_with_target().await;
+    let error = store
+        .create_service(&Service {
+            routes: vec![
+                route("api.example.com", "", 8080),
+                route("api.example.com", "", 9090),
+            ],
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("a self-collision is refused");
+    assert!(format!("{error:#}").contains("twice"), "got: {error:#}");
+}
+
+#[tokio::test]
+async fn a_rejected_route_does_not_leave_a_half_created_service() {
+    // The route is validated after the row is inserted, so a failure has to
+    // take the row with it — otherwise a service exists that the operator was
+    // told was not created.
+    let (store, target_id) = store_with_target().await;
+    let before = store.count_services().await.expect("count");
+
+    store
+        .create_service(&Service {
+            routes: vec![route("not a domain", "", 8080)],
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("an invalid domain is refused");
+
+    assert_eq!(
+        store.count_services().await.expect("count"),
+        before,
+        "the service row should have been rolled back with its route"
+    );
 }
 
 #[tokio::test]
@@ -692,8 +778,7 @@ async fn a_domain_that_could_inject_proxy_config_is_refused_by_the_store() {
     let (store, target_id) = store_with_target().await;
     let error = store
         .create_service(&Service {
-            domain: "evil.com {\n\trespond \"owned\"\n}".to_string(),
-            port: 8080,
+            routes: vec![route("evil.com {\n\trespond \"owned\"\n}", "", 8080)],
             ..service(&target_id)
         })
         .await
@@ -705,84 +790,149 @@ async fn a_domain_that_could_inject_proxy_config_is_refused_by_the_store() {
 }
 
 #[tokio::test]
-async fn updating_a_domain_moves_the_port_with_it() {
-    // The route is one field in two columns. A mask naming only the domain must
-    // not leave the old port behind — that is the "routed to nothing" state the
-    // both-or-neither rule exists to prevent.
+async fn a_path_that_could_inject_proxy_config_is_refused_by_the_store() {
+    // The path lands in a Caddyfile matcher, so it is a second way in.
+    let (store, target_id) = store_with_target().await;
+    for hostile in ["/api {\n\trespond \"owned\"\n}", "/api\nrespond", "/a b"] {
+        store
+            .create_service(&Service {
+                name: format!("svc{}", hostile.len()),
+                routes: vec![route("api.example.com", hostile, 8080)],
+                ..service(&target_id)
+            })
+            .await
+            .expect_err("a hostile path must be refused");
+    }
+}
+
+#[tokio::test]
+async fn updating_routes_replaces_them_wholesale() {
     let (store, target_id) = store_with_target().await;
     let created = store
         .create_service(&Service {
-            domain: "old.example.com".to_string(),
-            port: 8080,
+            routes: vec![
+                route("old.example.com", "", 8080),
+                route("older.example.com", "", 8080),
+            ],
             ..service(&target_id)
         })
         .await
         .expect("create");
+    assert_eq!(created.routes.len(), 2);
 
     let updated = store
         .update_service(
             &created.id,
             &Service {
-                domain: "new.example.com".to_string(),
-                port: 9090,
+                routes: vec![route("new.example.com", "", 9090)],
                 ..Default::default()
             },
-            &["domain".to_string()],
+            &["routes".to_string()],
         )
         .await
         .expect("update");
 
-    assert_eq!(updated.domain, "new.example.com");
-    assert_eq!(updated.port, 9090, "the port moved with the domain");
+    assert_eq!(updated.routes.len(), 1, "replaced, not merged");
+    assert_eq!(updated.routes[0].domain, "new.example.com");
+
+    // And the old domain is free for another service to take.
+    store
+        .create_service(&Service {
+            name: "other".to_string(),
+            routes: vec![route("old.example.com", "", 8081)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("the released domain is available");
 }
 
 #[tokio::test]
-async fn clearing_a_domain_clears_the_port_too() {
+async fn clearing_routes_leaves_a_service_unrouted() {
     let (store, target_id) = store_with_target().await;
     let created = store
         .create_service(&Service {
-            domain: "api.example.com".to_string(),
-            port: 8080,
+            routes: vec![route("api.example.com", "", 8080)],
             ..service(&target_id)
         })
         .await
         .expect("create");
 
     let updated = store
-        .update_service(
-            &created.id,
-            &Service::default(),
-            &["domain".to_string(), "port".to_string()],
-        )
+        .update_service(&created.id, &Service::default(), &["routes".to_string()])
         .await
         .expect("update");
-
-    assert!(updated.domain.is_empty());
-    assert_eq!(updated.port, 0);
+    assert!(updated.routes.is_empty());
 }
 
 #[tokio::test]
-async fn routed_services_returns_only_routed_ones_in_a_stable_order() {
-    // Ordered so the rendered config is byte-identical for the same routes,
-    // which is what makes "did this change the proxy config" answerable.
+async fn deleting_a_service_frees_its_routes() {
     let (store, target_id) = store_with_target().await;
-    for (name, domain, port) in [
-        ("b", "b.example.com", 8081),
-        ("a", "a.example.com", 8080),
-        ("unrouted", "", 0),
-    ] {
+    let created = store
+        .create_service(&Service {
+            routes: vec![route("api.example.com", "", 8080)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    store.delete_service(&created.id).await.expect("delete");
+
+    store
+        .create_service(&Service {
+            name: "replacement".to_string(),
+            routes: vec![route("api.example.com", "", 8080)],
+            ..service(&target_id)
+        })
+        .await
+        .expect("the domain and port are free once the service is gone");
+}
+
+#[tokio::test]
+async fn routed_services_returns_only_routed_ones() {
+    let (store, target_id) = store_with_target().await;
+    for (name, domain) in [("a", "a.example.com"), ("b", "b.example.com")] {
         store
             .create_service(&Service {
                 name: name.to_string(),
-                domain: domain.to_string(),
-                port,
+                routes: vec![route(domain, "", if name == "a" { 8080 } else { 8081 })],
                 ..service(&target_id)
             })
             .await
             .expect("create");
     }
+    store
+        .create_service(&Service {
+            name: "unrouted".to_string(),
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
 
     let routed = store.routed_services(&target_id).await.expect("routed");
-    let domains: Vec<&str> = routed.iter().map(|s| s.domain.as_str()).collect();
-    assert_eq!(domains, ["a.example.com", "b.example.com"]);
+    let names: Vec<&str> = routed.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["a", "b"]);
+    assert!(routed.iter().all(|s| !s.routes.is_empty()));
+}
+
+#[tokio::test]
+async fn a_grpc_route_records_its_protocol() {
+    let (store, target_id) = store_with_target().await;
+    let created = store
+        .create_service(&Service {
+            routes: vec![Route {
+                domain: "grpc.example.com".to_string(),
+                port: 50051,
+                protocol: route::Protocol::H2c as i32,
+                ..Default::default()
+            }],
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    assert_eq!(
+        created.routes[0].protocol_or_default(),
+        route::Protocol::H2c,
+        "gRPC needs HTTP/2 end to end, so this has to survive a round trip"
+    );
 }

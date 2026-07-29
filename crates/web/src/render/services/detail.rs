@@ -104,15 +104,25 @@ pub fn service_detail(
                     dt { "Unit" }             dd .mono { (or_dash(&unit.unit_name)) }
                     // Only when routed: a "Domain -" row on every service that
                     // is not would be noise on the pages where it never will be.
-                    @if !service.domain.is_empty() {
-                        dt { "Domain" }
+                    // Plural, because one service can answer on several.
+                    @if !service.routes.is_empty() {
+                        dt { @if service.routes.len() == 1 { "Domain" } @else { "Domains" } }
                         dd {
-                            a href=(format!("https://{}", service.domain))
-                              target="_blank" rel="noreferrer noopener" {
-                                (service.domain)
+                            @for route in &service.routes {
+                                div {
+                                    a href=(format!("https://{}{}", route.domain, route.path))
+                                      target="_blank" rel="noreferrer noopener" {
+                                        (route.domain) (route.path)
+                                    }
+                                    span .sep { " · " }
+                                    span .mono.small {
+                                        "→ :" (route.port)
+                                        @if route.protocol_or_default() == route::Protocol::H2c {
+                                            " (gRPC)"
+                                        }
+                                    }
+                                }
                             }
-                            span .sep { " · " }
-                            span .mono.small { "→ :" (service.port) }
                         }
                     }
                     dt { "Source" }           dd { (artifact_detail(service)) }

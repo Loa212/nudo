@@ -53,17 +53,17 @@ pub const UNIT_NAME: &str = "caddy.service";
 pub const BINARY_PATH: &str = "/usr/local/bin/caddy";
 
 /// The routes a target's services define, in the order they will be rendered.
+///
+/// Grouped by domain and sorted, because a Caddyfile has one site block per
+/// hostname: two routes on `example.com` with different paths are two
+/// directives inside one block, not two blocks. Sorting also makes the render
+/// byte-identical for the same set of routes, which is what lets a caller
+/// answer "did this change the proxy config" by comparing two renders.
 pub fn routes_for(services: &[Service]) -> Vec<Route> {
-    services
-        .iter()
-        .filter(|service| !service.domain.trim().is_empty() && service.port != 0)
-        .map(|service| Route {
-            service_id: service.id.clone(),
-            service_name: service.name.clone(),
-            domain: service.domain.trim().to_string(),
-            port: service.port,
-        })
-        .collect()
+    // The dashboard renders the same list, so the ordering lives in the proto
+    // crate where both can reach it. A table whose order differs from the
+    // config it describes is a table nobody can check against the config.
+    nudo_proto::routes_of(services)
 }
 
 /// Renders the Caddyfile for a target.
@@ -116,38 +116,98 @@ pub fn render(target: &Target, services: &[Service]) -> String {
         return out;
     }
 
-    for route in &routes {
-        // Skip rather than render anything questionable. Reaching here with a
-        // domain that fails validation means something upstream is broken, and
-        // the safe response is to leave that one route out — the other services
-        // on this host keep working, and the missing route is visible in the
-        // preview and the check.
-        if nudo_proto::validate_domain(&route.domain).is_err()
-            || nudo_proto::validate_port(route.port).is_err()
-        {
-            let _ = write!(
-                out,
-                "\n# skipped {}: its domain or port is not one nudo will write\n",
-                comment_safe(&route.service_name)
-            );
-            continue;
+    // Skip rather than render anything questionable. Reaching here with a route
+    // that fails validation means something upstream is broken, and the safe
+    // response is to leave that one out — the other services on this host keep
+    // working, and the missing route is visible in the preview and the check.
+    let (usable, skipped): (Vec<&Route>, Vec<&Route>) =
+        routes.iter().partition(|route| route.validate().is_ok());
+
+    for route in skipped {
+        // The service name and the reason, never the offending value. Echoing
+        // it back would put attacker-controlled text into the config file —
+        // inert, because `comment_safe` flattens it onto one comment line, but
+        // there is no reason to carry it at all. The operator sees the full
+        // value in the dashboard and the check, where it is escaped as HTML.
+        let _ = write!(
+            out,
+            "\n# skipped {}: its domain, path or port is not one nudo will write\n",
+            comment_safe(&route.service_name)
+        );
+    }
+
+    // One site block per domain: two routes on the same hostname are two
+    // directives inside one block, not two blocks that would collide.
+    let mut current_domain: Option<&str> = None;
+    let mut open = false;
+
+    for route in usable {
+        if current_domain != Some(route.domain.as_str()) {
+            if open {
+                out.push_str("}\n");
+            }
+            out.push('\n');
+            let _ = writeln!(out, "{} {{", route.domain);
+            current_domain = Some(&route.domain);
+            open = true;
         }
 
-        out.push('\n');
         // The service name is operator-supplied and only ever a comment, but a
         // newline in it would end the comment and start a line of config, so it
         // is flattened rather than trusted.
-        let _ = write!(
+        let _ = writeln!(
             out,
-            "# {} -> :{}\n{} {{\n",
+            "\t# {} -> :{}",
             comment_safe(&route.service_name),
-            route.port,
-            route.domain
+            route.port
         );
+
         // Loopback: the service listens locally and only the proxy reaches it.
         // Routing to 0.0.0.0 would work and would also mean anyone who can
         // reach the host on that port bypasses TLS entirely.
-        let _ = writeln!(out, "\treverse_proxy 127.0.0.1:{}", route.port);
+        //
+        // `h2c://` is the whole of gRPC support. gRPC needs HTTP/2 end to end,
+        // and a proxy that downgrades to HTTP/1.1 breaks every call — so a
+        // route says which it is rather than nudo guessing.
+        let upstream = format!(
+            "{}127.0.0.1:{}",
+            route.protocol_or_default().upstream_scheme(),
+            route.port
+        );
+
+        // Only routes that already passed `validate()` reach here, so the path
+        // normalises. `Err` is matched explicitly rather than folded into the
+        // root case: an unwritable path must never become "route the whole
+        // domain", which would widen what the service receives instead of
+        // dropping the route.
+        match nudo_proto::normalize_path(&route.path) {
+            Ok(path) if !path.is_empty() => {
+                // `handle_path` rather than `handle`: it strips the prefix
+                // before the request reaches the service, so a service routed
+                // at /api sees /users rather than /api/users. That is what
+                // Coolify does by default and almost always what is wanted.
+                let _ = writeln!(out, "\thandle_path {path}/* {{");
+                let _ = writeln!(out, "\t\treverse_proxy {upstream}");
+                out.push_str("\t}\n");
+            }
+            Ok(_) => {
+                // The domain root. `handle` rather than a bare directive so it
+                // composes with any path blocks above it — Caddy matches these
+                // in order, and the root has to be the fallback.
+                let _ = writeln!(out, "\thandle {{");
+                let _ = writeln!(out, "\t\treverse_proxy {upstream}");
+                out.push_str("\t}\n");
+            }
+            Err(_) => {
+                let _ = writeln!(
+                    out,
+                    "\t# route omitted: its path is not one nudo will write"
+                );
+            }
+        }
+    }
+
+    if open {
         out.push_str("}\n");
     }
 

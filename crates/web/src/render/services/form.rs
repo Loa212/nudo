@@ -103,32 +103,33 @@ pub fn service_form(
                     h2 { "Routing" }
                     p .card-note {
                         "Optional. Reach this service at a domain over HTTPS, on targets \
-                         where ingress is enabled. Leave both blank and it keeps being \
-                         reached by IP and port, as before."
+                         where ingress is enabled. Leave it blank and the service keeps \
+                         being reached by IP and port, as before."
                     }
-                    div .fields style="margin-top:12px" {
-                        div .field {
-                            label for="domain" { "Domain" }
-                            input type="text" id="domain" name="domain"
-                                placeholder="api.example.com"
-                                value=(existing.map(|s| s.domain.as_str()).unwrap_or_default());
-                            span .hint {
-                                "Point an A record at the target first — a certificate \
-                                 cannot be issued until DNS resolves here."
-                            }
+                    div .field style="margin-top:12px" {
+                        label for="routes" { "Routes" }
+                        textarea id="routes" name="routes" rows="4"
+                            placeholder="api.example.com:8080" {
+                            (routes_text(existing))
                         }
-                        div .field {
-                            label for="port" { "Port" }
-                            // Rendered blank rather than as 0, which is the
-                            // "not routed" sentinel and would read as a port.
-                            input type="number" id="port" name="port" min="1" max="65535"
-                                placeholder="8080"
-                                value=(existing
-                                    .map(|s| s.port)
-                                    .filter(|p| *p > 0)
-                                    .map(|p| p.to_string())
-                                    .unwrap_or_default());
-                            span .hint { "Where the service listens on the target's loopback." }
+                        span .hint {
+                            "One per line, as " code { "domain[/path]:port" } ". Several \
+                             lines put the service on several domains. A path is stripped \
+                             before the request reaches the service, so " code { "/api" }
+                            " sees " code { "/users" } " rather than " code { "/api/users" } "."
+                        }
+                    }
+                    div .field style="margin-top:12px" {
+                        label {
+                            input type="checkbox" name="grpc" value="1"
+                                checked[existing.is_some_and(|s| s.routes.iter().any(|r| {
+                                    r.protocol_or_default() == route::Protocol::H2c
+                                }))];
+                            " This service speaks gRPC"
+                        }
+                        span .hint {
+                            "gRPC needs HTTP/2 all the way to the service. Without this the \
+                             proxy talks HTTP/1.1 to it and every call fails."
                         }
                     }
                 }
@@ -458,6 +459,24 @@ fn directives_text(map: &HashMap<String, String>) -> String {
     let mut lines: Vec<String> = map.iter().map(|(k, v)| format!("{k}={v}")).collect();
     lines.sort();
     lines.join("\n")
+}
+
+/// A service's routes as the textarea shows them, one `domain[/path]:port` per
+/// line.
+///
+/// The same syntax the CLI takes, so what an operator learns in one place works
+/// in the other.
+fn routes_text(existing: Option<&Service>) -> String {
+    existing
+        .map(|service| {
+            service
+                .routes
+                .iter()
+                .map(|route| format!("{}{}:{}", route.domain, route.path, route.port))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
