@@ -143,7 +143,7 @@ pub fn render(target: &Target, services: &[Service]) -> String {
         // Loopback: the service listens locally and only the proxy reaches it.
         // Routing to 0.0.0.0 would work and would also mean anyone who can
         // reach the host on that port bypasses TLS entirely.
-        let _ = write!(out, "\treverse_proxy 127.0.0.1:{}\n", route.port);
+        let _ = writeln!(out, "\treverse_proxy 127.0.0.1:{}", route.port);
         out.push_str("}\n");
     }
 

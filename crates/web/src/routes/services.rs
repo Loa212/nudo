@@ -202,6 +202,14 @@ pub struct ServiceForm {
     #[serde(default)]
     pub secret_ids: Vec<String>,
 
+    /// Where this service is reachable from outside, when the target has
+    /// ingress. Both default so a form rendered before this existed still
+    /// deserializes.
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub port: String,
+
     #[serde(default)]
     pub allow_latency_critical: Option<String>,
     pub csrf: String,
@@ -285,6 +293,11 @@ impl ServiceForm {
             env: parse_labels(&self.env),
             current_release_id: String::new(),
             created_at: None,
+            domain: self.domain.trim().to_string(),
+            // Left at zero when the field is blank, which with an empty domain
+            // is what "not routed" looks like. A blank port beside a domain is
+            // refused server-side rather than guessed at here.
+            port: self.port.trim().parse().unwrap_or(0),
         }
     }
 }

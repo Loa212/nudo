@@ -405,11 +405,7 @@ impl Targets for TargetsService {
                 "Targets.EnableIngress",
                 &request.target_id,
                 Some(&existing),
-                format!(
-                    "enabled {} ingress on {}",
-                    mode.as_str(),
-                    existing.name
-                ),
+                format!("enabled {} ingress on {}", mode.as_str(), existing.name),
             )
             .await?;
 
@@ -470,12 +466,7 @@ impl Targets for TargetsService {
 
         self.context
             .store
-            .set_ingress(
-                &request.target_id,
-                ingress::Mode::Unspecified,
-                0,
-                &String::new(),
-            )
+            .set_ingress(&request.target_id, ingress::Mode::Unspecified, 0, "")
             .await
             .map_err(super::invalid)?;
 
@@ -630,7 +621,11 @@ impl TargetsService {
     /// A failed reload leaves the proxy serving the previous config — Caddy
     /// restores it itself — so the target is degraded rather than broken, and
     /// the reason is stored where someone looking at the target will find it.
-    async fn record_reload(&self, target_id: &str, outcome: &crate::ingress::reconcile::ReloadOutcome) {
+    async fn record_reload(
+        &self,
+        target_id: &str,
+        outcome: &crate::ingress::reconcile::ReloadOutcome,
+    ) {
         let status = if outcome.ok {
             ingress::Status::Active
         } else {
@@ -1353,6 +1348,203 @@ mod tests {
             status.message().contains("SSH key"),
             "got: {}",
             status.message()
+        );
+    }
+
+    // ---- ingress ----
+
+    async fn target_with_ingress(service: &TargetsService, name: &str) -> Target {
+        let created = service
+            .create(Request::new(create(name, false)))
+            .await
+            .expect("create")
+            .into_inner();
+
+        service
+            .enable_ingress(Request::new(EnableIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: created.id,
+                mode: ingress::Mode::Managed as i32,
+                ..Default::default()
+            }))
+            .await
+            .expect("enable ingress")
+            .into_inner()
+    }
+
+    #[tokio::test]
+    async fn enabling_ingress_on_a_latency_critical_target_needs_the_opt_in() {
+        // Putting a reverse proxy in front of a box tuned for latency is exactly
+        // the kind of change the flag exists to make somebody say out loud. It
+        // is the same rule as every other mutation of that host, rather than a
+        // second rule to learn.
+        let service = service().await;
+        let created = service
+            .create(Request::new(CreateTargetRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::human("u", "alice")),
+                    allow_latency_critical: true,
+                    ..Default::default()
+                }),
+                ..create("hot-box", true)
+            }))
+            .await
+            .expect("create")
+            .into_inner();
+
+        let refused = service
+            .enable_ingress(Request::new(EnableIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: created.id.clone(),
+                mode: ingress::Mode::Managed as i32,
+                ..Default::default()
+            }))
+            .await
+            .expect_err("must be refused without the opt-in");
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            refused.message().contains("latency-critical"),
+            "got: {}",
+            refused.message()
+        );
+
+        // And is allowed when the caller says so.
+        let allowed = service
+            .enable_ingress(Request::new(EnableIngressRequest {
+                mutation: Some(Mutation {
+                    actor: Some(Actor::human("u", "alice")),
+                    allow_latency_critical: true,
+                    ..Default::default()
+                }),
+                target_id: created.id,
+                mode: ingress::Mode::Managed as i32,
+                ..Default::default()
+            }))
+            .await
+            .expect("allowed with the opt-in")
+            .into_inner();
+        assert_eq!(
+            allowed.ingress.expect("ingress").mode,
+            ingress::Mode::Managed as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn ingress_defaults_to_caddys_admin_port() {
+        let service = service().await;
+        let target = target_with_ingress(&service, "prod-1").await;
+        let ingress = target.ingress.expect("ingress");
+        assert_eq!(ingress.admin_port, nudo_proto::DEFAULT_ADMIN_PORT);
+        assert_eq!(ingress.status, ingress::Status::Pending as i32);
+    }
+
+    #[tokio::test]
+    async fn enabling_ingress_without_a_mode_is_refused() {
+        // The zero value means "no ingress", so accepting it here would silently
+        // do nothing while reporting success.
+        let service = service().await;
+        let created = service
+            .create(Request::new(create("prod-1", false)))
+            .await
+            .expect("create")
+            .into_inner();
+
+        let status = service
+            .enable_ingress(Request::new(EnableIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: created.id,
+                ..Default::default()
+            }))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_target_without_ingress_has_none_rather_than_a_disabled_one() {
+        // Every target that predates this feature reads exactly as it did.
+        let service = service().await;
+        let created = service
+            .create(Request::new(create("prod-1", false)))
+            .await
+            .expect("create")
+            .into_inner();
+        assert!(created.ingress.is_none());
+    }
+
+    #[tokio::test]
+    async fn rendering_the_config_needs_no_host() {
+        // Read-only and rendered from the database, so it works on a target that
+        // is unreachable — and it is the whole of what external mode offers.
+        let service = service().await;
+        let target = target_with_ingress(&service, "prod-1").await;
+
+        let rendered = service
+            .render_ingress(Request::new(RenderIngressRequest {
+                target_id: target.id,
+            }))
+            .await
+            .expect("render")
+            .into_inner();
+
+        assert_eq!(rendered.path, crate::ingress::CONFIG_PATH);
+        assert!(rendered.config.contains("admin 127.0.0.1:2019"));
+        assert!(rendered.routes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reloading_a_target_without_managed_ingress_is_refused() {
+        // External means the operator drives their own proxy. Reloading would
+        // mean touching a host nudo was told to stay off.
+        let service = service().await;
+        let created = service
+            .create(Request::new(create("prod-1", false)))
+            .await
+            .expect("create")
+            .into_inner();
+
+        service
+            .enable_ingress(Request::new(EnableIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: created.id.clone(),
+                mode: ingress::Mode::External as i32,
+                ..Default::default()
+            }))
+            .await
+            .expect("enable");
+
+        let status = service
+            .reload_ingress(Request::new(ReloadIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: created.id,
+            }))
+            .await
+            .expect_err("must be refused");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            status.message().contains("managed ingress"),
+            "got: {}",
+            status.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_ingress_clears_the_mode() {
+        let service = service().await;
+        let target = target_with_ingress(&service, "prod-1").await;
+
+        let disabled = service
+            .disable_ingress(Request::new(DisableIngressRequest {
+                mutation: Some(Mutation::by(Actor::human("usr_1", "alice"))),
+                target_id: target.id,
+            }))
+            .await
+            .expect("disable")
+            .into_inner();
+
+        assert!(
+            disabled.ingress.is_none(),
+            "a target with ingress off reads the same as one that never had it"
         );
     }
 }

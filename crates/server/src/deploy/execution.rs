@@ -373,9 +373,120 @@ impl Engine {
             .await;
         }
 
+        // ---- routing ----
+        // After the service is healthy and live, never before: the proxy should
+        // start sending traffic to a release that is already serving, and a
+        // deploy that fails must leave routing exactly as it was.
+        //
+        // A reload failure does not fail the deploy. The service is up and the
+        // proxy is still serving its previous config — Caddy restores it itself
+        // — so the deploy did what it was asked. The target is recorded as
+        // degraded and the reason is reported here, which is where someone
+        // watching this deploy is looking.
+        self.reload_ingress(deployment_id, &session, &target).await;
+
         self.finish(deployment_id, deployment::Status::Succeeded)
             .await;
         let _ = session.close().await;
         Ok(())
+    }
+
+    /// Re-renders and reloads this target's proxy config, if it has one.
+    ///
+    /// Reuses the deploy's own SSH session rather than opening another: it is
+    /// already authenticated against the host key this deploy verified.
+    async fn reload_ingress(
+        &self,
+        deployment_id: &str,
+        session: &crate::ssh::SshSession,
+        target: &nudo_proto::Target,
+    ) {
+        if !crate::ingress::is_managed(target) {
+            return;
+        }
+
+        let services = match self.store.routed_services(&target.id).await {
+            Ok(services) => services,
+            Err(error) => {
+                self.emit(
+                    deployment_id,
+                    &format!("note: could not read this target's routes: {error:#}"),
+                    true,
+                )
+                .await;
+                return;
+            }
+        };
+
+        match crate::ingress::reconcile::reload(session, target, &services).await {
+            Ok(outcome) if outcome.ok => {
+                self.emit(
+                    deployment_id,
+                    &format!(
+                        "reloaded the proxy: {} route{}",
+                        outcome.routes.len(),
+                        if outcome.routes.len() == 1 { "" } else { "s" }
+                    ),
+                    false,
+                )
+                .await;
+                self.record_ingress(&target.id, nudo_proto::ingress::Status::Active, &outcome)
+                    .await;
+            }
+            Ok(outcome) => {
+                self.emit(
+                    deployment_id,
+                    &format!(
+                        "note: the proxy rejected the new config and is still serving \
+                         the previous one: {}",
+                        outcome.error
+                    ),
+                    true,
+                )
+                .await;
+                self.record_ingress(&target.id, nudo_proto::ingress::Status::Degraded, &outcome)
+                    .await;
+            }
+            Err(error) => {
+                self.emit(
+                    deployment_id,
+                    &format!("note: reloading the proxy failed: {error:#}"),
+                    true,
+                )
+                .await;
+                if let Err(error) = self
+                    .store
+                    .set_ingress_status(
+                        &target.id,
+                        nudo_proto::ingress::Status::Degraded,
+                        None,
+                        &format!("{error:#}"),
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "recording ingress status failed");
+                }
+            }
+        }
+    }
+
+    async fn record_ingress(
+        &self,
+        target_id: &str,
+        status: nudo_proto::ingress::Status,
+        outcome: &crate::ingress::reconcile::ReloadOutcome,
+    ) {
+        if let Err(error) = self
+            .store
+            .set_ingress_status(
+                target_id,
+                status,
+                outcome.version.as_deref(),
+                &outcome.error,
+            )
+            .await
+        {
+            tracing::warn!(%error, "recording ingress status failed");
+        }
     }
 }

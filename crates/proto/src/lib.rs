@@ -349,12 +349,11 @@ pub fn validate_domain(domain: &str) -> Result<(), String> {
             ));
         }
         if label.starts_with('-') || label.ends_with('-') {
-            return Err(format!("{domain:?} has a label starting or ending with '-'"));
+            return Err(format!(
+                "{domain:?} has a label starting or ending with '-'"
+            ));
         }
-        if !label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(format!(
                 "{domain:?} contains something other than letters, digits, \
                  '-' and '.'"

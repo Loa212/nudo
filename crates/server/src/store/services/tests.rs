@@ -536,3 +536,253 @@ async fn repo_matching_is_case_insensitive_but_branch_matching_is_not() {
         "branch comparison must be exact"
     );
 }
+
+// ---- routing ----
+
+#[tokio::test]
+async fn a_service_needs_both_a_domain_and_a_port_or_neither() {
+    // Half of a route is almost certainly a half-finished edit. Storing it
+    // silently would produce a service that looks configured in the dashboard
+    // and is absent from the proxy.
+    let (store, target_id) = store_with_target().await;
+
+    let error = store
+        .create_service(&Service {
+            domain: "api.example.com".to_string(),
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("a domain with no port is refused");
+    assert!(format!("{error:#}").contains("no port"), "got: {error:#}");
+
+    let error = store
+        .create_service(&Service {
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("a port with no domain is refused");
+    assert!(format!("{error:#}").contains("no domain"), "got: {error:#}");
+
+    // Neither is the ordinary state of every service that is not routed.
+    store
+        .create_service(&service(&target_id))
+        .await
+        .expect("an unrouted service is fine");
+}
+
+#[tokio::test]
+async fn many_services_can_be_unrouted_without_colliding() {
+    // The partial indexes exist so the empty domain and the zero port do not
+    // count as duplicates. Without them the second unrouted service would be
+    // refused, which is every service that predates this feature.
+    let (store, target_id) = store_with_target().await;
+    for name in ["one", "two", "three"] {
+        store
+            .create_service(&Service {
+                name: name.to_string(),
+                ..service(&target_id)
+            })
+            .await
+            .expect("unrouted services do not collide");
+    }
+}
+
+#[tokio::test]
+async fn two_services_cannot_claim_the_same_domain() {
+    // Whichever came second would silently never receive traffic, and the
+    // operator would be debugging DNS for a problem that is in the database.
+    let (store, target_id) = store_with_target().await;
+    store
+        .create_service(&Service {
+            name: "one".to_string(),
+            domain: "api.example.com".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect("first");
+
+    let error = store
+        .create_service(&Service {
+            name: "two".to_string(),
+            domain: "api.example.com".to_string(),
+            port: 9090,
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("the domain is taken");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("already routed"), "got: {message}");
+    assert!(
+        !message.contains("already exists on that target"),
+        "a domain collision must not be reported as a duplicate name — that \
+         sends someone looking for a service that does not exist: {message}"
+    );
+}
+
+#[tokio::test]
+async fn two_services_on_one_target_cannot_claim_the_same_port() {
+    let (store, target_id) = store_with_target().await;
+    store
+        .create_service(&Service {
+            name: "one".to_string(),
+            domain: "one.example.com".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect("first");
+
+    let error = store
+        .create_service(&Service {
+            name: "two".to_string(),
+            domain: "two.example.com".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("the port is taken");
+    assert!(
+        format!("{error:#}").contains("already claimed"),
+        "got: {error:#}"
+    );
+}
+
+#[tokio::test]
+async fn the_same_port_on_two_targets_is_fine() {
+    // Two hosts each running something on 8080 is ordinary, and scoping the
+    // constraint to the target is what allows it.
+    let (store, first) = store_with_target().await;
+    let second = store
+        .create_target(&TargetInput {
+            name: "box-2".to_string(),
+            host: "10.0.0.2".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("target");
+
+    store
+        .create_service(&Service {
+            name: "one".to_string(),
+            domain: "one.example.com".to_string(),
+            port: 8080,
+            ..service(&first)
+        })
+        .await
+        .expect("first");
+    store
+        .create_service(&Service {
+            name: "two".to_string(),
+            domain: "two.example.com".to_string(),
+            port: 8080,
+            ..service(&second.id)
+        })
+        .await
+        .expect("the same port on another host is fine");
+}
+
+#[tokio::test]
+async fn a_domain_that_could_inject_proxy_config_is_refused_by_the_store() {
+    // The store is a boundary in its own right: the renderer reads from here,
+    // and this value would otherwise reach the config of a proxy running with
+    // CAP_NET_BIND_SERVICE.
+    let (store, target_id) = store_with_target().await;
+    let error = store
+        .create_service(&Service {
+            domain: "evil.com {\n\trespond \"owned\"\n}".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect_err("must be refused");
+    assert!(
+        format!("{error:#}").contains("letters, digits"),
+        "got: {error:#}"
+    );
+}
+
+#[tokio::test]
+async fn updating_a_domain_moves_the_port_with_it() {
+    // The route is one field in two columns. A mask naming only the domain must
+    // not leave the old port behind — that is the "routed to nothing" state the
+    // both-or-neither rule exists to prevent.
+    let (store, target_id) = store_with_target().await;
+    let created = store
+        .create_service(&Service {
+            domain: "old.example.com".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    let updated = store
+        .update_service(
+            &created.id,
+            &Service {
+                domain: "new.example.com".to_string(),
+                port: 9090,
+                ..Default::default()
+            },
+            &["domain".to_string()],
+        )
+        .await
+        .expect("update");
+
+    assert_eq!(updated.domain, "new.example.com");
+    assert_eq!(updated.port, 9090, "the port moved with the domain");
+}
+
+#[tokio::test]
+async fn clearing_a_domain_clears_the_port_too() {
+    let (store, target_id) = store_with_target().await;
+    let created = store
+        .create_service(&Service {
+            domain: "api.example.com".to_string(),
+            port: 8080,
+            ..service(&target_id)
+        })
+        .await
+        .expect("create");
+
+    let updated = store
+        .update_service(
+            &created.id,
+            &Service::default(),
+            &["domain".to_string(), "port".to_string()],
+        )
+        .await
+        .expect("update");
+
+    assert!(updated.domain.is_empty());
+    assert_eq!(updated.port, 0);
+}
+
+#[tokio::test]
+async fn routed_services_returns_only_routed_ones_in_a_stable_order() {
+    // Ordered so the rendered config is byte-identical for the same routes,
+    // which is what makes "did this change the proxy config" answerable.
+    let (store, target_id) = store_with_target().await;
+    for (name, domain, port) in [
+        ("b", "b.example.com", 8081),
+        ("a", "a.example.com", 8080),
+        ("unrouted", "", 0),
+    ] {
+        store
+            .create_service(&Service {
+                name: name.to_string(),
+                domain: domain.to_string(),
+                port,
+                ..service(&target_id)
+            })
+            .await
+            .expect("create");
+    }
+
+    let routed = store.routed_services(&target_id).await.expect("routed");
+    let domains: Vec<&str> = routed.iter().map(|s| s.domain.as_str()).collect();
+    assert_eq!(domains, ["a.example.com", "b.example.com"]);
+}

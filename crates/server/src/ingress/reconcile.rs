@@ -392,7 +392,10 @@ pub async fn check(
 /// Caddy's version, or `None` when it is not installed.
 async fn caddy_version(session: &SshSession) -> Option<String> {
     let result = session
-        .exec(&format!("{} version 2>/dev/null || true", quote(BINARY_PATH)))
+        .exec(&format!(
+            "{} version 2>/dev/null || true",
+            quote(BINARY_PATH)
+        ))
         .await
         .ok()?;
 
@@ -511,7 +514,10 @@ mod tests {
     #[test]
     fn stderr_is_preferred_but_stdout_is_used_when_it_is_empty() {
         assert_eq!(first_useful_line("from stdout", ""), "from stdout");
-        assert_eq!(first_useful_line("from stdout", "from stderr"), "from stderr");
+        assert_eq!(
+            first_useful_line("from stdout", "from stderr"),
+            "from stderr"
+        );
     }
 
     #[test]
