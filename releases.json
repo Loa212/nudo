@@ -15,8 +15,16 @@
       "version": "0.4.0",
       "published_at": "2026-07-29",
       "url": "https://github.com/Loa212/nudo/releases/tag/v0.4.0",
-      "breaking": true,
-      "notes": "A binary install can upgrade itself from the dashboard. The banner opens a\ndialog with the release notes and three answers — update now, skip this\nversion, or close — and on an install that opted in, \"update now\" does the\nwhole thing: download, verify, stage, swap, restart, and roll back on its own\nif the new version cannot stay up.\n\n- Release artifacts now publish their sha256 in this manifest. The upgrade\n  verifies the download against that rather than the checksum beside the\n  artifact — the two travel different paths, so a swapped release asset is\n  caught.\n- Off unless you say so twice: NUDO_ALLOW_SELF_UPGRADE when the instance\n  starts, and a toggle in settings. Containers still upgrade with docker pull,\n  and a binary install that predates the release layout keeps its manual\n  commands, now printed next to the one-time migration to the new layout.\n- A new nudo-boot-guard runs before the service and reverts to the previous\n  release if an upgraded version fails to start three times. The database is\n  snapshotted before every upgrade; restoring it stays a manual step, because\n  doing it automatically would discard whatever was written after the snapshot.\n- The dashboard shows the running version under the nudo name in the sidebar."
+      "breaking": false,
+      "notes": "### Fixed\n\n- Stop filing merged pull requests under \"Other\"\n\n### Other\n\n- Self-updating binary install: upgrade from the dashboard (#9)",
+      "artifacts": {
+        "nudo-v0.4.0-x86_64-unknown-linux-gnu.tar.gz": {
+          "sha256": "7d8f8baf557d39494c66c0e53d334983950b4f6352d19afbe769474067cc5e04"
+        },
+        "nudo-v0.4.0-x86_64-unknown-linux-musl.tar.gz": {
+          "sha256": "9e63c16c42c4a57322cfec658d5961f27a0b7af0f1c426397f9c9790d75782ac"
+        }
+      }
     },
     {
       "version": "0.3.0",
