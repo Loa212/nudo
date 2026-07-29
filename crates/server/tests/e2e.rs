@@ -91,15 +91,27 @@ impl Fixture {
         // now, so the retry loop here does the waiting and can actually observe
         // progress.
         wait_for("systemd to come up", Duration::from_secs(300), || {
-            exec_in_container(&["systemctl", "is-system-running"])
-                .map(|output| {
-                    // "degraded" is fine in a container: some units cannot
-                    // start there and that does not affect what is tested.
-                    // "starting" is not ready yet, and must not count.
-                    let state = output.trim();
-                    state == "running" || state == "degraded"
-                })
-                .unwrap_or(false)
+            // `systemctl is-system-running` exits *non-zero* for every state
+            // that is not "running" — including "degraded", which is the normal
+            // state in a container where some units cannot start. `run` turns a
+            // non-zero exit into an `Err`, so reading this through
+            // `exec_in_container` discarded the answer and spun until the
+            // timeout. The state is on stdout either way, so ask for it in a way
+            // that always exits zero and read the word.
+            //
+            // The earlier `--wait` form did not have this problem only because
+            // it blocked until "running"; that made each poll hang for most of
+            // the budget while apt was still installing, which is the flake this
+            // loop replaced.
+            let state = exec_in_container(&[
+                "bash",
+                "-c",
+                "systemctl is-system-running 2>/dev/null || true",
+            ])
+            .unwrap_or_default();
+
+            let state = state.trim();
+            state == "running" || state == "degraded"
         })?;
 
         // A throwaway key pair, installed as root's authorized key.
