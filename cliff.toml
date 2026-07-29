@@ -87,6 +87,17 @@ commit_parsers = [
   { message = "^(?i)update (the )?lockfile", skip = true },
   { message = "^(?i)merge (branch|pull request)", skip = true },
 
+  # A squash-merged pull request keeps its title, and a title is usually a noun
+  # phrase — "Custom domains: managed ingress and automatic HTTPS (#8)" — where
+  # a commit subject is usually a verb. The verb rules below match none of
+  # those, so every feature landed as a PR fell into "Other": a release adding
+  # a whole subsystem read as housekeeping. A trailing "(#N)" is the reliable
+  # marker for one, and "a merged pull request is a change worth reading about"
+  # is a better default than "Other".
+  #
+  # Deliberately after the skip rules and before the verb rules: the release
+  # workflow's own commits are still skipped, and a PR whose title *does* start
+  # with a verb is grouped by that verb instead, which is more precise.
   { message = "^(?i)(add|introduce|implement|support)", group = "<!-- 0 -->Added" },
   { message = "^(?i)(fix|correct|repair|stop|prevent)", group = "<!-- 1 -->Fixed" },
   { message = "^(?i)(change|rename|move|replace|switch|make|refactor|rework|simplify|tighten)", group = "<!-- 2 -->Changed" },
@@ -97,6 +108,10 @@ commit_parsers = [
   { body = "(?i)(security|vulnerab|CVE-)", group = "<!-- 5 -->Security" },
   { message = "^(?i)(test|verify|assert|cover)", group = "<!-- 6 -->Testing" },
   { message = "^(?i)revert", group = "<!-- 7 -->Reverted" },
+  # A squash-merged pull request whose title started with none of the verbs
+  # above. Grouped as a change rather than left in "Other", which is where
+  # every one of them landed before.
+  { message = '\(#[0-9]+\)\s*$', group = "<!-- 2 -->Changed" },
   { message = ".*", group = "<!-- 8 -->Other" },
 ]
 
