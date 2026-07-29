@@ -954,7 +954,6 @@ class ManagedInstance:
         env.update(
             {
                 "NUDO_SELF_DIR": str(self.root / "self"),
-                "NUDO_ALLOW_SELF_UPGRADE": "true",
                 "NUDO_SELF_UPGRADE_DOWNLOAD_BASE": f"http://127.0.0.1:{self.artifacts.port}",
                 "NUDO_UPDATE_MANIFEST_URL": f"http://127.0.0.1:{self.manifest_port}/releases.json",
                 "NUDO_DB": str(self.root / "nudo.db"),

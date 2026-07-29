@@ -11,11 +11,10 @@ fn an_upgrade(install: UpgradeInstall) -> UpgradeView {
     }
 }
 
-/// A managed install with both opt-ins given and nothing in flight.
+/// A managed install with self-upgrade switched on and nothing in flight.
 fn a_managed_status() -> SelfUpgradeView {
     SelfUpgradeView {
         state: "idle".to_string(),
-        allowed_by_config: true,
         enabled_in_settings: true,
         eligible: true,
         ..SelfUpgradeView::default()
@@ -148,9 +147,9 @@ fn the_upgrade_page_never_pipes_anything_into_a_shell() {
 #[test]
 fn only_a_fully_opted_in_managed_install_gets_the_button() {
     // A form on this page is a big deal — it used to be banned outright. It
-    // appears in exactly one configuration: managed layout, config flag on,
-    // settings toggle on, newer release available. Everything else stays a
-    // page of instructions.
+    // appears in exactly one configuration: managed layout, self-upgrade
+    // switched on, newer release available. Everything else stays a page of
+    // instructions.
     let with_button = s(upgrade_page(&an_upgrade(UpgradeInstall::BinaryManaged {
         status: a_managed_status(),
     })));
@@ -179,15 +178,7 @@ fn only_a_fully_opted_in_managed_install_gets_the_button() {
         );
     }
 
-    // Managed but a gate closed: no form, and it says which gate.
-    let mut flag_off = a_managed_status();
-    flag_off.allowed_by_config = false;
-    let rendered = s(upgrade_page(&an_upgrade(UpgradeInstall::BinaryManaged {
-        status: flag_off,
-    })));
-    assert!(!rendered.contains("<form"));
-    assert!(rendered.contains("NUDO_ALLOW_SELF_UPGRADE"));
-
+    // Managed but switched off: no form, and it says where to switch it on.
     let mut toggle_off = a_managed_status();
     toggle_off.enabled_in_settings = false;
     let rendered = s(upgrade_page(&an_upgrade(UpgradeInstall::BinaryManaged {
@@ -402,7 +393,7 @@ fn a_legacy_install_is_shown_the_path_to_the_managed_layout() {
         "the migration target is named"
     );
     assert!(
-        rendered.contains("NUDO_ALLOW_SELF_UPGRADE"),
+        rendered.contains("settings"),
         "the opt-in is explained alongside"
     );
     assert!(

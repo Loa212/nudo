@@ -25,10 +25,10 @@
 #
 # The trade-off, stated plainly: with the binaries under /var/lib/nudo the
 # service user can overwrite what it runs. That is inherent to letting the
-# process upgrade itself, and it is why the feature sits behind both a config
-# flag (NUDO_ALLOW_SELF_UPGRADE) and a dashboard toggle, both off by default.
-# If you will never use self-upgrade, the old /usr/local/bin install remains
-# the tighter posture.
+# process upgrade itself, and it is why self-upgrade stays off until it is
+# switched on in the dashboard's settings. If you will never use it, installing
+# to /usr/local/bin with root-owned binaries remains the tighter posture, and
+# the /upgrade page keeps printing the manual commands for that.
 #
 # Put a TLS-terminating reverse proxy in front of it and set NUDO_BASE_URL to the
 # https:// URL you reach it on — that is what marks the session cookie Secure and
@@ -56,9 +56,9 @@ WorkingDirectory=/var/lib/nudo
 # The key file rather than the environment, so the key is not visible in
 # `systemctl show` or to anything that can read this unit's environment.
 Environment="NUDO_SECRET_KEY_FILE=/etc/nudo/secret.key"
-# Where the self-release layout lives; also what tells the process it may
-# manage its own binaries (still gated behind NUDO_ALLOW_SELF_UPGRADE and the
-# dashboard toggle).
+# Where the self-release layout lives, which is what makes upgrading from the
+# dashboard possible at all. It stays inert until the switch in settings is
+# turned on.
 Environment="NUDO_SELF_DIR=/var/lib/nudo/self"
 Environment="NUDO_DB=/var/lib/nudo/nudo.db"
 Environment="NUDO_DATA_DIR=/var/lib/nudo/data"

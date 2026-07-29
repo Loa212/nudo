@@ -23,8 +23,13 @@
 //!   version is ever executed.
 //! - Nothing is piped to a shell; the tarball is unpacked and exec'd by this
 //!   code.
-//! - Two switches must both be on: `--allow-self-upgrade` from whoever
-//!   installs, and the dashboard toggle from whoever operates.
+//! - It is off until switched on. The dashboard toggle is the whole gate: one
+//!   decision, made by the person who would live with it, in the place they
+//!   are already looking. An earlier design also required a flag on the
+//!   process, on the theory that whoever installs and whoever operates are
+//!   different people — for a self-hosted tool run by one person that was a
+//!   second lock on the same door, and it only ever made the feature look
+//!   broken to someone who had already said yes.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -137,7 +142,6 @@ pub struct StatusView {
     pub error: String,
     /// RFC 3339, empty when nothing has happened yet.
     pub updated_at: String,
-    pub allowed_by_config: bool,
     pub enabled_in_settings: bool,
     pub eligible: bool,
 }
@@ -175,7 +179,6 @@ impl SelfUpgrader {
         let eligibility = eligibility(&self.config);
         let mut view = StatusView {
             state: "idle".to_string(),
-            allowed_by_config: self.config.allow_self_upgrade,
             enabled_in_settings: self.store.self_upgrade_enabled().await.unwrap_or(false),
             eligible: matches!(eligibility, Eligibility::Managed { .. }),
             ..StatusView::default()
@@ -212,11 +215,6 @@ impl SelfUpgrader {
     /// gRPC handler whose response must reach the dashboard before exec()
     /// replaces the process serving it.
     pub async fn start(&self, target_version: &str) -> anyhow::Result<()> {
-        if !self.config.allow_self_upgrade {
-            bail!(
-                "self-upgrade is not allowed by this instance's configuration (--allow-self-upgrade)"
-            );
-        }
         if !self.store.self_upgrade_enabled().await? {
             bail!("self-upgrade is switched off in the dashboard settings");
         }

@@ -219,7 +219,6 @@ fn to_self_upgrade_view(status: SelfUpgradeStatus) -> render::SelfUpgradeView {
         from_version: status.from_version,
         to_version: status.to_version,
         error: status.error,
-        allowed_by_config: status.allowed_by_config,
         enabled_in_settings: status.enabled_in_settings,
         eligible: status.eligible,
     }

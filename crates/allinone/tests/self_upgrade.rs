@@ -84,7 +84,6 @@ impl Harness {
         let web_port = free_port();
         let child = Command::new(self_dir.join("current").join("nudo-all-in-one"))
             .env("NUDO_SELF_DIR", &self_dir)
-            .env("NUDO_ALLOW_SELF_UPGRADE", "true")
             .env(
                 "NUDO_SELF_UPGRADE_DOWNLOAD_BASE",
                 format!("http://127.0.0.1:{}", artifact_server.port),
@@ -262,8 +261,7 @@ async fn an_instance_upgrades_itself_and_comes_back_as_the_new_version() {
     let status = harness
         .wait_for_status("the instance to come up", |status| status.state == "idle")
         .await;
-    assert!(status.allowed_by_config, "{}", harness.debug_logs());
-    assert!(status.enabled_in_settings);
+    assert!(status.enabled_in_settings, "{}", harness.debug_logs());
     assert!(status.eligible, "the child must detect the managed layout");
 
     let pid_before_upgrade = harness.child.id();

@@ -31,7 +31,6 @@ fn to_proto(view: StatusView) -> SelfUpgradeStatus {
         from_version: view.from_version,
         to_version: view.to_version,
         error: view.error,
-        allowed_by_config: view.allowed_by_config,
         enabled_in_settings: view.enabled_in_settings,
         eligible: view.eligible,
         updated_at: view.updated_at,
@@ -99,8 +98,7 @@ mod tests {
             .expect("status")
             .into_inner();
         assert_eq!(status.state, "idle");
-        assert!(!status.allowed_by_config, "default config allows nothing");
-        assert!(!status.enabled_in_settings);
+        assert!(!status.enabled_in_settings, "the toggle defaults off");
         assert!(!status.eligible);
     }
 
@@ -118,7 +116,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_is_refused_by_the_config_gate_and_audited_anyway() {
+    async fn start_is_refused_while_the_toggle_is_off_and_audited_anyway() {
         let context = test_support::context().await;
         let service = service(context.clone());
         let error = service
@@ -129,7 +127,7 @@ mod tests {
             .await
             .expect_err("must refuse");
         assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-        assert!(error.message().contains("--allow-self-upgrade"));
+        assert!(error.message().contains("switched off"));
 
         // The attempt itself is on the record: asking an instance to replace
         // its binaries is audit-worthy even when refused.

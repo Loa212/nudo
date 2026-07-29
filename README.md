@@ -106,12 +106,12 @@ downloaded, verified against the sha256 the release workflow commits into
 atomically — and reverted by `nudo-boot-guard` if it cannot start. Nothing is ever
 fetched and piped to a shell.
 
-Self-upgrading is off unless two switches are both on: start the instance with
-`NUDO_ALLOW_SELF_UPGRADE=true` *and* enable it in the dashboard's settings. The
-trade-off of the layout is that the service user can overwrite its own binaries —
-that is what self-upgrading is — so if you will never use it, installing to
-`/usr/local/bin` with a root-owned binary remains the tighter posture, and the
-`/upgrade` page keeps printing exact manual commands for it.
+Self-upgrading is off until you switch it on in the dashboard's settings — one
+tick, no configuration. The trade-off of the layout is that the service user can
+overwrite its own binaries — that is what self-upgrading is — so if you will
+never use it, installing to `/usr/local/bin` with a root-owned binary remains
+the tighter posture, and the `/upgrade` page keeps printing exact manual
+commands for it.
 
 ### From source
 

@@ -382,9 +382,8 @@ fn binary_upgrade(version: &str) -> Markup {
                     p .small.muted {
                         "The trade-off is real and worth knowing: in this layout the \
                          service user can overwrite its own binaries, which is what \
-                         self-upgrading means. It stays inert unless you also start \
-                         nudo with " code { "NUDO_ALLOW_SELF_UPGRADE=true" } " and turn \
-                         the switch on in settings."
+                         self-upgrading means. It stays inert until you turn the \
+                         switch on in settings."
                     }
                 }))
             }
@@ -399,7 +398,7 @@ fn binary_upgrade(version: &str) -> Markup {
 /// the card says which gate is closed and what opening it means, because a
 /// button that is sometimes missing without explanation reads as a bug.
 fn managed_upgrade(view: &UpgradeView, status: &SelfUpgradeView) -> Markup {
-    let gates_open = status.allowed_by_config && status.enabled_in_settings;
+    let gates_open = status.enabled_in_settings;
     let in_flight = status.in_flight();
     html! {
         div .card {
@@ -422,21 +421,10 @@ fn managed_upgrade(view: &UpgradeView, status: &SelfUpgradeView) -> Markup {
                     }
                 } @else if !gates_open {
                     (callout("info", "Switched off", html! {
-                        @if !status.allowed_by_config {
-                            p {
-                                "The instance was started without "
-                                code { "NUDO_ALLOW_SELF_UPGRADE=true" }
-                                ", so it will not replace its own binaries no matter \
-                                 what is clicked here. Set it in the unit and restart \
-                                 to allow it."
-                            }
-                        } @else {
-                            p {
-                                "Self-upgrade is off in "
-                                a href="/settings#instance" { "settings" }
-                                ". Turning it on is the operator's half of the \
-                                 opt-in; the config flag is the installer's."
-                            }
+                        p {
+                            "Self-upgrade is off for this instance. Turn it on in "
+                            a href="/settings#instance" { "settings" }
+                            " and this card grows a button whenever a release is out."
                         }
                     }))
                 } @else if view.available {
@@ -612,7 +600,6 @@ pub struct SelfUpgradeView {
     pub from_version: String,
     pub to_version: String,
     pub error: String,
-    pub allowed_by_config: bool,
     pub enabled_in_settings: bool,
     pub eligible: bool,
 }
@@ -627,9 +614,9 @@ impl SelfUpgradeView {
     }
 
     /// Whether the "Update now" button should appear: this install can do it,
-    /// both opt-ins are given, and nothing is already running.
+    /// the operator opted in, and nothing is already running.
     pub fn can_upgrade_now(&self) -> bool {
-        self.eligible && self.allowed_by_config && self.enabled_in_settings && !self.in_flight()
+        self.eligible && self.enabled_in_settings && !self.in_flight()
     }
 }
 
