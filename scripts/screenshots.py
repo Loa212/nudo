@@ -84,6 +84,7 @@ VIEWS: list[tuple[str, str]] = [
     ("targets-list", "/targets"),
     ("targets-new", "/targets/new"),
     ("target-detail", "/targets/{target_id}"),
+    ("target-ingress-config", "/targets/{target_id}/ingress/config"),
     ("build-hosts-list", "/build-hosts"),
     ("build-hosts-new", "/build-hosts/new"),
     ("build-host-detail", "/build-hosts/{build_host_id}"),
@@ -105,6 +106,7 @@ VIEWS: list[tuple[str, str]] = [
 # rather than captured as a 404, which would be noise rather than information.
 NEEDS_DATA = {
     "target-detail",
+    "target-ingress-config",
     "build-host-detail",
     "build-host-detail-latency-critical",
     "service-detail",
@@ -584,6 +586,19 @@ def seed(session: Session) -> dict[str, str]:
     )
     ids["target_id"] = location.rsplit("/", 1)[-1]
 
+    # Ingress on the ordinary target, so the populated shots show the enabled
+    # card — routes, version, actions — rather than only the enable form. It
+    # stays "pending" because there is no real host to install Caddy on, which
+    # is itself a state worth being able to look at.
+    session.post(
+        f"/targets/{ids['target_id']}/ingress/enable",
+        {
+            "csrf": session.csrf(f"/targets/{ids['target_id']}"),
+            "mode": "managed",
+            "acme_email": "ops@example.com",
+        },
+    )
+
     session.post(
         "/targets",
         {
@@ -673,6 +688,33 @@ def seed(session: Session) -> dict[str, str]:
         },
     )
     ids["service_id"] = location.rsplit("/", 1)[-1]
+
+    # ---- a routed service, so the ingress card has a route to show ----
+    # Deliberately not the trading bot: that one carries the latency knobs, and
+    # putting a proxy in front of it would be the wrong thing to illustrate.
+    session.post(
+        "/services",
+        {
+            "csrf": session.csrf("/services/new"),
+            "name": "api",
+            "target_id": ids["target_id"],
+            "release_root": "/opt/api",
+            "keep_releases": "5",
+            "artifact_kind": "upload",
+            "unit_name": "api.service",
+            "description": "the public API",
+            "restart": "always",
+            "restart_sec": "5",
+            "domain": "api.example.com",
+            "port": "8080",
+            "health_kind": "http",
+            "health_http_url": "http://127.0.0.1:8080/healthz",
+            "health_timeout_seconds": "5",
+            "health_retries": "3",
+            "health_initial_delay_seconds": "2",
+            "env": "",
+        },
+    )
 
     return ids
 
