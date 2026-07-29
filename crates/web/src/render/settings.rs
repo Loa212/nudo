@@ -204,11 +204,12 @@ pub fn settings_page(
                                     span {
                                         "Allow this instance to upgrade itself from the "
                                         a href="/upgrade" { "upgrade page" }
-                                        ". Only half the permission: the instance must \
-                                         also have been started with "
-                                        code { "NUDO_ALLOW_SELF_UPGRADE=true" }
-                                        ", and it only applies to a binary install \
-                                         running from the release layout."
+                                        ". Releases are verified against a digest \
+                                         published in the manifest and rolled back \
+                                         automatically if the new version cannot \
+                                         start. Applies to a binary install running \
+                                         from the release layout; a container upgrades \
+                                         with " code { "docker pull" } "."
                                     }
                                 }
                             }

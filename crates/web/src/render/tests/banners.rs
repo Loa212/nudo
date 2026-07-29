@@ -155,8 +155,8 @@ fn the_settings_page_carries_every_switch_and_says_nothing_is_sent() {
     assert!(rendered.contains("2 hours ago"));
     // The claim that matters most on that page.
     assert!(rendered.contains("no usage"));
-    // The self-upgrade toggle must say it is only half the permission.
-    assert!(rendered.contains("NUDO_ALLOW_SELF_UPGRADE"));
+    // The self-upgrade toggle must say what it actually authorises.
+    assert!(rendered.contains("upgrade itself"));
 }
 
 #[test]

@@ -657,13 +657,22 @@ store opened and migrations ran. `nudo-boot-guard`, run as `ExecStartPre=` from
 a stable path deliberately outside the symlink it may revert, counts
 unconfirmed boots and puts the previous release back after three.
 
-**Off by default, twice.** `NUDO_ALLOW_SELF_UPGRADE` (whoever installs) and a
-dashboard toggle (whoever operates) must both be on, and only a managed-layout
-binary install on a published target is eligible; containers keep `docker pull`
-and legacy binary installs keep the manual commands, now with the one-time
-migration to the layout printed beside them. Rollback of the database is
-deliberately manual — an automatic restore would silently discard writes made
-after the snapshot — and the page says so, with the snapshot's path.
+**Off until switched on, once.** The dashboard toggle is the whole gate, and
+only a managed-layout binary install on a published target is eligible;
+containers keep `docker pull`, and a binary install laid out flat keeps the
+manual commands, with the move to the release layout printed beside them.
+Rollback of the database is deliberately manual — an automatic restore would
+silently discard writes made after the snapshot — and the page says so, with
+the snapshot's path.
+
+0.4.0 shipped a second gate, `NUDO_ALLOW_SELF_UPGRADE`, on the theory that
+whoever installs and whoever operates are different people and both should
+have to say yes. For a tool one person installs and operates that was a second
+lock on the same door: its only visible effect was a dashboard that refused an
+upgrade the operator had already opted into, and a set-this-env-var instruction
+in three places. Removed in 0.4.1; the proto field is reserved rather than
+reused. The packaged unit has always put a fresh install in the release layout,
+so what a new install now needs is one tick in settings and nothing else.
 
 **Tested end to end.** `crates/allinone/tests/self_upgrade.rs` builds the real
 binary, serves a fixture release over loopback, drives the RPC, and asserts the

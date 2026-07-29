@@ -86,21 +86,13 @@ pub struct Config {
     #[arg(long, env = "NUDO_ALLOW_SETUP", default_value_t = true)]
     pub allow_setup: bool,
 
-    /// Allow this instance to download a verified release and replace its own
-    /// binaries when asked to from the dashboard.
-    ///
-    /// Off by default, and this flag alone is not enough: the dashboard's own
-    /// self-upgrade toggle must also be on. Two switches because the flag is
-    /// set by whoever installs, while the toggle belongs to whoever operates.
-    #[arg(long, env = "NUDO_ALLOW_SELF_UPGRADE", default_value_t = false)]
-    pub allow_self_upgrade: bool,
-
     /// Root of the self-release layout: `releases/`, the `current` symlink,
     /// and the upgrade journal.
     ///
-    /// Set by the packaged unit (`/var/lib/nudo/self`). Absent means the
-    /// binary was installed the pre-layout way, and self-upgrade is
-    /// unavailable until the documented one-time migration.
+    /// Set by the packaged unit (`/var/lib/nudo/self`), so a standard install
+    /// has it. Absent means the binaries were installed somewhere flat —
+    /// straight into `/usr/local/bin`, say — and self-upgrade is unavailable
+    /// until the layout the `/upgrade` page describes is adopted.
     #[arg(long, env = "NUDO_SELF_DIR")]
     pub self_dir: Option<PathBuf>,
 
@@ -198,7 +190,6 @@ impl Default for Config {
             update_manifest_url: crate::updates::DEFAULT_MANIFEST_URL.to_string(),
             update_interval_hours: 24,
             allow_setup: true,
-            allow_self_upgrade: false,
             self_dir: None,
             self_upgrade_download_base: crate::self_upgrade::DEFAULT_DOWNLOAD_BASE.to_string(),
         }

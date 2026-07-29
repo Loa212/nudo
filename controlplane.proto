@@ -1123,9 +1123,15 @@ message SelfUpgradeStatus {
   string from_version = 2;
   string to_version = 3;
   string error = 4;
-  // The three gates, reported separately so the dashboard can say which one
-  // is closed rather than a generic "unavailable".
-  bool allowed_by_config = 5;
+  // The two gates, reported separately so the dashboard can say which one is
+  // closed rather than a generic "unavailable".
+  //
+  // 5 was `allowed_by_config`, a process flag that had to be on as well.
+  // Removed in 0.4.1: for a tool one person installs and operates, it was a
+  // second lock on the same door, and its only visible effect was a dashboard
+  // that refused an upgrade someone had already opted into.
+  reserved 5;
+  reserved "allowed_by_config";
   bool enabled_in_settings = 6;
   bool eligible = 7;
   // RFC 3339; empty when no upgrade has ever run.

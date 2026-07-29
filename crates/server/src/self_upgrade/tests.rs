@@ -1,9 +1,8 @@
 use super::*;
 use crate::store::Store;
 
-fn config(allow: bool, self_dir: Option<PathBuf>) -> Arc<crate::Config> {
+fn config(self_dir: Option<PathBuf>) -> Arc<crate::Config> {
     Arc::new(crate::Config {
-        allow_self_upgrade: allow,
         self_dir,
         ..crate::Config::default()
     })
@@ -29,32 +28,24 @@ fn layout(dir: &Path, version: &str) {
 // ---- gates ----
 
 #[tokio::test]
-async fn the_config_flag_gates_everything() {
-    let upgrader = SelfUpgrader::new(store().await, config(false, None));
-    let error = upgrader.start("99.0.0").await.expect_err("must refuse");
-    assert!(
-        error.to_string().contains("--allow-self-upgrade"),
-        "{error}"
-    );
-}
-
-#[tokio::test]
 async fn the_settings_toggle_gates_everything() {
-    // Flag on, toggle off (the default): still refused. Two different people
-    // control these two switches; both must have said yes.
-    let upgrader = SelfUpgrader::new(store().await, config(true, None));
+    // Off is the default, and the default refuses. This is the whole gate:
+    // an instance that has not been told it may replace its own binaries
+    // will not, however it was installed.
+    let upgrader = SelfUpgrader::new(store().await, config(None));
     let error = upgrader.start("99.0.0").await.expect_err("must refuse");
     assert!(error.to_string().contains("switched off"), "{error}");
 }
 
 #[tokio::test]
-async fn a_legacy_install_is_refused_even_with_both_switches_on() {
+async fn a_flat_install_is_refused_even_with_the_toggle_on() {
     // The test binary does not run from a managed layout, so even a
-    // configured self_dir leaves eligibility at BinaryLegacy.
+    // configured self_dir leaves eligibility at BinaryLegacy — the toggle
+    // cannot conjure a layout that is not there.
     let dir = tempfile::tempdir().expect("tempdir");
     let store = store().await;
     store.set_self_upgrade_enabled(true).await.expect("toggle");
-    let upgrader = SelfUpgrader::new(store, config(true, Some(dir.path().to_path_buf())));
+    let upgrader = SelfUpgrader::new(store, config(Some(dir.path().to_path_buf())));
     let error = upgrader.start("99.0.0").await.expect_err("must refuse");
     assert!(
         error.to_string().contains("cannot upgrade itself"),
@@ -65,10 +56,9 @@ async fn a_legacy_install_is_refused_even_with_both_switches_on() {
 #[tokio::test]
 async fn the_status_reports_which_gates_are_open() {
     let store = store().await;
-    let upgrader = SelfUpgrader::new(store.clone(), config(true, None));
+    let upgrader = SelfUpgrader::new(store.clone(), config(None));
     let view = upgrader.status().await;
-    assert!(view.allowed_by_config);
-    assert!(!view.enabled_in_settings);
+    assert!(!view.enabled_in_settings, "off until switched on");
     assert!(!view.eligible);
     assert_eq!(view.state, "idle");
 
@@ -380,7 +370,7 @@ async fn a_version_that_is_not_newer_is_refused_before_anything_else_network_sha
         .await
         .expect("record");
     let dir = tempfile::tempdir().expect("tempdir");
-    let upgrader = SelfUpgrader::new(store, config(true, Some(dir.path().to_path_buf())));
+    let upgrader = SelfUpgrader::new(store, config(Some(dir.path().to_path_buf())));
     // The test binary is not in a managed layout, so this refusal is the
     // eligibility one — which is fine: it proves order (gates before network).
     upgrader.start("0.0.1").await.expect_err("must refuse");
