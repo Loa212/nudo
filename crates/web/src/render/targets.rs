@@ -141,6 +141,8 @@ pub fn target_detail(
                 (check_results(checks))
             }
 
+            (ingress_card(target, &owned, csrf))
+
             div .card.pad-0 {
                 div .card-head {
                     h2 { "Services" }
@@ -163,6 +165,218 @@ pub fn target_detail(
                 }
             }
         }
+    }
+}
+
+/// A preview of the proxy config nudo would write for this target.
+///
+/// The `View unit` of ingress. For a managed target it is what the next reload
+/// writes; for an external one it is the whole of the feature — copy it into
+/// the proxy you run yourself.
+pub fn ingress_config(
+    target_id: &str,
+    target_name: &str,
+    response: &RenderIngressResponse,
+) -> Markup {
+    html! {
+        (topbar(target_name, Some("Rendered proxy config"), html! {
+            a .btn href=(format!("/targets/{target_id}")) { "Back to target" }
+        }))
+        div .content {
+            (callout("info", "This is a preview", html! {
+                "Rendered from the current configuration, not read from the target. \
+                 It is written to "
+                span .mono { (response.path) }
+                " on the next reload or deploy."
+            }))
+            div .card {
+                pre .unit { (response.config) }
+            }
+        }
+    }
+}
+
+/// Ingress: whether services on this host are reachable by domain.
+///
+/// Always rendered, including when there is none, because "nudo can do this and
+/// is not doing it here" is information an operator wants on the page rather
+/// than in the docs.
+fn ingress_card(target: &Target, services: &[Service], csrf: &str) -> Markup {
+    // Named `state` rather than `ingress` so it does not shadow the proto
+    // module the enums live in.
+    let state = target.ingress.clone().unwrap_or_default();
+    let mode = ingress::Mode::try_from(state.mode).unwrap_or(ingress::Mode::Unspecified);
+    let status = ingress::Status::try_from(state.status).unwrap_or(ingress::Status::Unspecified);
+
+    let routed: Vec<&Service> = services
+        .iter()
+        .filter(|service| !service.domain.trim().is_empty())
+        .collect();
+
+    html! {
+        div .card {
+            div .row {
+                h2 { "Ingress" }
+                @if mode != ingress::Mode::Unspecified {
+                    (ingress_badge(status))
+                }
+            }
+
+            @match mode {
+                ingress::Mode::Unspecified => (ingress_off(target, csrf)),
+                _ => {
+                    dl .dl style="margin-top:12px" {
+                        dt { "Mode" }
+                        dd {
+                            @if mode == ingress::Mode::Managed {
+                                "nudo installs and reloads Caddy here"
+                            } @else {
+                                "you run the proxy; nudo only renders its config"
+                            }
+                        }
+                        dt { "Certificates" }
+                        dd {
+                            @if state.acme_email.is_empty() {
+                                span .muted { "automatic, no contact address set" }
+                            } @else {
+                                span .mono { (state.acme_email) }
+                            }
+                        }
+                        @if !state.version.is_empty() {
+                            dt { "Caddy" }  dd .mono { (state.version) }
+                        }
+                        dt { "Reloaded" }   dd { (ago(state.last_reload_at.as_ref())) }
+                    }
+
+                    // A degraded proxy is serving its previous routes, which is
+                    // easy to miss precisely because the site still works.
+                    @if !state.last_error.is_empty() {
+                        (callout("bad", "The last reload was rejected", html! {
+                            "The proxy is still serving the routes from before it, so this \
+                             may not be visible from outside. Fix the cause and reload."
+                            pre .mono.small style="margin-top:8px" { (state.last_error) }
+                        }))
+                    }
+
+                    @if routed.is_empty() {
+                        p .card-note {
+                            "No service on this target has a domain yet. Set one on a \
+                             service to route traffic to it."
+                        }
+                    } @else {
+                        table .table style="margin-top:12px" {
+                            thead { tr { th { "Domain" } th { "Service" } th { "Port" } } }
+                            tbody {
+                                @for service in &routed {
+                                    tr {
+                                        td {
+                                            a href=(format!("https://{}", service.domain))
+                                              target="_blank" rel="noreferrer noopener" {
+                                                (service.domain)
+                                            }
+                                        }
+                                        td {
+                                            a href=(format!("/services/{}", service.id)) {
+                                                (service.name)
+                                            }
+                                        }
+                                        td .mono { (service.port) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    div .form-actions {
+                        a .btn.small href=(format!("/targets/{}/ingress/config", target.id)) {
+                            "View config"
+                        }
+                        @if mode == ingress::Mode::Managed {
+                            form method="post"
+                                 action=(format!("/targets/{}/ingress/reload", target.id)) {
+                                (csrf_input(csrf))
+                                @if target.latency_critical {
+                                    input type="hidden" name="allow_latency_critical" value="1";
+                                }
+                                button .btn.small type="submit" { "Reload" }
+                            }
+                        }
+                        form method="post"
+                             action=(format!("/targets/{}/ingress/disable", target.id)) {
+                            (csrf_input(csrf))
+                            @if target.latency_critical {
+                                input type="hidden" name="allow_latency_critical" value="1";
+                            }
+                            button .btn.small.danger type="submit"
+                                onclick=(format!(
+                                    "return confirm('Turn ingress off for {}? Services here stop being reachable by domain.')",
+                                    target.name
+                                )) {
+                                "Disable"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The enable form, shown when this target has no ingress.
+fn ingress_off(target: &Target, csrf: &str) -> Markup {
+    html! {
+        p .card-note {
+            "Services on this host are reached by IP and port. Turn ingress on and nudo \
+             installs Caddy here, routes each service's domain to it, and gets a \
+             certificate from Let's Encrypt automatically."
+        }
+
+        @if target.latency_critical {
+            (callout("bad", "This host is latency-critical", html! {
+                "A reverse proxy adds a hop to every request and a process competing for \
+                 CPU and cache. That may be exactly wrong here — enabling it is allowed, \
+                 but it is a deliberate choice rather than a default."
+            }))
+        }
+
+        form method="post" action=(format!("/targets/{}/ingress/enable", target.id)) {
+            (csrf_input(csrf))
+            @if target.latency_critical {
+                input type="hidden" name="allow_latency_critical" value="1";
+            }
+
+            div .form-row {
+                label {
+                    "Contact address"
+                    input type="email" name="acme_email" placeholder="ops@example.com";
+                    span .hint {
+                        "Where Let's Encrypt sends expiry warnings. Optional, but without \
+                         it the first notice of an expiring certificate is the outage."
+                    }
+                }
+            }
+            div .form-row {
+                label {
+                    "Mode"
+                    select name="mode" {
+                        option value="managed" selected { "Managed — nudo installs and drives Caddy" }
+                        option value="external" { "External — you run the proxy, nudo renders its config" }
+                    }
+                }
+            }
+            div .form-actions {
+                button .btn.primary type="submit" { "Enable ingress" }
+            }
+        }
+    }
+}
+
+fn ingress_badge(status: ingress::Status) -> Markup {
+    match status {
+        ingress::Status::Active => badge("active", BadgeKind::Ok),
+        ingress::Status::Degraded => badge("degraded", BadgeKind::Bad),
+        ingress::Status::Pending => badge("pending", BadgeKind::Warn),
+        ingress::Status::Unspecified => badge("unknown", BadgeKind::Neutral),
     }
 }
 

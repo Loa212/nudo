@@ -102,6 +102,19 @@ pub fn service_detail(
                     dd { a href=(format!("/targets/{}", target.id)) { (target.name) }
                          span .sep { " · " } span .mono.small { (address(target)) } }
                     dt { "Unit" }             dd .mono { (or_dash(&unit.unit_name)) }
+                    // Only when routed: a "Domain -" row on every service that
+                    // is not would be noise on the pages where it never will be.
+                    @if !service.domain.is_empty() {
+                        dt { "Domain" }
+                        dd {
+                            a href=(format!("https://{}", service.domain))
+                              target="_blank" rel="noreferrer noopener" {
+                                (service.domain)
+                            }
+                            span .sep { " · " }
+                            span .mono.small { "→ :" (service.port) }
+                        }
+                    }
                     dt { "Source" }           dd { (artifact_detail(service)) }
                     dt { "Release root" }     dd .mono { (or_dash(&service.release_root)) }
                     dt { "Current release" }  dd .mono {

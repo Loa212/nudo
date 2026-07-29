@@ -100,6 +100,40 @@ pub fn service_form(
                 }
 
                 div .card {
+                    h2 { "Routing" }
+                    p .card-note {
+                        "Optional. Reach this service at a domain over HTTPS, on targets \
+                         where ingress is enabled. Leave both blank and it keeps being \
+                         reached by IP and port, as before."
+                    }
+                    div .fields style="margin-top:12px" {
+                        div .field {
+                            label for="domain" { "Domain" }
+                            input type="text" id="domain" name="domain"
+                                placeholder="api.example.com"
+                                value=(existing.map(|s| s.domain.as_str()).unwrap_or_default());
+                            span .hint {
+                                "Point an A record at the target first — a certificate \
+                                 cannot be issued until DNS resolves here."
+                            }
+                        }
+                        div .field {
+                            label for="port" { "Port" }
+                            // Rendered blank rather than as 0, which is the
+                            // "not routed" sentinel and would read as a port.
+                            input type="number" id="port" name="port" min="1" max="65535"
+                                placeholder="8080"
+                                value=(existing
+                                    .map(|s| s.port)
+                                    .filter(|p| *p > 0)
+                                    .map(|p| p.to_string())
+                                    .unwrap_or_default());
+                            span .hint { "Where the service listens on the target's loopback." }
+                        }
+                    }
+                }
+
+                div .card {
                     h2 { "Artifact" }
                     p .card-note { "Where the binary comes from." }
                     div .field style="margin-top:12px" {
