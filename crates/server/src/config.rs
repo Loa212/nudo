@@ -85,6 +85,37 @@ pub struct Config {
     /// before you have had a chance to complete setup.
     #[arg(long, env = "NUDO_ALLOW_SETUP", default_value_t = true)]
     pub allow_setup: bool,
+
+    /// Allow this instance to download a verified release and replace its own
+    /// binaries when asked to from the dashboard.
+    ///
+    /// Off by default, and this flag alone is not enough: the dashboard's own
+    /// self-upgrade toggle must also be on. Two switches because the flag is
+    /// set by whoever installs, while the toggle belongs to whoever operates.
+    #[arg(long, env = "NUDO_ALLOW_SELF_UPGRADE", default_value_t = false)]
+    pub allow_self_upgrade: bool,
+
+    /// Root of the self-release layout: `releases/`, the `current` symlink,
+    /// and the upgrade journal.
+    ///
+    /// Set by the packaged unit (`/var/lib/nudo/self`). Absent means the
+    /// binary was installed the pre-layout way, and self-upgrade is
+    /// unavailable until the documented one-time migration.
+    #[arg(long, env = "NUDO_SELF_DIR")]
+    pub self_dir: Option<PathBuf>,
+
+    /// Base URL release artifacts are downloaded from during a self-upgrade.
+    ///
+    /// The default is the project's own GitHub releases, and the URL for a
+    /// version is constructed from this base — never taken from the manifest
+    /// or the request. Overridable for mirrors and for tests; https is
+    /// required except towards loopback.
+    #[arg(
+        long,
+        env = "NUDO_SELF_UPGRADE_DOWNLOAD_BASE",
+        default_value = crate::self_upgrade::DEFAULT_DOWNLOAD_BASE
+    )]
+    pub self_upgrade_download_base: String,
 }
 
 impl Config {
@@ -167,6 +198,9 @@ impl Default for Config {
             update_manifest_url: crate::updates::DEFAULT_MANIFEST_URL.to_string(),
             update_interval_hours: 24,
             allow_setup: true,
+            allow_self_upgrade: false,
+            self_dir: None,
+            self_upgrade_download_base: crate::self_upgrade::DEFAULT_DOWNLOAD_BASE.to_string(),
         }
     }
 }

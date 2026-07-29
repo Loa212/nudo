@@ -273,6 +273,11 @@ fn rail(nav: Nav) -> Markup {
             a .brand href="/" {
                 "nudo"
                 span .tag { "control plane" }
+                // The running version, under the name. Answering "what am I
+                // running" should not require finding the settings page: it is
+                // the first thing anyone reads out when reporting a problem,
+                // and the first thing they check against a release note.
+                span .version { "v" (nudo_server::updates::current_version()) }
             }
             @for (item, label, href, icon) in Nav::items() {
                 a .nav .active[item == nav] href=(href) {

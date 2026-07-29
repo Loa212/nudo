@@ -95,6 +95,36 @@ impl Store {
     pub fn pool(&self) -> &Pool<Sqlite> {
         &self.pool
     }
+
+    /// Copies the database to `dest` as a consistent snapshot.
+    ///
+    /// `VACUUM INTO` rather than a file copy: the database runs in WAL mode,
+    /// so `nudo.db` alone is not the database — pages still live in the `-wal`
+    /// file beside it. The snapshot taken before a self-upgrade is what makes
+    /// a manual recovery possible if the new version's migrations leave the
+    /// schema ahead of a rolled-back binary.
+    pub async fn snapshot_database(&self, dest: &std::path::Path) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+
+        let dest = dest
+            .to_str()
+            .context("the snapshot path is not valid UTF-8")?;
+        // VACUUM INTO refuses to overwrite; a stale snapshot from an earlier
+        // failed attempt would otherwise wedge every retry.
+        if std::path::Path::new(dest).exists() {
+            std::fs::remove_file(dest).context("removing the previous snapshot")?;
+        }
+        // The path cannot be bound as a parameter in a VACUUM statement, so it
+        // is embedded — with quotes escaped the SQL way. The caller composes
+        // the path from the data directory and a version, never from input,
+        // which is what the AssertSqlSafe below asserts.
+        let escaped = dest.replace('\'', "''");
+        sqlx::query(sqlx::AssertSqlSafe(format!("VACUUM INTO '{escaped}'")))
+            .execute(&self.pool)
+            .await
+            .context("snapshotting the database")?;
+        Ok(())
+    }
 }
 
 /// Current UTC time in the text form used by every timestamp column.
@@ -207,6 +237,7 @@ mod tests {
             "terminal_sessions",
             "audit_entries",
             "idempotency_keys",
+            "self_upgrade_settings",
         ] {
             let found: Option<(String,)> =
                 sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1")

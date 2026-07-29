@@ -15,7 +15,10 @@ fn the_update_banner_names_both_versions_and_links_to_the_notes() {
         rendered.contains("0.1.0"),
         "the running version is not named"
     );
-    assert!(rendered.contains("/changelog"));
+    // "What's new" opens the dialog on this page rather than navigating away:
+    // deciding about an update should not cost you the page you were on.
+    assert!(rendered.contains("#whats-new"));
+    assert!(rendered.contains("/upgrade"));
     assert!(rendered.contains("releases/tag/v0.2.0"));
 }
 
@@ -138,18 +141,22 @@ fn dismissing_the_support_banner_is_a_csrf_protected_post() {
 }
 
 #[test]
-fn the_settings_page_carries_both_switches_and_says_nothing_is_sent() {
+fn the_settings_page_carries_every_switch_and_says_nothing_is_sent() {
     let prefs = SettingsPrefs {
         update_check_enabled: true,
         support_prompt_enabled: false,
+        self_upgrade_enabled: false,
         last_checked: "2 hours ago".to_string(),
     };
     let rendered = s(settings_page(&[], "a@b.c", &prefs, "t"));
     assert!(rendered.contains("/settings/updates"));
     assert!(rendered.contains("/settings/support"));
+    assert!(rendered.contains("/settings/self-upgrade"));
     assert!(rendered.contains("2 hours ago"));
     // The claim that matters most on that page.
     assert!(rendered.contains("no usage"));
+    // The self-upgrade toggle must say it is only half the permission.
+    assert!(rendered.contains("NUDO_ALLOW_SELF_UPGRADE"));
 }
 
 #[test]

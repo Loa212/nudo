@@ -14,7 +14,11 @@ use clap::Parser;
 #[command(
     name = "nudo-all-in-one",
     about = "The nudo control plane and dashboard in one process",
-    version
+    // Through `current_version()` rather than clap's baked-in string: the two
+    // are identical in a release build, but this is what lets `--version` and
+    // the update check agree with each other under the self-upgrade test
+    // seam, where one binary plays several versions.
+    version = nudo_server::updates::current_version()
 )]
 struct Args {
     /// Address the dashboard listens on.

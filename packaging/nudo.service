@@ -1,13 +1,34 @@
 # Runs the nudo control plane itself as a systemd unit — the same way nudo runs
-# the services it deploys.
+# the services it deploys, down to the release layout: binaries live in
+# versioned directories under /var/lib/nudo/self/releases with a `current`
+# symlink, which is what lets a binary install upgrade itself from the
+# dashboard (staged, digest-verified, atomically swapped, rolled back by
+# nudo-boot-guard if the new version cannot stay up).
 #
 #   sudo useradd --system --home-dir /var/lib/nudo --create-home --shell /usr/sbin/nologin nudo
-#   sudo install nudo-all-in-one /usr/local/bin/
+#   version=<the version you downloaded>
+#   sudo install -d -o nudo -g nudo /var/lib/nudo/self/releases/${version}
+#   sudo install -o nudo -g nudo nudo-*/nudo* /var/lib/nudo/self/releases/${version}/
+#   sudo install -o nudo -g nudo nudo-*/nudo-boot-guard /var/lib/nudo/self/nudo-boot-guard
+#   sudo ln -sfn releases/${version} /var/lib/nudo/self/current
+#   sudo chown -h nudo:nudo /var/lib/nudo/self/current
 #   sudo install -m 0644 nudo.service /etc/systemd/system/
 #   sudo install -d -m 0700 -o nudo -g nudo /etc/nudo
 #   openssl rand -hex 32 | sudo tee /etc/nudo/secret.key > /dev/null
 #   sudo chown nudo:nudo /etc/nudo/secret.key && sudo chmod 0600 /etc/nudo/secret.key
 #   sudo systemctl enable --now nudo
+#
+# An install that predates this layout (ExecStart=/usr/local/bin/...) keeps
+# working; to adopt it, run the block above with the current binaries, update
+# the unit, then `systemctl daemon-reload && systemctl restart nudo`. The
+# dashboard's /upgrade page prints the same sequence.
+#
+# The trade-off, stated plainly: with the binaries under /var/lib/nudo the
+# service user can overwrite what it runs. That is inherent to letting the
+# process upgrade itself, and it is why the feature sits behind both a config
+# flag (NUDO_ALLOW_SELF_UPGRADE) and a dashboard toggle, both off by default.
+# If you will never use self-upgrade, the old /usr/local/bin install remains
+# the tighter posture.
 #
 # Put a TLS-terminating reverse proxy in front of it and set NUDO_BASE_URL to the
 # https:// URL you reach it on — that is what marks the session cookie Secure and
@@ -24,12 +45,21 @@ Type=simple
 User=nudo
 Group=nudo
 
-ExecStart=/usr/local/bin/nudo-all-in-one
+# The guard runs from a stable path outside the `current` symlink on purpose:
+# if a broken release is what `current` points at, that release's own guard
+# cannot be trusted to undo it. The running instance refreshes the stable copy
+# only after a release confirms a healthy boot.
+ExecStartPre=/var/lib/nudo/self/nudo-boot-guard /var/lib/nudo/self
+ExecStart=/var/lib/nudo/self/current/nudo-all-in-one
 WorkingDirectory=/var/lib/nudo
 
 # The key file rather than the environment, so the key is not visible in
 # `systemctl show` or to anything that can read this unit's environment.
 Environment="NUDO_SECRET_KEY_FILE=/etc/nudo/secret.key"
+# Where the self-release layout lives; also what tells the process it may
+# manage its own binaries (still gated behind NUDO_ALLOW_SELF_UPGRADE and the
+# dashboard toggle).
+Environment="NUDO_SELF_DIR=/var/lib/nudo/self"
 Environment="NUDO_DB=/var/lib/nudo/nudo.db"
 Environment="NUDO_DATA_DIR=/var/lib/nudo/data"
 Environment="NUDO_WEB_ADDR=127.0.0.1:3000"

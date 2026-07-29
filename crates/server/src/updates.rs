@@ -15,9 +15,13 @@
 //!
 //! Dropped: Coolify's one-click auto-update downloads `upgrade.sh` from a CDN
 //! and executes it as root on the host. A control plane holding every target's
-//! SSH keys should not run code fetched from a URL, so nudo tells you a release
-//! exists and how to apply it, and leaves applying it to you or to your package
-//! manager. See CHANGES.md.
+//! SSH keys should not run code fetched from a URL. What replaced it, much
+//! later, is `crate::self_upgrade`: an explicitly opted-in binary install may
+//! upgrade itself, but by downloading an artifact, verifying it against the
+//! digest this manifest publishes, and exec'ing it — no script is fetched and
+//! nothing is piped to a shell. Every other install keeps getting told what a
+//! release is and how to apply it, and applying it stays a deliberate act.
+//! See CHANGES.md.
 
 use std::time::Duration;
 
@@ -31,8 +35,31 @@ pub const DEFAULT_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/Loa212/nudo/main/releases.json";
 
 /// The version this binary was built as.
+#[cfg(not(feature = "self-upgrade-test"))]
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// The version this binary was built as — unless a `.version-override` file
+/// sits beside the executable, in which case its contents win.
+///
+/// Only compiled under the `self-upgrade-test` feature, which no release
+/// build enables. The end-to-end upgrade test needs one binary to report
+/// different versions depending on which release directory it runs from; a
+/// file beside the binary does that where an environment variable could not,
+/// because the environment survives exec() and the file does not follow.
+#[cfg(feature = "self-upgrade-test")]
+pub fn current_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(".version-override")))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|raw| raw.trim().to_string())
+            .filter(|version| !version.is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    })
 }
 
 /// How long a fetched manifest is trusted before being refetched.
@@ -84,6 +111,19 @@ impl InstallKind {
     }
 }
 
+/// A release artifact's published digest.
+///
+/// What makes this worth trusting: the manifest carrying it is committed to
+/// the repository by the release workflow, while the artifact itself hangs off
+/// a GitHub Release — two different write paths. Verifying a download against
+/// this digest defeats anyone who can swap a release asset but cannot push to
+/// the default branch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactDigest {
+    /// Lowercase hex sha256 of the artifact file.
+    pub sha256: String,
+}
+
 /// A published release.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Release {
@@ -103,6 +143,11 @@ pub struct Release {
     /// the one entry that matters.
     #[serde(default)]
     pub breaking: bool,
+    /// Digests of the downloadable artifacts, keyed by tarball filename.
+    /// Empty for releases that predate digest publishing, which self-upgrade
+    /// treats as "cannot verify, refuse" rather than "skip the check".
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub artifacts: std::collections::BTreeMap<String, ArtifactDigest>,
 }
 
 /// The published manifest.
@@ -529,7 +574,12 @@ mod tests {
                     "published_at": "2026-07-26",
                     "notes": "Added a thing",
                     "url": "https://github.com/Loa212/nudo/releases/tag/v1.2.0",
-                    "breaking": true
+                    "breaking": true,
+                    "artifacts": {
+                        "nudo-v1.2.0-x86_64-unknown-linux-musl.tar.gz": {
+                            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                    }
                 }
             ]
         }"#;
@@ -539,6 +589,22 @@ mod tests {
         assert_eq!(release.version, "1.2.0");
         assert!(release.breaking);
         assert!(release.notes.contains("Added a thing"));
+        assert_eq!(
+            release
+                .artifacts
+                .get("nudo-v1.2.0-x86_64-unknown-linux-musl.tar.gz")
+                .map(|artifact| artifact.sha256.as_str()),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn a_release_without_artifact_digests_still_parses() {
+        // Every entry published before digests existed has no `artifacts` key,
+        // and the manifest on main is read by whatever version is running.
+        let manifest: Manifest =
+            serde_json::from_str(r#"{"releases":[{"version":"1.0.0"}]}"#).expect("parse");
+        assert!(manifest.latest().expect("a release").artifacts.is_empty());
     }
 
     #[test]
@@ -656,6 +722,22 @@ mod tests {
                 "{} has no https url",
                 release.version
             );
+            for (name, artifact) in &release.artifacts {
+                assert!(
+                    name.ends_with(".tar.gz"),
+                    "{}: artifact {name} is not a tarball name",
+                    release.version
+                );
+                assert!(
+                    artifact.sha256.len() == 64
+                        && artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                        && artifact.sha256 == artifact.sha256.to_lowercase(),
+                    "{}: artifact {name} has a malformed sha256 ({}) — a running \
+                     instance could never verify a download against it",
+                    release.version,
+                    artifact.sha256
+                );
+            }
         }
     }
 

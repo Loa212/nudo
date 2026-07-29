@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 
 # The script has a hyphen in its name, so it cannot be imported normally.
@@ -29,7 +30,14 @@ def manifest_with(*versions: str) -> dict:
     }
 
 
-def add(manifest, version, notes="Some notes.", breaking=False, url="https://example.test"):
+def add(
+    manifest,
+    version,
+    notes="Some notes.",
+    breaking=False,
+    url="https://example.test",
+    artifacts=None,
+):
     return add_release.add_release(
         manifest,
         version=version,
@@ -37,7 +45,11 @@ def add(manifest, version, notes="Some notes.", breaking=False, url="https://exa
         notes=notes,
         published_at="2026-07-26",
         breaking=breaking,
+        artifacts=artifacts,
     )
+
+# A well-formed digest for tests; the value is arbitrary.
+DIGEST = "a" * 64
 
 
 class Versions(unittest.TestCase):
@@ -113,6 +125,76 @@ class AddingARelease(unittest.TestCase):
         entry = add({}, "1.0.0", url="https://example.test/v1")["releases"][0]
         for field in ["version", "published_at", "url", "breaking", "notes"]:
             self.assertIn(field, entry, f"{field} is missing; the dashboard reads it")
+
+
+class ArtifactDigests(unittest.TestCase):
+    def test_digests_are_read_from_sha256sum_files(self):
+        # The workflow downloads `<name>.tar.gz.sha256` files next to the
+        # tarballs; each is one line of `sha256sum` output. Nested directories
+        # happen when download-artifact unpacks per-artifact subdirectories.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "nested").mkdir()
+            (root / "a.tar.gz.sha256").write_text(f"{DIGEST}  a.tar.gz\n")
+            (root / "nested" / "b.tar.gz.sha256").write_text(f"{'b' * 64}  b.tar.gz\n")
+
+            digests = add_release.collect_digests(root)
+
+        self.assertEqual(
+            digests,
+            {"a.tar.gz": {"sha256": DIGEST}, "b.tar.gz": {"sha256": "b" * 64}},
+        )
+
+    def test_a_malformed_digest_fails_the_publish(self):
+        # A release published with a garbled digest would make that artifact
+        # unverifiable forever, so the workflow must fail while a human can
+        # still fix it.
+        for content in [
+            "not-hex  a.tar.gz\n",
+            f"{'a' * 63}  a.tar.gz\n",  # too short
+            f"{DIGEST}\n",  # no filename
+            f"{DIGEST}  a.zip\n",  # not a tarball
+        ]:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                (root / "a.tar.gz.sha256").write_text(content)
+                with self.assertRaises(ValueError):
+                    add_release.collect_digests(root)
+
+    def test_an_empty_digests_dir_is_an_error_not_a_silent_omission(self):
+        # Passing --digests-dir and matching nothing means the workflow layout
+        # changed; publishing without digests would look like success.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                add_release.collect_digests(pathlib.Path(tmp))
+
+    def test_duplicate_filenames_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "one").mkdir()
+            (root / "two").mkdir()
+            (root / "one" / "a.tar.gz.sha256").write_text(f"{DIGEST}  a.tar.gz\n")
+            (root / "two" / "a.tar.gz.sha256").write_text(f"{'b' * 64}  a.tar.gz\n")
+            with self.assertRaises(ValueError):
+                add_release.collect_digests(root)
+
+    def test_digests_land_in_the_entry_and_absence_leaves_no_key(self):
+        with_digests = add(
+            {}, "1.0.0", artifacts={"a.tar.gz": {"sha256": DIGEST}}
+        )["releases"][0]
+        self.assertEqual(with_digests["artifacts"], {"a.tar.gz": {"sha256": DIGEST}})
+
+        # Older entries and digest-less publishes keep the old shape, which is
+        # what the server's serde default tolerates.
+        without = add({}, "1.0.0")["releases"][0]
+        self.assertNotIn("artifacts", without)
+
+    def test_republishing_replaces_digests_along_with_the_entry(self):
+        first = add({}, "1.0.0", artifacts={"a.tar.gz": {"sha256": DIGEST}})
+        second = add(first, "1.0.0", artifacts={"a.tar.gz": {"sha256": "b" * 64}})
+        self.assertEqual(
+            second["releases"][0]["artifacts"]["a.tar.gz"]["sha256"], "b" * 64
+        )
 
 
 class BreakingReleases(unittest.TestCase):

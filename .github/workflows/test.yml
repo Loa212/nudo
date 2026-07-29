@@ -39,11 +39,22 @@ jobs:
         # it does not run here; the `e2e` job below runs it.
         run: cargo test --workspace --all-targets
 
+      - name: Test the release-publishing scripts
+        # These write releases.json on tag push; a bug in them ships silently.
+        run: make test-scripts
+
+      - name: End-to-end self-upgrade
+        # A real nudo-all-in-one downloads a fixture release over loopback,
+        # verifies it against the manifest digest, swaps, execs itself, and is
+        # checked for the new version right after. Its own step so a hang here
+        # is attributable at a glance.
+        run: cargo test -p nudo-allinone --features self-upgrade-test --test self_upgrade
+
       - name: Build the release binaries
         run: |
           cargo build --release --locked \
             --bin nudo-server --bin nudo-web --bin nudo --bin nudo-mcp \
-            --bin nudo-all-in-one
+            --bin nudo-all-in-one --bin nudo-boot-guard
 
   e2e:
     # The real test of a deploy tool: ship a binary to a systemd host over SSH,

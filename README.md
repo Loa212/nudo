@@ -98,7 +98,20 @@ sudo install nudo-*/nudo* /usr/local/bin/
 
 To run the control plane itself as a systemd unit — which is a reasonable thing to
 want from a tool like this — see [`packaging/nudo.service`](packaging/nudo.service).
-It includes the setup commands and a hardened unit.
+It includes the setup commands and a hardened unit. The packaged unit installs the
+binaries into a versioned release layout under `/var/lib/nudo/self`, which is what
+lets a binary install upgrade itself from the dashboard: the new release is
+downloaded, verified against the sha256 the release workflow commits into
+[`releases.json`](releases.json), staged next to the running one, and swapped in
+atomically — and reverted by `nudo-boot-guard` if it cannot start. Nothing is ever
+fetched and piped to a shell.
+
+Self-upgrading is off unless two switches are both on: start the instance with
+`NUDO_ALLOW_SELF_UPGRADE=true` *and* enable it in the dashboard's settings. The
+trade-off of the layout is that the service user can overwrite its own binaries —
+that is what self-upgrading is — so if you will never use it, installing to
+`/usr/local/bin` with a root-owned binary remains the tighter posture, and the
+`/upgrade` page keeps printing exact manual commands for it.
 
 ### From source
 

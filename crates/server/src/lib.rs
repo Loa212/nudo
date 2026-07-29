@@ -18,6 +18,7 @@ pub mod health;
 pub mod ingress;
 pub mod logs;
 pub mod probe;
+pub mod self_upgrade;
 pub mod serve;
 pub mod ssh;
 pub mod store;

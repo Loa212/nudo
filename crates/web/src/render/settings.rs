@@ -194,6 +194,28 @@ pub fn settings_page(
                                 button .btn.small type="submit" { "Save" }
                             }
                         }
+
+                        form method="post" action="/settings/self-upgrade" style="margin-top:12px" {
+                            (csrf_input(csrf))
+                            div .field {
+                                label .check {
+                                    input type="checkbox" name="enabled" value="on"
+                                        checked[prefs.self_upgrade_enabled];
+                                    span {
+                                        "Allow this instance to upgrade itself from the "
+                                        a href="/upgrade" { "upgrade page" }
+                                        ". Only half the permission: the instance must \
+                                         also have been started with "
+                                        code { "NUDO_ALLOW_SELF_UPGRADE=true" }
+                                        ", and it only applies to a binary install \
+                                         running from the release layout."
+                                    }
+                                }
+                            }
+                            div .form-actions {
+                                button .btn.small type="submit" { "Save" }
+                            }
+                        }
                     }
                 }
             }
@@ -206,6 +228,7 @@ pub fn settings_page(
 pub struct SettingsPrefs {
     pub update_check_enabled: bool,
     pub support_prompt_enabled: bool,
+    pub self_upgrade_enabled: bool,
     /// Humanised time of the last release check, empty when it has never run.
     pub last_checked: String,
 }

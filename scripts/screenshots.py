@@ -20,9 +20,20 @@ Every view is captured twice, because the two states fail differently:
 Both light and dark are captured, since the stylesheet supports both and only
 one of them is ever looked at during development.
 
+Two views cannot be reached by navigating to a URL on the demo instance, and
+are captured against a second one started from the host binary in the release
+layout — the shape `packaging/nudo.service` installs:
+
+* **update-dialog-managed** — the dialog with a working "Update now", which a
+  container never shows because a container cannot replace its own image.
+* **update-dialog-in-progress** — what replaces the release notes once that
+  button is pressed. Reached by pressing it for real against a fixture release,
+  so the phases on screen are the ones the engine actually reports.
+
     scripts/screenshots.py                  # start a demo, capture, tear down
     scripts/screenshots.py --keep           # leave the instance running
     scripts/screenshots.py --only build     # views whose name contains "build"
+    scripts/screenshots.py --only update    # just the update flow
     scripts/screenshots.py --url http://…   # capture an instance already running
 
 Needs Docker (for the instance) and Google Chrome (for the rendering). Output
@@ -81,6 +92,11 @@ CHROME_CANDIDATES = [
 # that needs one is written as a format string.
 VIEWS: list[tuple[str, str]] = [
     ("dashboard", "/"),
+    # The update flow. `#whats-new` opens the dialog, which is `:target`-driven
+    # precisely so it can be linked to — which also makes it screenshottable
+    # without driving clicks.
+    ("update-dialog", "/#whats-new"),
+    ("upgrade", "/upgrade"),
     ("targets-list", "/targets"),
     ("targets-new", "/targets/new"),
     ("target-detail", "/targets/{target_id}"),
@@ -244,6 +260,12 @@ class Chrome:
         self.next_id = 0
         self.call("Page.enable")
         self.call("Network.enable")
+        # Two captures of the same URL in one run must not be the same bytes.
+        # The update flow photographs `/` twice — once offering the upgrade,
+        # once with it running — and a cached response makes the second shot a
+        # copy of the first, which looks like a rendering bug rather than a
+        # caching one.
+        self.call("Network.setCacheDisabled", cacheDisabled=True)
 
     def _first_page_target(self):
         try:
@@ -281,10 +303,35 @@ class Chrome:
         )
 
     def capture(self, url: str, path: pathlib.Path) -> None:
+        # Navigating to a URL that differs from the current one only by its
+        # fragment moves the hash without reloading, so the second capture of
+        # `/#whats-new` in a run would silently be a copy of the first — the
+        # dialog before and during an upgrade are exactly that pair. A unique
+        # query makes every navigation a real one.
+        if "#" in url:
+            base, fragment = url.split("#", 1)
+            separator = "&" if "?" in base else "?"
+            url = f"{base}{separator}_={secrets.token_hex(4)}#{fragment}"
         self.call("Page.navigate", url=url)
         # A fixed settle rather than waiting on a load event: the pages that
         # matter here stream (deployments, logs) and never reach quiescence.
         time.sleep(1.2)
+
+        # A spinner is mid-rotation whenever the shutter happens to fall, so
+        # an animated page photographs at a random angle — and a screenshot
+        # taken twice differs for no reason anybody can act on. Holding every
+        # animation at a quarter turn makes the frame deterministic and makes
+        # the spinner legible as a spinner rather than as a broken ring.
+        self.call(
+            "Runtime.evaluate",
+            expression="""
+                document.getAnimations().forEach((animation) => {
+                    animation.pause();
+                    animation.currentTime = 175;
+                });
+            """,
+            returnByValue=True,
+        )
 
         metrics = self.call("Page.getLayoutMetrics")
         content = metrics.get("cssContentSize") or metrics["contentSize"]
@@ -389,9 +436,10 @@ class Chrome:
 class Instance:
     """A throwaway nudo, in Docker."""
 
-    def __init__(self, image: str) -> None:
+    def __init__(self, image: str, manifest_port: int | None = None) -> None:
         self.url = f"http://127.0.0.1:{WEB_PORT}"
         self.image = image
+        self.manifest_port = manifest_port
 
     def start(self) -> None:
         subprocess.run(
@@ -401,15 +449,25 @@ class Instance:
             check=False,
         )
         key = secrets.token_hex(32)
-        run(
-            [
-                "docker", "run", "-d", "--name", CONTAINER,
-                "-p", f"{WEB_PORT}:3000",
-                "-e", f"NUDO_SECRET_KEY={key}",
-                "-e", f"NUDO_BASE_URL={self.url}",
-                self.image,
+        args = [
+            "docker", "run", "-d", "--name", CONTAINER,
+            "-p", f"{WEB_PORT}:3000",
+            "-e", f"NUDO_SECRET_KEY={key}",
+            "-e", f"NUDO_BASE_URL={self.url}",
+        ]
+        if self.manifest_port:
+            # The instance fetches the manifest from this host, so the update
+            # banner and dialog are populated by the real release check rather
+            # than by rows written behind its back.
+            args += [
+                "-e",
+                "NUDO_UPDATE_MANIFEST_URL="
+                f"http://host.docker.internal:{self.manifest_port}/releases.json",
+                "--add-host",
+                "host.docker.internal:host-gateway",
             ]
-        )
+        args.append(self.image)
+        run(args)
         wait_for("nudo to serve the dashboard", 120, self._serving)
 
     def _serving(self):
@@ -418,6 +476,24 @@ class Instance:
                 return response.status == 200 or None
         except (urllib.error.URLError, OSError):
             return None
+
+    def wait_for_update_check(self, session: Session) -> bool:
+        """Waits for the release check to have run at least once.
+
+        It is deliberately staggered ~30s after boot so a restarted fleet does
+        not fetch in lockstep, and there is no "check now" button — an operator
+        never needs one. A screenshot run does, so it waits rather than
+        reaching past the code that owns this.
+        """
+        def checked():
+            return "9.9.0" in session.get("/") or None
+
+        try:
+            wait_for("the release check to find the pending release", 90, checked)
+            return True
+        except RuntimeError:
+            print("  ! the release check did not run in time; the banner will be absent")
+            return False
 
     def stop(self) -> None:
         subprocess.run(
@@ -534,6 +610,99 @@ def sign_in_at(base: str) -> Session:
 # ---------------------------------------------------------------------------
 # Seeding
 # ---------------------------------------------------------------------------
+
+
+# The release the instance is told about, so the banner and its dialog have
+# something to show. A version nothing will reach, so it stays "newer" whatever
+# this build reports as its own.
+PENDING_VERSION = "9.9.0"
+PENDING_MANIFEST = {
+    "releases": [
+        {
+            "version": PENDING_VERSION,
+            "published_at": "2026-08-04",
+            "url": f"https://github.com/Loa212/nudo/releases/tag/v{PENDING_VERSION}",
+            "breaking": False,
+            "notes": (
+                "- Custom domains: managed ingress and automatic HTTPS for deployed services\n"
+                "- Builds can run on a host other than the control plane\n"
+                "- SSH host keys are verified and pinned on first use\n"
+                "- Deploy artifacts are streamed and checked as they arrive, not buffered whole"
+            ),
+            # Filled in from the fixture tarball's real bytes before the
+            # manifest is served: the engine verifies the download against
+            # this, and a placeholder digest is correctly refused — which is
+            # the check working, but makes for a dull screenshot.
+            "artifacts": {},
+        }
+    ]
+}
+
+
+def manifest_with_digest(tarball: bytes) -> dict:
+    """The pending-release manifest, carrying the fixture tarball's real digest.
+
+    Not decoration: the upgrade verifies the download against exactly this
+    value and refuses on a mismatch, so a manifest with a placeholder digest
+    produces a screenshot of the refusal rather than of the progress view.
+    """
+    import copy
+    import hashlib
+
+    manifest = copy.deepcopy(PENDING_MANIFEST)
+    name = f"nudo-v{PENDING_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+    manifest["releases"][0]["artifacts"] = {
+        name: {"sha256": hashlib.sha256(tarball).hexdigest()}
+    }
+    return manifest
+
+
+class ManifestServer:
+    """Serves a release manifest to the instance under capture.
+
+    The update banner and its dialog only render once the release check has
+    found something newer, and a screenshot run cannot wait for a real release.
+    Rather than writing the database rows directly — the image ships no sqlite3,
+    and faking rows would capture a path no operator ever takes — this serves a
+    manifest and lets the instance's own update check fetch it. What ends up on
+    screen came through the real code.
+    """
+
+    def __init__(self, manifest: dict) -> None:
+        self.body = json.dumps(manifest).encode()
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("0.0.0.0", 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self.running = True
+        self.thread = __import__("threading").Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while self.running:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
+                    b"content-length: " + str(len(self.body)).encode() + b"\r\n"
+                    b"connection: close\r\n\r\n" + self.body
+                )
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def close(self) -> None:
+        self.running = False
+        try:
+            self.listener.close()
+        except OSError:
+            pass
 
 
 def seed(session: Session) -> dict[str, str]:
@@ -728,6 +897,284 @@ def first_match(haystack: str, pattern: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+class ManagedInstance:
+    """A nudo running the way a self-upgradable binary install actually runs.
+
+    The demo instance is a container, and a container is correctly refused a
+    self-upgrade — so it can never show "Update now" or the progress view. This
+    starts a second one from the host binary in the release layout, with both
+    opt-ins given: the same shape `packaging/nudo.service` installs.
+
+    Its artifact server hands out a tarball that is deliberately not a working
+    binary. The download and the digest check are real, and the upgrade stops
+    at the exec — which is the failure the design is proudest of, and leaves
+    this instance still serving the page being captured.
+    """
+
+    def __init__(self, port: int, manifest_port: int) -> None:
+        self.url = f"http://127.0.0.1:{port}"
+        self.port = port
+        self.manifest_port = manifest_port
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="nudo-managed-"))
+        self.proc: subprocess.Popen | None = None
+        self.artifacts: ArtifactServer | None = None
+
+    def start(self) -> None:
+        # Built with `self-upgrade-test`, which lifts one production check: the
+        # requirement that the host be x86_64 Linux, since that is the only
+        # target release artifacts are published for. Everything else about the
+        # path — the layout, both opt-ins, the download, the digest check — is
+        # the real thing, so the screenshots show real behaviour rather than a
+        # mock. Without it, a developer machine is correctly told it cannot
+        # self-upgrade and the button never appears.
+        print("  building nudo-all-in-one with the self-upgrade test seam")
+        run(
+            [
+                "cargo", "build", "--bin", "nudo-all-in-one",
+                "--features", "nudo-allinone/self-upgrade-test",
+            ]
+        )
+        binary = ROOT / "target" / "debug" / "nudo-all-in-one"
+        if not binary.exists():
+            raise RuntimeError(f"{binary} does not exist after the build")
+
+        version = current_cargo_version()
+        release = self.root / "self" / "releases" / version
+        release.mkdir(parents=True)
+        shutil.copy2(binary, release / "nudo-all-in-one")
+        (self.root / "self" / "current").symlink_to(f"releases/{version}")
+
+        # The "release" the upgrade downloads. Its digest is what the manifest
+        # published, so verification passes; the payload is not a working
+        # binary, so the upgrade stops at the exec — the failure the design is
+        # proudest of, and the one that leaves this instance still serving.
+        self.artifacts = ArtifactServer(FIXTURE_TARBALL)
+
+        env = dict(os.environ)
+        env.update(
+            {
+                "NUDO_SELF_DIR": str(self.root / "self"),
+                "NUDO_ALLOW_SELF_UPGRADE": "true",
+                "NUDO_SELF_UPGRADE_DOWNLOAD_BASE": f"http://127.0.0.1:{self.artifacts.port}",
+                "NUDO_UPDATE_MANIFEST_URL": f"http://127.0.0.1:{self.manifest_port}/releases.json",
+                "NUDO_DB": str(self.root / "nudo.db"),
+                "NUDO_DATA_DIR": str(self.root / "data"),
+                "NUDO_SECRET_KEY": secrets.token_hex(32),
+                "NUDO_WEB_ADDR": f"127.0.0.1:{self.port}",
+                "NUDO_GRPC_ADDR": f"127.0.0.1:{free_port()}",
+                "NUDO_BASE_URL": self.url,
+                "RUST_LOG": "warn",
+            }
+        )
+        self.proc = subprocess.Popen(
+            [str(self.root / "self" / "current" / "nudo-all-in-one")],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        wait_for("the managed instance to serve the dashboard", 60, self._serving)
+
+    def _serving(self):
+        try:
+            with urllib.request.urlopen(f"{self.url}/login", timeout=2) as response:
+                return response.status == 200 or None
+        except (urllib.error.URLError, OSError):
+            return None
+
+    def enable_self_upgrade(self, session: Session) -> None:
+        session.post(
+            "/settings/self-upgrade",
+            {"csrf": session.csrf("/settings"), "enabled": "on"},
+        )
+
+    def stop(self) -> None:
+        if self.proc:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        if self.artifacts:
+            self.artifacts.close()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+class ArtifactServer:
+    """Serves one tarball to whatever asks for it."""
+
+    def __init__(self, tarball: bytes) -> None:
+        self.body = tarball
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        self.running = True
+        __import__("threading").Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while self.running:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+                # Slowly: the point of this server is to keep an upgrade in its
+                # download phase long enough to photograph.
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: " + str(len(self.body)).encode()
+                    + b"\r\nconnection: close\r\n\r\n"
+                )
+                # Deliberately slow. Over loopback the real sequence — download,
+                # verify, stage, snapshot, swap — finishes in well under a
+                # second, which is the right behaviour and an impossible thing
+                # to photograph. Dripping the body holds the upgrade in its
+                # download phase long enough for a screenshot without faking
+                # any part of it.
+                # ~15s to deliver the whole body, which comfortably outlasts a
+                # page load plus Chrome's settle. The client buffers ahead, so
+                # the pace has to be set here rather than by the body's size.
+                chunk = max(len(self.body) // 60, 1024)
+                for offset in range(0, len(self.body), chunk):
+                    if not self.running:
+                        break
+                    try:
+                        conn.sendall(self.body[offset : offset + chunk])
+                    except OSError:
+                        return  # the client gave up; nothing to report
+                    time.sleep(0.25)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def close(self) -> None:
+        self.running = False
+        try:
+            self.listener.close()
+        except OSError:
+            pass
+
+
+def build_fixture_tarball() -> bytes:
+    """A release archive with the right shape and a binary that cannot exec.
+
+    Padded so the download takes long enough to be caught mid-flight.
+    """
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        # Incompressible, so the gzipped archive is genuinely large: zeros
+        # would deflate to nothing and the drip-feed would have nothing to
+        # drip. Large enough that the download outlasts a page capture.
+        payload = b"#!/nonexistent\n" + secrets.token_bytes(24 * 1024 * 1024)
+        info = tarfile.TarInfo(
+            f"nudo-v{PENDING_VERSION}-x86_64-unknown-linux-musl/nudo-all-in-one"
+        )
+        info.size = len(payload)
+        info.mode = 0o755
+        archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+# Built once: the manifest must publish this exact tarball's digest, and the
+# artifact server must serve exactly these bytes, or verification refuses it.
+FIXTURE_TARBALL = build_fixture_tarball()
+
+
+def current_cargo_version() -> str:
+    text = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    return first_match(text, r'^version = "([^"]+)"') or "0.0.0"
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def capture_managed_update(chrome: Chrome, manifest_port: int, themes: list[str]) -> int:
+    """Captures the two states only a self-upgradable install can show.
+
+    `update-dialog-managed` is the dialog with a real "Update now" button;
+    `update-dialog-in-progress` is what replaces the notes once it is pressed.
+    """
+    instance = ManagedInstance(WEB_PORT + 1, manifest_port)
+    taken = 0
+    try:
+        instance.start()
+        session = sign_in_at(instance.url)
+        instance.enable_self_upgrade(session)
+        # Chrome's cookie is scoped to an origin, and this instance is on a
+        # different port from the demo — without its own cookie every capture
+        # here is the login page.
+        chrome.set_cookie("nudo_session", session.session_id(), instance.url)
+        try:
+            wait_for(
+                "the managed instance's release check",
+                90,
+                lambda: (PENDING_VERSION in session.get("/")) or None,
+            )
+        except RuntimeError:
+            print("  ! the managed instance never saw the release; skipping")
+            return 0
+
+        for theme in themes:
+            chrome.set_theme(theme == "dark")
+            directory = OUT / "populated" / theme
+            directory.mkdir(parents=True, exist_ok=True)
+            chrome.capture(instance.url + "/#whats-new", directory / "update-dialog-managed.png")
+            taken += 1
+            print(f"  populated/{theme}/update-dialog-managed.png")
+
+        # Press the button for real, taking the token from inside the upgrade
+        # form: the dashboard carries several, and the first one belongs to the
+        # support banner.
+        page = session.get("/")
+        form = page.split('action="/upgrade/start"')[1][:600]
+        csrf = first_match(form, r'name="csrf" value="([^"]*)"') or ""
+        session.post("/upgrade/start", {"csrf": csrf, "target_version": PENDING_VERSION})
+
+        # Each capture needs the upgrade to still be running when Chrome
+        # renders, and one upgrade does not outlast several captures — so each
+        # theme gets its own run. Restarting is cheap: the failed exec leaves
+        # the instance serving, and the engine is happy to be asked again.
+        for index, theme in enumerate(themes):
+            if index > 0:
+                page = session.get("/")
+                if 'action="/upgrade/start"' not in page:
+                    print("  ! the upgrade cannot be restarted; skipping the rest")
+                    break
+                form = page.split('action="/upgrade/start"')[1][:600]
+                csrf = first_match(form, r'name="csrf" value="([^"]*)"') or ""
+                session.post(
+                    "/upgrade/start", {"csrf": csrf, "target_version": PENDING_VERSION}
+                )
+
+            try:
+                wait_for(
+                    "the upgrade to reach a phase worth showing",
+                    30,
+                    lambda: ("upgrade-step current" in session.get("/")) or None,
+                )
+            except RuntimeError:
+                print("  ! the upgrade finished before it could be captured")
+
+            chrome.set_theme(theme == "dark")
+            directory = OUT / "populated" / theme
+            chrome.capture(
+                instance.url + "/#whats-new", directory / "update-dialog-in-progress.png"
+            )
+            taken += 1
+            print(f"  populated/{theme}/update-dialog-in-progress.png")
+    finally:
+        instance.stop()
+    return taken
+
+
 def capture_all(
     chrome: Chrome,
     base: str,
@@ -822,12 +1269,16 @@ def main() -> int:
     states = ["empty", "populated"] if args.state == "both" else [args.state]
 
     instance = None
+    manifest_server = None
     if args.url:
         base = args.url.rstrip("/")
     else:
         if not shutil.which("docker"):
             raise SystemExit("Docker is required, or pass --url for a running instance.")
-        instance = Instance(args.image)
+        # Served before the instance starts, so its first release check finds
+        # it and the update banner has something to show.
+        manifest_server = ManifestServer(manifest_with_digest(FIXTURE_TARBALL))
+        instance = Instance(args.image, manifest_port=manifest_server.port)
         print(f"==> starting {args.image} on {WEB_PORT}")
         instance.start()
         base = instance.url
@@ -861,12 +1312,24 @@ def main() -> int:
         if "populated" in states:
             print("==> seeding")
             ids = seed(session)
+            if instance:
+                instance.wait_for_update_check(session)
             print("==> populated")
             taken += capture_all(chrome, base, "populated", ids, args.only, themes)
+
+            # Last, and against a second instance: the demo runs in a
+            # container, and a container is correctly refused a self-upgrade,
+            # so the button and the progress view can only be shown by an
+            # install shaped the way the packaged unit installs one.
+            if manifest_server and (not args.only or "update" in args.only):
+                print("==> the self-upgradable install")
+                taken += capture_managed_update(chrome, manifest_server.port, themes)
 
     finally:
         if chrome:
             chrome.close()
+        if manifest_server:
+            manifest_server.close()
         if instance and not args.keep:
             instance.stop()
         elif instance:

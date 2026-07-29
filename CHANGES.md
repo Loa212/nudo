@@ -615,14 +615,64 @@ building an instance with an account and an encrypted secret, then doing the ful
 `docker stop` / `rm` / `run` cycle and confirming the session, the account and the
 secret all survived.
 
-Two tests keep this a page rather than a button: one asserts the banner submits
-nothing and contains no shell command, the other that the upgrade page has no
-`<form>` and pipes nothing into a shell.
+Two tests originally kept this a page rather than a button: one asserts the
+banner submits nothing and contains no shell command, the other that the upgrade
+page has no `<form>` and pipes nothing into a shell. The self-upgrade for binary
+installs (below, "Self-upgrade") later narrowed the second: the page may now
+carry exactly one form — the upgrade button for a managed, doubly-opted-in
+binary install — while the no-shell half of both tests still holds verbatim,
+because that was always the property that mattered. The banner remains form-free.
 
-A self-updating binary — fetch the release, verify the checksum and a signature,
-then use the same atomic swap and rollback nudo already performs for services,
-pointed at itself — is deferred rather than rejected. It can only work for the
-binary install, since a process cannot replace its own container image.
+### Self-upgrade for binary installs
+
+Issue #1, built after the security bar was settled there: match the cost of
+Coolify's posture, exceed the posture where it is free, and defer signing.
+
+**Verification without signatures.** The release workflow now publishes each
+artifact's sha256 into `releases.json` (`scripts/add-release.py --digests-dir`).
+The manifest is committed to `main` while the artifacts hang off a GitHub
+Release — two write paths with different permissions — so an instance verifying
+a download against the manifest digest defeats anyone who can swap a release
+asset but cannot push to the default branch. Cosign keyless was considered and
+deferred: an attacker who can poison the manifest can push to `main`, and anyone
+who can push to `main` can run the release workflow and sign whatever they like,
+so its attestation mostly covers a threat the digest scheme already covers,
+while `sigstore-rs` would be the heaviest dependency in the tree. The download
+URL is constructed server-side from the verified version and pinned; the
+anti-rollback ladder gates the action; the recorded manifest — not a fresh
+fetch — is what is consulted, so what the operator saw is what runs.
+
+**The restart dance: swap, exec, confirm, guard.** The shipped unit's hardening
+(`ProtectSystem=strict`, unprivileged user, `NoNewPrivileges`) means the process
+can neither write `/usr/local/bin` nor create transient systemd units. So the
+packaged install moved to the deploy engine's own layout pointed at itself:
+binaries under `/var/lib/nudo/self/releases/<version>` behind a `current`
+symlink that `ExecStart` resolves. An upgrade stages, verifies, snapshots the
+database (`VACUUM INTO`, because WAL), swaps the symlink and `exec()`s the new
+binary through it. exec failing is the best failure in the design: it returns,
+the old process is still running, the symlink swaps back — zero downtime for
+the worst case. A journal file (`crates/bootguard`, std-only) tracks
+staged→swapped→confirmed; the new process confirms itself on boot after the
+store opened and migrations ran. `nudo-boot-guard`, run as `ExecStartPre=` from
+a stable path deliberately outside the symlink it may revert, counts
+unconfirmed boots and puts the previous release back after three.
+
+**Off by default, twice.** `NUDO_ALLOW_SELF_UPGRADE` (whoever installs) and a
+dashboard toggle (whoever operates) must both be on, and only a managed-layout
+binary install on a published target is eligible; containers keep `docker pull`
+and legacy binary installs keep the manual commands, now with the one-time
+migration to the layout printed beside them. Rollback of the database is
+deliberately manual — an automatic restore would silently discard writes made
+after the snapshot — and the page says so, with the snapshot's path.
+
+**Tested end to end.** `crates/allinone/tests/self_upgrade.rs` builds the real
+binary, serves a fixture release over loopback, drives the RPC, and asserts the
+same process (exec, not respawn) comes back confirmed as the new version, with
+`--version` through the symlink agreeing; a second test proves the garbage-binary
+case rolls back with the old version still serving. The seams that make this
+possible — a `.version-override` file honoured beside the executable and a
+loopback-http allowance for the download base — live behind a
+`self-upgrade-test` cargo feature no release build enables.
 
 **Not kept: the telemetry.** A Coolify instance pings `undead.coolify.io` on
 every boot, on by default. nudo sends nothing, ever. There is no setting to
@@ -861,15 +911,14 @@ a git-backed service does not, even though the SHA is known.
 audit log and deployment history cover "what happened"; "tell me when it
 happens" is a separate concern.
 
-**A self-updating binary.** `/upgrade` prints the commands; it does not run them.
-Doing it properly means fetching the release, verifying both the checksum and a
-signature, and then performing the same staged-swap-and-rollback nudo already
-does for the services it deploys — pointed at itself, which is harder, because
-the thing performing the upgrade is the thing being replaced. It also only
-applies to the binary install: a process cannot swap its own container image, so
-the containerised path stays `docker pull` regardless. Deferred as a deliberate
-scope call rather than a rejection; the detection and the instructions it would
-build on are already in place.
+**A self-updating binary.** No longer deferred — built, for the binary install
+only, as "Self-upgrade for binary installs" under the update-system section
+above. What shipped differs from the sketch here in one respect: verification is
+against the digest published in the manifest (which travels a different write
+path than the artifact) rather than a signature, with signing left as a
+follow-up whose marginal value is small until the repository and the release
+workflow have different owners. The containerised path stays `docker pull`
+regardless, as predicted: a process cannot swap its own image.
 
 **arm64 release artifacts.** CI builds `x86_64-unknown-linux-gnu` and
 `x86_64-unknown-linux-musl`, as specified. Adding aarch64 is a matrix entry and a

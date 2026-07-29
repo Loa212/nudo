@@ -8,6 +8,7 @@ members = [
     "crates/cli",
     "crates/mcp",
     "crates/allinone",
+    "crates/bootguard",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ nudo-proto = { path = "crates/proto" }
 nudo-format = { path = "crates/format" }
 nudo-server = { path = "crates/server" }
 nudo-web = { path = "crates/web" }
+nudo-bootguard = { path = "crates/bootguard" }
 
 # gRPC / protobuf
 prost = "0.14"
@@ -89,6 +91,10 @@ argon2 = "0.5"
 hmac = "0.13"
 sha2 = "0.11"
 subtle = "2.6"
+
+# Self-upgrade artifact handling
+tar = "0.4"
+flate2 = "1"
 base64 = "0.22"
 rand = "0.9"
 hex = "0.4"

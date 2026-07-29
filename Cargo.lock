@@ -1242,6 +1242,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2265,12 +2275,24 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "flate2",
+ "hex",
+ "nudo-bootguard",
+ "nudo-proto",
  "nudo-server",
  "nudo-web",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
  "tokio",
+ "tonic",
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "nudo-bootguard"
+version = "0.3.0"
 
 [[package]]
 name = "nudo-cli"
@@ -2342,11 +2364,13 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "flate2",
  "futures-util",
  "hex",
  "hmac 0.13.0",
  "http",
  "jsonwebtoken 11.0.0",
+ "nudo-bootguard",
  "nudo-format",
  "nudo-proto",
  "octocrab",
@@ -2361,6 +2385,7 @@ dependencies = [
  "shell-escape",
  "sqlx",
  "subtle",
+ "tar",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2393,6 +2418,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "maud",
+ "nudo-bootguard",
  "nudo-format",
  "nudo-proto",
  "nudo-server",
@@ -4325,6 +4351,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5199,6 +5236,16 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
+]
 
 [[package]]
 name = "yoke"

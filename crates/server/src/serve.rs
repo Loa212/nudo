@@ -11,6 +11,7 @@ use nudo_proto::build_hosts_server::BuildHostsServer;
 use nudo_proto::deployments_server::DeploymentsServer;
 use nudo_proto::logs_server::LogsServer;
 use nudo_proto::secrets_server::SecretsServer;
+use nudo_proto::self_upgrade_server::SelfUpgradeServer;
 use nudo_proto::services_api_server::ServicesApiServer;
 use nudo_proto::sources_server::SourcesServer;
 use nudo_proto::targets_server::TargetsServer;
@@ -39,6 +40,9 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
     spawn_log_tailers(context.clone());
     spawn_update_check(&config, store.clone());
     reconcile_interrupted_deployments(&store).await;
+    // After the store is open and migrated — which is exactly what "the new
+    // version works" means to the upgrade journal.
+    crate::self_upgrade::reconcile_on_boot(&config, &store).await;
 
     // Health reporting so a container orchestrator or a load balancer can tell
     // whether this process is ready, without a bespoke endpoint.
@@ -88,6 +92,9 @@ pub async fn run(config: Config, addr: std::net::SocketAddr) -> anyhow::Result<(
             context.clone(),
         )))
         .add_service(SecretsServer::new(api::SecretsService::new(
+            context.clone(),
+        )))
+        .add_service(SelfUpgradeServer::new(api::SelfUpgradeService::new(
             context.clone(),
         )))
         .add_service(AuditServer::new(api::AuditService::new(context)))

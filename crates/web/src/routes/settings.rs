@@ -20,6 +20,7 @@ pub async fn settings(State(state): State<AppState>, user: CurrentUser) -> Respo
     let prefs = render::SettingsPrefs {
         update_check_enabled: state.store.release_check_enabled().await.unwrap_or(true),
         support_prompt_enabled: state.store.support_prompt_enabled().await.unwrap_or(true),
+        self_upgrade_enabled: state.store.self_upgrade_enabled().await.unwrap_or(false),
         last_checked: state
             .store
             .release_checked_at()

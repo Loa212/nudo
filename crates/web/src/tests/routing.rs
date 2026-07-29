@@ -55,7 +55,10 @@ async fn every_form_the_dashboard_renders_posts_to_a_route_that_exists() {
         "/settings/tokens/tok_1/revoke",
         "/settings/updates",
         "/settings/support",
+        "/settings/self-upgrade",
         "/support/dismiss",
+        "/upgrade/start",
+        "/upgrade/skip",
     ];
 
     for action in actions {
@@ -172,7 +175,10 @@ fn no_form_action_in_the_renderer_is_missing_from_that_list() {
         "/settings/tokens/{}/revoke",
         "/settings/updates",
         "/settings/support",
+        "/settings/self-upgrade",
         "/support/dismiss",
+        "/upgrade/start",
+        "/upgrade/skip",
     ];
 
     for action in &found {

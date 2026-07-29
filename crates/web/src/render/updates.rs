@@ -9,13 +9,13 @@ use super::*;
 
 /// The banner shown when a newer release exists.
 ///
-/// Renders nothing when the instance is current, so the caller can place it
-/// unconditionally.
+/// Renders nothing when the instance is current or the operator skipped this
+/// release, so the caller can place it unconditionally.
 ///
-/// Deliberately not an "Update now" button. Coolify's equivalent downloads a
-/// shell script over the network and runs it as root; for a tool holding every
-/// target's SSH keys, that is a lot of trust in a URL, so upgrading here stays a
-/// deliberate act on the host.
+/// The banner itself still submits nothing and contains no shell command —
+/// what it offers is a look at what changed. On an install that can upgrade
+/// itself, the dialog it opens carries the action; on every other install the
+/// same dialog sends you to the page with the commands for your install kind.
 pub fn update_banner(status: &UpdateBanner) -> Markup {
     if !status.available {
         return html! {};
@@ -33,12 +33,15 @@ pub fn update_banner(status: &UpdateBanner) -> Markup {
                     "Read the notes before upgrading: this release changes something \
                      that will not migrate itself."
                 } @else {
-                    "Upgrading is a manual step on the host; nudo does not update itself."
+                    "See what changed, then decide."
                 }
             }
             div .form-actions {
-                a .btn.small.primary href="/upgrade" { "How to upgrade" }
-                a .btn.small href="/changelog" { "What's new" }
+                // Opens the dialog rendered by `update_dialog`. A plain link
+                // to the fragment so it still works without JavaScript: the
+                // dialog is `:target`-driven, not script-driven.
+                a .btn.small.primary href="#whats-new" { "What's new" }
+                a .btn.small href="/upgrade" { "How to upgrade" }
                 @if !status.url.is_empty() {
                     a .btn.small href=(status.url) target="_blank" rel="noreferrer noopener" {
                         "Release notes"
@@ -49,13 +52,134 @@ pub fn update_banner(status: &UpdateBanner) -> Markup {
     }
 }
 
+/// The update dialog: what changed, and what to do about it.
+///
+/// Opened from the banner. Shown as a modal via `:target`, so it needs no
+/// JavaScript and survives the page reloads that the actions cause — which
+/// matters most while an upgrade is running, since the process serving this
+/// page is the one being replaced.
+///
+/// Three ways out, and they mean different things. **Update now** appears only
+/// on an install that can actually do it, and starts the verified staged
+/// upgrade. **Skip this version** records the decision so the banner stops
+/// asking about this release, and stays quiet until a newer one lands. **Close**
+/// decides nothing, and the banner is there next time.
+pub fn update_dialog(view: &UpdateDialog) -> Markup {
+    if !view.available {
+        return html! {};
+    }
+
+    let in_flight = view
+        .self_upgrade
+        .as_ref()
+        .is_some_and(|status| status.in_flight());
+
+    html! {
+        // The backdrop is a link back to "no fragment", so clicking outside
+        // the dialog closes it the way a modal should.
+        div #whats-new .modal {
+            a .modal-backdrop href="#" aria-label="Close" {}
+            div .modal-card role="dialog" aria-modal="true" aria-labelledby="whats-new-title" {
+                div .modal-head {
+                    div {
+                        h2 #whats-new-title { "nudo " (view.latest) " is available" }
+                        p .small.muted { "You are running " (view.current) "." }
+                    }
+                    a .modal-close href="#" aria-label="Close" { "×" }
+                }
+
+                div .modal-body {
+                    @if view.breaking {
+                        (callout("bad", "This release needs manual steps", html! {
+                            p {
+                                "Something in this release does not migrate itself. \
+                                 Read the notes below before starting."
+                            }
+                        }))
+                    }
+
+                    @if in_flight {
+                        // The upgrade is running: the notes give way to
+                        // progress, polled so the restart is ridden through.
+                        (upgrade_progress(view.self_upgrade.as_ref().expect("in flight")))
+                    } @else {
+                        @if view.notes.is_empty() {
+                            p .muted { "No notes were published for this release." }
+                        } @else {
+                            div .release-notes { (release_notes(&view.notes)) }
+                        }
+                        @if !view.url.is_empty() {
+                            p .small {
+                                a href=(view.url) target="_blank" rel="noreferrer noopener" {
+                                    "Full notes for " (view.latest)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                @if !in_flight {
+                    div .modal-foot {
+                        // "Close" first in the DOM but visually last: the
+                        // least consequential action should not be the one
+                        // the eye lands on, and should not be the default
+                        // submit either.
+                        div .modal-foot-actions {
+                            a .btn href="#" { "Close" }
+                            form method="post" action="/upgrade/skip" {
+                                (csrf_input(&view.csrf))
+                                input type="hidden" name="version" value=(view.latest);
+                                button .btn type="submit" { "Skip this version" }
+                            }
+                            @match &view.self_upgrade {
+                                Some(status) if status.can_upgrade_now() => {
+                                    form method="post" action="/upgrade/start" {
+                                        (csrf_input(&view.csrf))
+                                        input type="hidden" name="target_version" value=(view.latest);
+                                        button .btn.primary type="submit" { "Update now" }
+                                    }
+                                }
+                                _ => {
+                                    a .btn.primary href="/upgrade" { "How to update" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The in-progress body of the dialog, polled while an upgrade runs.
+///
+/// Polling rather than a stream on purpose: the connection dies when the
+/// process execs itself, and a poll that quietly fails and retries is what
+/// carries the dialog across the restart. `hx-target` is the region itself, so
+/// each reply replaces only this.
+fn upgrade_progress(status: &SelfUpgradeView) -> Markup {
+    html! {
+        div #upgrade-progress
+            hx-get="/upgrade/status"
+            hx-trigger="every 2s"
+            hx-swap="innerHTML" {
+            (self_upgrade_status_fragment(status))
+        }
+    }
+}
+
 /// The upgrade instructions, for the way this instance is actually installed.
 ///
-/// A page rather than a button. nudo does not upgrade itself: it holds the SSH
-/// keys for every machine it manages, and a process that can rewrite its own
-/// binary — or fetch and run a script as root, which is how the tool this was
-/// modelled on does it — is a much larger thing to trust than one that tells
-/// you what to type.
+/// Mostly a page, with one deliberate exception. A container install and a
+/// legacy binary install get exact commands to run on the host. A managed
+/// binary install — one running from the self-release layout, with both the
+/// config flag and the settings toggle opted in — gets a button, because for
+/// that install nudo can do the whole staged, digest-verified, rolled-back
+/// sequence itself. What it will never get is a shell: the upgrade downloads
+/// an artifact, verifies it against the digest committed to the repository,
+/// and execs it. No script is fetched, and nothing on this page pipes into a
+/// shell — the tool this was modelled on curls a script from a CDN and runs
+/// it as root, and the distance from that is the point.
 ///
 /// The commands are exact and the reasoning is stated, because the questions
 /// someone actually has at this point are "will this lose my data" and "what if
@@ -124,9 +248,10 @@ pub fn upgrade_page(view: &UpgradeView) -> Markup {
             // printing it as an instruction is just confusing.
             @let tag = if view.available { view.latest.as_str() } else { "latest" };
 
-            @match view.install {
+            @match &view.install {
                 UpgradeInstall::Container { image } => (container_upgrade(image, tag)),
-                UpgradeInstall::Binary => (binary_upgrade(tag)),
+                UpgradeInstall::BinaryLegacy => (binary_upgrade(tag)),
+                UpgradeInstall::BinaryManaged { status } => (managed_upgrade(view, status)),
             }
 
             div .card {
@@ -229,7 +354,226 @@ fn binary_upgrade(version: &str) -> Markup {
                      have loaded a page — " code { "sudo cp /usr/local/bin/nudo-all-in-one /tmp/nudo.previous" }
                     " before installing makes going back a single command."
                 }
+                (callout("info", "Optional: let nudo do this for you next time", html! {
+                    p {
+                        "An install that runs from a versioned release directory can \
+                         upgrade itself from this page — staged, verified against the \
+                         digest in the release manifest, and rolled back automatically \
+                         if the new version cannot start. Adopting the layout is a \
+                         one-time move:"
+                    }
+                    pre .code {
+                        "version=" (if is_placeholder { "X.Y.Z   # the version you are running" } else { version }) "\n"
+                        r#"sudo install -d -o nudo -g nudo /var/lib/nudo/self/releases/$version"# "\n"
+                        r#"sudo install -o nudo -g nudo nudo-v$version-*/nudo* /var/lib/nudo/self/releases/$version/"# "\n"
+                        r#"sudo install -o nudo -g nudo nudo-v$version-*/nudo-boot-guard /var/lib/nudo/self/nudo-boot-guard"# "\n"
+                        r#"sudo ln -sfn releases/$version /var/lib/nudo/self/current"# "\n"
+                        r#"sudo chown -h nudo:nudo /var/lib/nudo/self/current"# "\n"
+                    }
+                    p {
+                        "Then point the unit at the layout — "
+                        code { "ExecStart=/var/lib/nudo/self/current/nudo-all-in-one" } ", "
+                        code { "ExecStartPre=/var/lib/nudo/self/nudo-boot-guard /var/lib/nudo/self" }
+                        " and " code { "Environment=\"NUDO_SELF_DIR=/var/lib/nudo/self\"" }
+                        " — and " code { "systemctl daemon-reload && systemctl restart nudo" } ". \
+                         The packaged " code { "nudo.service" } " in the release archive \
+                         already reads this way."
+                    }
+                    p .small.muted {
+                        "The trade-off is real and worth knowing: in this layout the \
+                         service user can overwrite its own binaries, which is what \
+                         self-upgrading means. It stays inert unless you also start \
+                         nudo with " code { "NUDO_ALLOW_SELF_UPGRADE=true" } " and turn \
+                         the switch on in settings."
+                    }
+                }))
             }
+        }
+    }
+}
+
+/// The self-upgrade card for a managed binary install.
+///
+/// The one place in the dashboard that offers to perform an upgrade. The form
+/// appears only when every gate is open and a newer release exists; otherwise
+/// the card says which gate is closed and what opening it means, because a
+/// button that is sometimes missing without explanation reads as a bug.
+fn managed_upgrade(view: &UpgradeView, status: &SelfUpgradeView) -> Markup {
+    let gates_open = status.allowed_by_config && status.enabled_in_settings;
+    let in_flight = status.in_flight();
+    html! {
+        div .card {
+            h2 { "This instance can upgrade itself" }
+            div .card-body {
+                p {
+                    "It runs from a versioned release directory, so an upgrade is: \
+                     download the release, verify it against the digest published \
+                     in the manifest, stage it beside the running one, swap a \
+                     symlink, and restart into it. If the new version cannot \
+                     start, the boot guard puts the old one back."
+                }
+
+                @if in_flight {
+                    div #self-upgrade-status
+                        hx-get="/upgrade/status"
+                        hx-trigger="every 2s"
+                        hx-swap="innerHTML" {
+                        (self_upgrade_status_fragment(status))
+                    }
+                } @else if !gates_open {
+                    (callout("info", "Switched off", html! {
+                        @if !status.allowed_by_config {
+                            p {
+                                "The instance was started without "
+                                code { "NUDO_ALLOW_SELF_UPGRADE=true" }
+                                ", so it will not replace its own binaries no matter \
+                                 what is clicked here. Set it in the unit and restart \
+                                 to allow it."
+                            }
+                        } @else {
+                            p {
+                                "Self-upgrade is off in "
+                                a href="/settings#instance" { "settings" }
+                                ". Turning it on is the operator's half of the \
+                                 opt-in; the config flag is the installer's."
+                            }
+                        }
+                    }))
+                } @else if view.available {
+                    form method="post" action="/upgrade/start" {
+                        (csrf_input(&view.csrf))
+                        input type="hidden" name="target_version" value=(view.latest);
+                        div .form-actions {
+                            button .btn.primary type="submit" {
+                                "Upgrade to " (view.latest)
+                            }
+                        }
+                    }
+                    p .small.muted {
+                        "The dashboard will lose the control plane for a moment while \
+                         it restarts; this page keeps polling and picks the new \
+                         version up when it comes back."
+                    }
+                } @else {
+                    p .muted { "Nothing to do: this is the newest release." }
+                }
+
+                @if !in_flight && !status.error.is_empty() {
+                    (callout("bad", &format!("The last attempt: {}", status.state), html! {
+                        p { (status.error) }
+                    }))
+                }
+
+                (callout("warn", "If it goes wrong", html! {
+                    p {
+                        "A new version that cannot start is put back automatically: \
+                         after " (nudo_bootguard_attempts()) " failed starts the boot \
+                         guard reverts to the previous release, which is kept on disk."
+                    }
+                    p {
+                        "The database is snapshotted into the new release directory \
+                         before the swap (" code { "db-pre-upgrade.sqlite" } "). \
+                         Restoring it is deliberately manual — an automatic restore \
+                         would silently discard anything written after the snapshot. \
+                         To go back to it: stop nudo, copy the snapshot over the \
+                         database, start nudo."
+                    }
+                }))
+            }
+        }
+    }
+}
+
+/// The bootguard's attempt limit, printed rather than hard-coded in copy.
+fn nudo_bootguard_attempts() -> u32 {
+    nudo_bootguard::MAX_BOOT_ATTEMPTS
+}
+
+/// The polled fragment while an upgrade is in flight.
+///
+/// Also served standalone at `/upgrade/status`. The interesting render is the
+/// unreachable one — see `self_upgrade_restarting` — because a dead control
+/// plane mid-upgrade is not an error, it is the plan working.
+pub fn self_upgrade_status_fragment(status: &SelfUpgradeView) -> Markup {
+    // The named steps of an upgrade, in order, so progress reads as "three of
+    // five" rather than as an opaque spinner.
+    const STEPS: [(&str, &str); 5] = [
+        ("downloading", "Downloading the release"),
+        ("verifying", "Verifying the digest"),
+        ("staging", "Staging the new version"),
+        ("staged", "Snapshotting the database"),
+        ("swapped", "Restarting into the new version"),
+    ];
+    let position = STEPS.iter().position(|(state, _)| *state == status.state);
+
+    html! {
+        @if let Some(position) = position {
+            div .upgrade-steps {
+                @for (index, (_, label)) in STEPS.iter().enumerate() {
+                    div .upgrade-step.done[index < position].current[index == position] {
+                        // The step being worked spins rather than showing its
+                        // number: between two polls a static list cannot say
+                        // whether anything is still happening, and "stuck" and
+                        // "working" look identical when both are a numeral.
+                        @if index == position {
+                            span .step-mark.spinner aria-hidden="true" {}
+                        } @else {
+                            span .step-mark {
+                                @if index < position { "✓" } @else { (index + 1) }
+                            }
+                        }
+                        span { (label) }
+                    }
+                }
+            }
+            p .small.muted {
+                "Upgrading to " (status.to_version) ". This page keeps watching; \
+                 the control plane restarts near the end, which is expected."
+            }
+        } @else if status.state == "confirmed" {
+            (callout("ok", &format!("Now running {}", status.to_version), html! {
+                p {
+                    "The upgrade is done and the new version confirmed itself on \
+                     boot. "
+                    a href="/" { "Reload the dashboard" }
+                    " to see it everywhere."
+                }
+            }))
+        } @else if status.state == "exec-failed" || status.state == "rolled-back" {
+            (callout("bad", "The upgrade was rolled back", html! {
+                p { (status.error) }
+                p .small.muted {
+                    "The previous version is running and nothing was lost. "
+                    a href="/upgrade" { "The upgrade page" }
+                    " has the details and the manual route."
+                }
+            }))
+        } @else if status.state == "failed" {
+            (callout("bad", "The upgrade did not start", html! {
+                p { (status.error) }
+                p .small.muted { "Nothing was changed on disk." }
+            }))
+        }
+    }
+}
+
+/// What the status endpoint says while the control plane is unreachable —
+/// which, mid-upgrade, means the restart is happening.
+///
+/// Deliberately not an error: this is the one moment in the sequence where the
+/// thing serving the page is being replaced, and saying "unreachable" would
+/// read as a failure at exactly the point where things are going right.
+pub fn self_upgrade_restarting() -> Markup {
+    html! {
+        div .upgrade-steps {
+            div .upgrade-step.current {
+                span .step-mark.spinner aria-hidden="true" {}
+                span { "Restarting into the new version" }
+            }
+        }
+        p .small.muted {
+            "The control plane is restarting — this page will catch it when it \
+             comes back."
         }
     }
 }
@@ -242,13 +586,67 @@ pub struct UpgradeView {
     pub available: bool,
     pub breaking: bool,
     pub install: UpgradeInstall,
+    /// For the one form this page may render (the managed self-upgrade).
+    pub csrf: String,
 }
 
 /// How this instance is installed, and anything the instructions need with it.
 #[derive(Debug, Clone)]
 pub enum UpgradeInstall {
-    Container { image: &'static str },
-    Binary,
+    Container {
+        image: &'static str,
+    },
+    /// A binary install predating the self-release layout: manual commands.
+    BinaryLegacy,
+    /// A binary install running from the self-release layout.
+    BinaryManaged {
+        status: SelfUpgradeView,
+    },
+}
+
+/// The control plane's self-upgrade status, flattened out of the proto type so
+/// this module keeps depending on views rather than the wire format.
+#[derive(Debug, Clone, Default)]
+pub struct SelfUpgradeView {
+    pub state: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub error: String,
+    pub allowed_by_config: bool,
+    pub enabled_in_settings: bool,
+    pub eligible: bool,
+}
+
+impl SelfUpgradeView {
+    /// Whether an upgrade is somewhere between "asked for" and "confirmed".
+    pub fn in_flight(&self) -> bool {
+        matches!(
+            self.state.as_str(),
+            "downloading" | "verifying" | "staging" | "staged" | "swapped" | "restarting"
+        )
+    }
+
+    /// Whether the "Update now" button should appear: this install can do it,
+    /// both opt-ins are given, and nothing is already running.
+    pub fn can_upgrade_now(&self) -> bool {
+        self.eligible && self.allowed_by_config && self.enabled_in_settings && !self.in_flight()
+    }
+}
+
+/// What the update dialog needs.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateDialog {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+    pub breaking: bool,
+    /// Release notes for `latest`, from the recorded manifest.
+    pub notes: String,
+    pub url: String,
+    pub csrf: String,
+    /// `None` on an install that cannot upgrade itself at all — a container,
+    /// or a control plane that could not be reached.
+    pub self_upgrade: Option<SelfUpgradeView>,
 }
 
 /// What the banner needs to render, flattened out of the control plane's

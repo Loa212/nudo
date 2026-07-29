@@ -72,6 +72,7 @@ code, pre, .mono { font-family: var(--mono); }
 
 .brand {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   padding: 4px 8px 16px;
@@ -81,6 +82,14 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .brand:hover { text-decoration: none; }
 .brand .tag { font-size: 11px; color: var(--faint); font-weight: 500; }
+/* The running version, on its own line under the name. */
+.brand .version {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--faint);
+  font-family: var(--mono);
+}
 
 .rail a.nav {
   display: flex;
@@ -511,6 +520,128 @@ pre.unit {
 .dl dt { color: var(--muted); }
 .dl dd { margin: 0; }
 .sep { color: var(--border-strong); }
+
+/* ---------------------------------------------------------------------------
+   The update dialog
+   ---------------------------------------------------------------------------
+
+   Driven by `:target` rather than by script: the actions inside it navigate,
+   and one of them restarts the process serving the page. A dialog that only
+   exists in JavaScript state would close itself at exactly the moment it has
+   something to say.
+*/
+.modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  place-items: center;
+  padding: 24px;
+}
+.modal:target { display: grid; }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: light-dark(rgb(15 20 28 / 45%), rgb(0 0 0 / 60%));
+}
+.modal-backdrop:hover { text-decoration: none; }
+
+.modal-card {
+  position: relative;
+  width: min(620px, 100%);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px light-dark(rgb(15 20 28 / 18%), rgb(0 0 0 / 55%));
+}
+
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { margin: 0 0 2px; font-size: 17px; }
+.modal-head p { margin: 0; }
+
+.modal-close {
+  flex: 0 0 auto;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.modal-close:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.modal-body .release-notes p { margin: 0 0 8px; max-width: 62ch; }
+.modal-body .release-notes ul { margin: 0 0 10px; padding-left: 20px; }
+.modal-body .release-notes li { margin: 2px 0; }
+
+.modal-foot {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+/* Close and Skip sit left, the primary action right: the consequential button
+   is where the eye finishes, and is never the one hit by accident. */
+.modal-foot-actions { display: flex; align-items: center; gap: 8px; }
+.modal-foot-actions form { margin: 0; }
+.modal-foot-actions form:last-child { margin-left: auto; }
+
+/* The named steps of an upgrade in progress. */
+.upgrade-steps { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.upgrade-step { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.upgrade-step .step-mark { margin-top: 0; }
+.upgrade-step.done { color: var(--muted); }
+.upgrade-step.done .step-mark {
+  background: var(--success-soft);
+  border-color: var(--success);
+  color: var(--success);
+}
+.upgrade-step.current { color: var(--text); font-weight: 550; }
+.upgrade-step.current .step-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* The step being worked spins. Same 22px circle the numbers occupy, so the
+   list does not reflow as the current step advances: the ring is the border,
+   with one side coloured to give the rotation something to show.
+
+   The track is `--border-strong` rather than `--accent-soft`: the soft accent
+   is a hair off white in light mode, which left the ring invisible and the
+   moving arc reading as a stray mark. */
+.upgrade-step.current .step-mark.spinner {
+  background: none;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Someone who asked not to be moved gets a pulse instead of a rotation —
+   still alive, without the spin. */
+@media (prefers-reduced-motion: reduce) {
+  .upgrade-step.current .step-mark.spinner {
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% { opacity: 0.35; }
+  }
+}
 
 @media (max-width: 720px) {
   .shell { flex-direction: column; }
