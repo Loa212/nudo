@@ -16,7 +16,15 @@
       "published_at": "2026-07-29",
       "url": "https://github.com/Loa212/nudo/releases/tag/v0.4.1",
       "breaking": false,
-      "notes": "Self-upgrade now takes one switch instead of two. The NUDO_ALLOW_SELF_UPGRADE\nenvironment variable is gone; the toggle in settings is the whole gate.\n\nThe flag assumed whoever installs an instance and whoever operates it are\ndifferent people who should each have to say yes. For a tool one person runs on\ntheir own box that was a second lock on the same door, and its only visible\neffect was a dashboard refusing an upgrade someone had already opted into.\n\nNothing about the safety of the path changed: the release is still verified\nagainst the digest published in this manifest, still staged beside the running\none, and still reverted by nudo-boot-guard if the new version cannot start.\nContainers and flat /usr/local/bin installs are still refused.\n\nIf you installed 0.4.0 and set NUDO_ALLOW_SELF_UPGRADE in your unit, it is now\nignored and can be removed."
+      "notes": "### Other\n\n- One switch for self-upgrade, not two (#10)",
+      "artifacts": {
+        "nudo-v0.4.1-x86_64-unknown-linux-gnu.tar.gz": {
+          "sha256": "68a08f66beb748b357fddb54b9c8a726733d4e3721c2a7ff970593deb142e4f1"
+        },
+        "nudo-v0.4.1-x86_64-unknown-linux-musl.tar.gz": {
+          "sha256": "0b9922014642a0a9f63d526d04fa647ac113233533a26b2db3379e550fc3c2a7"
+        }
+      }
     },
     {
       "version": "0.4.0",
