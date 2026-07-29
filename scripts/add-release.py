@@ -63,6 +63,45 @@ def version_key(version: str) -> tuple:
     return (numbers, 1 if not pre else 0, pre)
 
 
+HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def collect_digests(digests_dir: pathlib.Path) -> dict:
+    """Reads every `*.tar.gz.sha256` under the directory into {filename: {"sha256": hex}}.
+
+    The files are `sha256sum` output, produced by the release workflow next to
+    each tarball. Publishing these in the manifest is what lets a running
+    instance verify a download against something that did not arrive from the
+    same place as the artifact: release assets are attached to a GitHub
+    Release, while the manifest is committed to the repository.
+
+    Anything malformed is an error rather than a skip — a release published
+    with a missing or garbled digest would make that artifact unverifiable
+    forever, and publish time is when a human can still fix it.
+    """
+    digests: dict = {}
+    # Recursive: actions/download-artifact may nest each artifact in its own
+    # subdirectory depending on how it was uploaded.
+    files = sorted(digests_dir.glob("**/*.tar.gz.sha256"))
+    if not files:
+        raise ValueError(f"{digests_dir}: no *.tar.gz.sha256 files found")
+    for path in files:
+        line = path.read_text(encoding="utf-8").strip()
+        # sha256sum output: `<hex><two spaces or space-asterisk><filename>`.
+        parts = line.split()
+        if len(parts) != 2:
+            raise ValueError(f"{path}: not sha256sum output: {line!r}")
+        digest, name = parts[0].lower(), parts[1].lstrip("*")
+        if not HEX_DIGEST.match(digest):
+            raise ValueError(f"{path}: {digest!r} is not a sha256 hex digest")
+        if not name.endswith(".tar.gz"):
+            raise ValueError(f"{path}: {name!r} is not a tarball name")
+        if name in digests:
+            raise ValueError(f"{path}: duplicate digest for {name}")
+        digests[name] = {"sha256": digest}
+    return digests
+
+
 def add_release(
     manifest: dict,
     version: str,
@@ -70,6 +109,7 @@ def add_release(
     notes: str,
     published_at: str,
     breaking: bool,
+    artifacts: dict | None = None,
 ) -> dict:
     """Returns the manifest with this release added or updated.
 
@@ -84,6 +124,8 @@ def add_release(
         "breaking": breaking,
         "notes": notes.strip(),
     }
+    if artifacts:
+        entry["artifacts"] = dict(sorted(artifacts.items()))
 
     releases = [
         release
@@ -133,6 +175,11 @@ def main(argv: list[str] | None = None) -> int:
         help="force the breaking flag on; otherwise it is inferred from the notes",
     )
     parser.add_argument(
+        "--digests-dir",
+        type=pathlib.Path,
+        help="directory holding the *.tar.gz.sha256 files to publish as artifact digests",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the manifest that would be written and change nothing",
@@ -155,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         notes=notes,
         published_at=published_at,
         breaking=args.breaking or looks_breaking(notes),
+        artifacts=collect_digests(args.digests_dir) if args.digests_dir else None,
     )
 
     rendered = json.dumps(updated, indent=2, ensure_ascii=False) + "\n"

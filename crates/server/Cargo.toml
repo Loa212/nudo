@@ -63,10 +63,22 @@ urlencoding.workspace = true
 # lifetime of the git process.
 tempfile.workspace = true
 
+# Self-upgrade: the journal and atomic symlink swap shared with the boot
+# guard, and unpacking the downloaded release tarball.
+nudo-bootguard.workspace = true
+tar.workspace = true
+flate2.workspace = true
+
 [features]
 # The end-to-end deployment test needs Docker to start a systemd-enabled
 # container, so it is opt-in rather than part of `cargo test`.
 e2e = []
+# Test seams for the self-upgrade end-to-end test, never enabled by a release
+# build: `current_version()` honours a `.version-override` file beside the
+# executable (so one binary can play both sides of an upgrade), and the
+# managed-layout eligibility check stops requiring x86_64 Linux (so the test
+# runs on developer machines).
+self-upgrade-test = []
 
 [dev-dependencies]
 wiremock.workspace = true

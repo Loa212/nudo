@@ -55,6 +55,9 @@ type SecretsClient = secrets_client::SecretsClient<
 type AuditClient = audit_client::AuditClient<
     tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
 >;
+type SelfUpgradeClient = self_upgrade_client::SelfUpgradeClient<
+    tonic::service::interceptor::InterceptedService<Channel, BearerToken>,
+>;
 
 /// A handle to the control plane.
 #[derive(Clone)]
@@ -161,6 +164,13 @@ impl Api {
 
     pub async fn audit(&self) -> Result<AuditClient, tonic::Status> {
         Ok(audit_client::AuditClient::with_interceptor(
+            self.channel().await?,
+            self.interceptor(),
+        ))
+    }
+
+    pub async fn self_upgrade(&self) -> Result<SelfUpgradeClient, tonic::Status> {
+        Ok(self_upgrade_client::SelfUpgradeClient::with_interceptor(
             self.channel().await?,
             self.interceptor(),
         ))

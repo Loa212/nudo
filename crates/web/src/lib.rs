@@ -268,10 +268,17 @@ pub fn router(state: AppState) -> Router {
         .route("/audit", get(routes::audit_list))
         .route("/changelog", get(routes::changelog))
         .route("/upgrade", get(routes::upgrade))
+        .route("/upgrade/start", post(routes::upgrade_start))
+        .route("/upgrade/status", get(routes::upgrade_status))
+        .route("/upgrade/skip", post(routes::upgrade_skip))
         .route("/support/dismiss", post(routes::support_dismiss))
         .route("/settings", get(routes::settings))
         .route("/settings/updates", post(routes::settings_updates))
         .route("/settings/support", post(routes::settings_support))
+        .route(
+            "/settings/self-upgrade",
+            post(routes::settings_self_upgrade),
+        )
         .route("/settings/password", post(routes::change_password))
         .route("/settings/tokens", post(routes::token_create))
         .route("/settings/tokens/{id}/revoke", post(routes::token_revoke))

@@ -20,3 +20,20 @@ clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[features]
+# Builds the binary with the server's self-upgrade test seams. Only the
+# end-to-end upgrade test enables this; release builds never do.
+self-upgrade-test = ["nudo-server/self-upgrade-test"]
+
+[dev-dependencies]
+# The end-to-end upgrade test packages a fixture release, serves it over
+# loopback, and drives the SelfUpgrade RPC against the spawned binary.
+nudo-proto.workspace = true
+nudo-bootguard.workspace = true
+tonic.workspace = true
+tar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile.workspace = true

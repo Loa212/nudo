@@ -1,0 +1,21 @@
+[package]
+name = "nudo-bootguard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-upgrade journal, atomic symlink swap, and the boot guard that reverts a crash-looping upgrade"
+
+# Deliberately dependency-free. The guard binary runs as ExecStartPre on every
+# start of the control plane, including starts where the new binary — or the
+# database it would need — is the broken thing. std is the only thing it may
+# rely on, which is also what keeps the journal a plain text file rather than
+# JSON or SQLite.
+[dependencies]
+
+[lib]
+name = "nudo_bootguard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nudo-boot-guard"
+path = "src/main.rs"

@@ -1099,3 +1099,35 @@ service Secrets {
 service Audit {
   rpc List(ListAuditRequest) returns (ListAuditResponse);
 }
+
+// Self-upgrade of the control plane's own binary install. Lives on the gRPC
+// API because only the server process can replace and exec itself — the
+// dashboard is a client that must survive the restart it asks for.
+service SelfUpgrade {
+  // Begins an upgrade to an explicit version (what the operator saw is what
+  // runs, not whatever "latest" means by the time the task starts). Returns
+  // as soon as the work is underway; progress is polled via GetStatus.
+  rpc Start(StartSelfUpgradeRequest) returns (SelfUpgradeStatus);
+  rpc GetStatus(google.protobuf.Empty) returns (SelfUpgradeStatus);
+}
+
+message StartSelfUpgradeRequest {
+  string target_version = 1;
+  Mutation mutation = 2;
+}
+
+message SelfUpgradeStatus {
+  // idle | downloading | verifying | staging | staged | swapped | confirmed |
+  // exec-failed | rolled-back | failed
+  string state = 1;
+  string from_version = 2;
+  string to_version = 3;
+  string error = 4;
+  // The three gates, reported separately so the dashboard can say which one
+  // is closed rather than a generic "unavailable".
+  bool allowed_by_config = 5;
+  bool enabled_in_settings = 6;
+  bool eligible = 7;
+  // RFC 3339; empty when no upgrade has ever run.
+  string updated_at = 8;
+}

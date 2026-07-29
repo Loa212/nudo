@@ -21,16 +21,18 @@ COPY crates/web/Cargo.toml       crates/web/
 COPY crates/cli/Cargo.toml       crates/cli/
 COPY crates/mcp/Cargo.toml       crates/mcp/
 COPY crates/allinone/Cargo.toml  crates/allinone/
+COPY crates/bootguard/Cargo.toml crates/bootguard/
 COPY controlplane.proto ./
 COPY crates/proto/include crates/proto/include
 COPY crates/proto/build.rs crates/proto/
 RUN mkdir -p crates/proto/src crates/format/src crates/server/src crates/web/src crates/cli/src \
-             crates/mcp/src crates/allinone/src \
+             crates/mcp/src crates/allinone/src crates/bootguard/src \
     && echo 'fn main() {}' | tee crates/server/src/main.rs \
          crates/web/src/main.rs crates/cli/src/main.rs \
-         crates/mcp/src/main.rs crates/allinone/src/main.rs > /dev/null \
+         crates/mcp/src/main.rs crates/allinone/src/main.rs \
+         crates/bootguard/src/main.rs > /dev/null \
     && touch crates/proto/src/lib.rs crates/format/src/lib.rs crates/server/src/lib.rs \
-             crates/web/src/lib.rs crates/mcp/src/lib.rs \
+             crates/web/src/lib.rs crates/mcp/src/lib.rs crates/bootguard/src/lib.rs \
     && cargo fetch --locked
 
 # The real sources. The proto and the vendored well-known types the build
@@ -41,7 +43,7 @@ COPY crates crates
 # `--offline` proves the dependency layer above was complete.
 RUN cargo build --release --locked --offline \
       --bin nudo-server --bin nudo-web --bin nudo --bin nudo-mcp \
-      --bin nudo-all-in-one
+      --bin nudo-all-in-one --bin nudo-boot-guard
 
 # ---------------------------------------------------------------------------
 
@@ -64,6 +66,9 @@ COPY --from=build /src/target/release/nudo-web         /usr/local/bin/
 COPY --from=build /src/target/release/nudo             /usr/local/bin/
 COPY --from=build /src/target/release/nudo-mcp         /usr/local/bin/
 COPY --from=build /src/target/release/nudo-all-in-one  /usr/local/bin/
+# Unused in a container (upgrading one is `docker pull` + recreate); shipped
+# anyway so the image and the tarball carry the same binary set.
+COPY --from=build /src/target/release/nudo-boot-guard  /usr/local/bin/
 
 # State lives here; mount a volume over it or the database is lost with the
 # container.

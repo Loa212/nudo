@@ -54,7 +54,7 @@ jobs:
         run: |
           cargo build --release --locked --target ${{ matrix.target }} \
             --bin nudo-server --bin nudo-web --bin nudo --bin nudo-mcp \
-            --bin nudo-all-in-one
+            --bin nudo-all-in-one --bin nudo-boot-guard
 
       - name: Confirm the musl build is actually static
         if: matrix.musl == true
@@ -77,7 +77,7 @@ jobs:
           # reject every binary this job produces.
           sudo apt-get install --no-install-recommends -y binutils
           failed=0
-          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one; do
+          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one nudo-boot-guard; do
             path="target/${{ matrix.target }}/release/$binary"
 
             needed=$(readelf -d "$path" 2>/dev/null | grep -c "(NEEDED)" || true)
@@ -99,7 +99,7 @@ jobs:
           name="nudo-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
 
-          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one; do
+          for binary in nudo-server nudo-web nudo nudo-mcp nudo-all-in-one nudo-boot-guard; do
             cp "target/${{ matrix.target }}/release/$binary" "dist/${name}/"
           done
           cp README.md CHANGES.md NOTICE LICENSE "dist/${name}/" 2>/dev/null || true
@@ -214,6 +214,12 @@ jobs:
             sudo install nudo-*/nudo* /usr/local/bin/
             ```
 
+            An instance installed with the packaged `nudo.service` release
+            layout — and opted in — can apply this release itself from its
+            `/upgrade` page, verified against the digest published in
+            `releases.json`. Already-running instances show the exact upgrade
+            commands for their install kind on that same page.
+
             **Docker**
 
             ```sh
@@ -261,11 +267,16 @@ jobs:
           # pulls that version's section out of it.
           python3 scripts/changelog-section.py "${version}" > notes.md
 
+          # --digests-dir publishes each tarball's sha256 into the manifest.
+          # The manifest is committed to main while the artifacts hang off the
+          # GitHub Release — two different write paths — so a running instance
+          # can verify a download against a digest that did not travel with it.
           python3 scripts/add-release.py \
             --version "${version}" \
             --url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
             --notes-file notes.md \
-            --manifest releases.json
+            --manifest releases.json \
+            --digests-dir artifacts
           rm -f notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

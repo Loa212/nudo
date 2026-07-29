@@ -60,6 +60,31 @@ impl Store {
         Ok(())
     }
 
+    /// Whether the operator has opted this instance into self-upgrading.
+    ///
+    /// Defaults to off, unlike the other toggles: this one authorises the
+    /// process to replace its own binaries, and the config flag
+    /// (`--allow-self-upgrade`) has to be on as well.
+    pub async fn self_upgrade_enabled(&self) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT enabled FROM self_upgrade_settings WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(enabled,)| enabled != 0).unwrap_or(false))
+    }
+
+    /// Turns the self-upgrade opt-in on or off for the whole instance.
+    pub async fn set_self_upgrade_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO self_upgrade_settings (id, enabled) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET enabled = ?1",
+        )
+        .bind(enabled as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// When this user last dismissed the support prompt.
     pub async fn support_prompt_dismissed_at(
         &self,
@@ -130,6 +155,33 @@ impl Store {
         )
         .bind(version)
         .bind(manifest)
+        .bind(now_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The release the operator chose to skip, empty when none was.
+    pub async fn skipped_version(&self) -> anyhow::Result<String> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT skipped_version FROM release_check WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(version,)| version).unwrap_or_default())
+    }
+
+    /// Records a release as skipped.
+    ///
+    /// The version rather than a flag: skipping 0.4.0 must not hide 0.5.0 when
+    /// it lands, and "I have decided about this one" is the thing actually
+    /// being remembered.
+    pub async fn skip_version(&self, version: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO release_check (id, latest_version, manifest, checked_at, skipped_version)
+             VALUES (1, '', '{}', ?2, ?1)
+             ON CONFLICT (id) DO UPDATE SET skipped_version = ?1",
+        )
+        .bind(version)
         .bind(now_string())
         .execute(&self.pool)
         .await?;
