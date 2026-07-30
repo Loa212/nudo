@@ -6,8 +6,10 @@
 
 services:
   nudo:
-    build: .
     image: ghcr.io/loa212/nudo:latest
+    # This compose file is the installation path: use the image built by the
+    # release workflow instead of recompiling the Rust workspace on the host.
+    pull_policy: always
     container_name: nudo
     restart: unless-stopped
     ports:
