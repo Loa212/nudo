@@ -65,7 +65,7 @@ impl Context {
         }
     }
 
-    /// Checks a mutation is permitted and records it.
+    /// Checks a mutation against a target and records it.
     ///
     /// `subject_target` is the target the operation touches, when there is one:
     /// that is what the latency-critical guardrail is checked against. Pass
@@ -80,6 +80,48 @@ impl Context {
         subject_target: Option<&Target>,
         summary: impl Into<String>,
     ) -> Result<Authorized, Status> {
+        self.authorize_guarded(
+            mutation,
+            action,
+            subject_id,
+            subject_target.map(Guarded::from),
+            summary,
+        )
+        .await
+    }
+
+    /// Checks a mutation against a build host and records it.
+    ///
+    /// Separate from [`Context::authorize`] only so the two cannot be confused
+    /// at a call site: a build host is not a `Target`, and passing one where
+    /// the other belongs should not compile. The rule underneath is the same.
+    pub async fn authorize_build_host(
+        &self,
+        mutation: Option<&Mutation>,
+        action: &str,
+        subject_id: &str,
+        subject: Option<&nudo_proto::BuildHost>,
+        summary: impl Into<String>,
+    ) -> Result<Authorized, Status> {
+        self.authorize_guarded(
+            mutation,
+            action,
+            subject_id,
+            subject.map(Guarded::from),
+            summary,
+        )
+        .await
+    }
+
+    /// The guardrail and the audit entry, for either kind of host.
+    async fn authorize_guarded(
+        &self,
+        mutation: Option<&Mutation>,
+        action: &str,
+        subject_id: &str,
+        subject: Option<Guarded<'_>>,
+        summary: impl Into<String>,
+    ) -> Result<Authorized, Status> {
         let mutation = mutation.cloned().unwrap_or_default();
         let actor = mutation.actor_or_system();
 
@@ -87,8 +129,8 @@ impl Context {
         // change is unacceptable — the HFT bot's machine — so touching it takes
         // an explicit per-request opt-in, and saying so is the caller's
         // responsibility rather than a default.
-        if let Some(target) = subject_target
-            && target.latency_critical
+        if let Some(host) = subject
+            && host.latency_critical
             && !mutation.allow_latency_critical
         {
             // Recorded even though it is refused: an agent repeatedly
@@ -101,76 +143,17 @@ impl Context {
                     subject_id: subject_id.to_string(),
                     dry_run: mutation.dry_run,
                     summary: format!(
-                        "refused: {} is latency-critical and allow_latency_critical was not set",
-                        target.name
-                    ),
-                })
-                .await;
-
-            return Err(Status::failed_precondition(format!(
-                "target {} is marked latency-critical; set allow_latency_critical \
-                     on the request to mutate it",
-                target.name
-            )));
-        }
-
-        self.store
-            .audit(NewAuditEntry {
-                actor: actor.clone(),
-                action: action.to_string(),
-                subject_id: subject_id.to_string(),
-                dry_run: mutation.dry_run,
-                summary: summary.into(),
-            })
-            .await;
-
-        Ok(Authorized {
-            actor,
-            dry_run: mutation.dry_run,
-            idempotency_key: mutation.idempotency_key,
-        })
-    }
-
-    /// Checks a build-host mutation is permitted and records it.
-    ///
-    /// A build host is not a `Target`, so it cannot go through
-    /// [`Context::authorize`]'s subject: the guardrail message would name a
-    /// target that does not exist, and an operator would go looking for it.
-    /// The rule itself is identical — a latency-critical host takes an explicit
-    /// per-request opt-in — and both refusals are audited the same way.
-    pub async fn authorize_build_host(
-        &self,
-        mutation: Option<&Mutation>,
-        action: &str,
-        subject_id: &str,
-        subject: Option<&nudo_proto::BuildHost>,
-        summary: impl Into<String>,
-    ) -> Result<Authorized, Status> {
-        let mutation = mutation.cloned().unwrap_or_default();
-        let actor = mutation.actor_or_system();
-
-        if let Some(build_host) = subject
-            && build_host.latency_critical
-            && !mutation.allow_latency_critical
-        {
-            self.store
-                .audit(NewAuditEntry {
-                    actor: actor.clone(),
-                    action: format!("{action} (refused)"),
-                    subject_id: subject_id.to_string(),
-                    dry_run: mutation.dry_run,
-                    summary: format!(
-                        "refused: build host {} is latency-critical and \
+                        "refused: {} {} is latency-critical and \
                          allow_latency_critical was not set",
-                        build_host.name
+                        host.kind, host.name
                     ),
                 })
                 .await;
 
             return Err(Status::failed_precondition(format!(
-                "build host {} is marked latency-critical; set allow_latency_critical \
+                "{} {} is marked latency-critical; set allow_latency_critical \
                  on the request to mutate it",
-                build_host.name
+                host.kind, host.name
             )));
         }
 
@@ -238,6 +221,41 @@ impl Context {
             }
             Status::unavailable(format!("connecting to {}: {error:#}", target.host))
         })
+    }
+}
+
+/// A host a mutation touches, as the latency-critical guardrail sees it.
+///
+/// Targets and build hosts are different messages and stay that way — a build
+/// host is never deployed to. But the guardrail asks one question of both, and
+/// the only thing that differed between the two copies of it was the noun in
+/// the refusal, so the noun is the parameter and the rule is written once.
+#[derive(Debug, Clone, Copy)]
+struct Guarded<'a> {
+    /// What a refusal calls this host. Without it the message would name a
+    /// target that does not exist, and an operator would go looking for it.
+    kind: &'static str,
+    name: &'a str,
+    latency_critical: bool,
+}
+
+impl<'a> From<&'a Target> for Guarded<'a> {
+    fn from(target: &'a Target) -> Self {
+        Self {
+            kind: "target",
+            name: &target.name,
+            latency_critical: target.latency_critical,
+        }
+    }
+}
+
+impl<'a> From<&'a nudo_proto::BuildHost> for Guarded<'a> {
+    fn from(build_host: &'a nudo_proto::BuildHost) -> Self {
+        Self {
+            kind: "build host",
+            name: &build_host.name,
+            latency_critical: build_host.latency_critical,
+        }
     }
 }
 
@@ -400,6 +418,62 @@ mod tests {
             )
             .await
             .expect("must be allowed with the opt-in");
+    }
+
+    #[tokio::test]
+    async fn both_kinds_of_host_are_guarded_by_one_rule_that_names_the_right_noun() {
+        // The rule is written once; what differs is the word a refusal uses.
+        // Naming the wrong one sends an operator looking for a target that
+        // does not exist.
+        let context = context().await;
+        let target = target(&context, true).await;
+        let build_host = context
+            .store
+            .create_build_host(&crate::store::BuildHostInput {
+                name: "hot-builder".to_string(),
+                host: "10.0.0.9".to_string(),
+                latency_critical: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create build host");
+
+        let refused = context
+            .authorize(
+                Some(&Mutation::by(Actor::agent("sess_1", "claude"))),
+                "Targets.Update",
+                &target.id,
+                Some(&target),
+                "update",
+            )
+            .await
+            .expect_err("must be refused");
+        assert!(
+            refused
+                .message()
+                .starts_with(&format!("target {}", target.name)),
+            "got: {}",
+            refused.message()
+        );
+
+        let refused = context
+            .authorize_build_host(
+                Some(&Mutation::by(Actor::agent("sess_1", "claude"))),
+                "BuildHosts.Update",
+                &build_host.id,
+                Some(&build_host),
+                "update",
+            )
+            .await
+            .expect_err("must be refused");
+        assert!(
+            refused
+                .message()
+                .starts_with(&format!("build host {}", build_host.name)),
+            "got: {}",
+            refused.message()
+        );
+        assert!(refused.message().contains("allow_latency_critical"));
     }
 
     #[tokio::test]
