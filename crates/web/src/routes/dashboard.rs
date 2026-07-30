@@ -5,16 +5,32 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 pub async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> Response {
-    let targets = state.api.list_targets().await;
-    let services = state.api.list_services("").await;
-    let statuses = state.api.unit_statuses(&services).await;
-    let recent = state.api.list_deployments("", 8).await;
-
+    // Nothing in this group needs anything from another, and each gRPC read
+    // opens its own connection to the control plane, so issuing them in series
+    // made the landing page wait out four round trips to learn things it could
+    // have asked for at once. Grouping them also says which reads are
+    // independent, which statement order alone could not.
+    //
     // Both banners read state the control plane has already collected, so the
     // dashboard renders at the same speed whether or not either is shown.
-    let update = update_banner_state(&state).await;
-    let dialog = update_dialog_state(&state, &update, &user).await;
-    let show_support = crate::support::should_prompt(&state.store, &user.id).await;
+    let (targets, services, recent, update, show_support) = tokio::join!(
+        state.api.list_targets(),
+        state.api.list_services(""),
+        state.api.list_deployments("", 8),
+        update_banner_state(&state),
+        crate::support::should_prompt(&state.store, &user.id),
+    );
+
+    // These two are the dependent half: one needs the services, the other needs
+    // to know whether a release is on offer.
+    //
+    // `unit_statuses` deliberately stays one request per service: each opens an
+    // ssh connection to the target, and a dashboard refresh must not arrive at
+    // a latency-critical box as a burst of simultaneous connections.
+    let (statuses, dialog) = tokio::join!(
+        state.api.unit_statuses(&services),
+        update_dialog_state(&state, &update, &user),
+    );
 
     page(
         "Dashboard",

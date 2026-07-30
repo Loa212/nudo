@@ -5,8 +5,11 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 pub async fn build_hosts_list(State(state): State<AppState>, user: CurrentUser) -> Response {
-    let hosts = state.api.list_build_hosts().await;
-    let default_id = state.api.default_build_host_id().await;
+    // Independent reads, issued together.
+    let (hosts, default_id) = tokio::join!(
+        state.api.list_build_hosts(),
+        state.api.default_build_host_id()
+    );
     page(
         "Build hosts",
         Nav::BuildHosts,
@@ -108,8 +111,11 @@ pub async fn build_host_detail(
         Err(status) => return grpc_error(status),
     };
 
-    let default_id = state.api.default_build_host_id().await;
-    let services = state.api.services_building_on(&id).await;
+    // Independent reads, issued together.
+    let (default_id, services) = tokio::join!(
+        state.api.default_build_host_id(),
+        state.api.services_building_on(&id),
+    );
 
     page(
         &host.name,
@@ -158,8 +164,11 @@ pub async fn build_host_check(
         .map(|response| response.into_inner())
         .unwrap_or(host);
 
-    let default_id = state.api.default_build_host_id().await;
-    let services = state.api.services_building_on(&id).await;
+    // Independent reads, issued together.
+    let (default_id, services) = tokio::join!(
+        state.api.default_build_host_id(),
+        state.api.services_building_on(&id),
+    );
 
     page(
         &host.name,
