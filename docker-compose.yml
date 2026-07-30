@@ -10,7 +10,10 @@ services:
     # This compose file is the installation path: use the image built by the
     # release workflow instead of recompiling the Rust workspace on the host.
     pull_policy: always
-    container_name: nudo
+    # No container_name on purpose: a reverse proxy that names its own
+    # containers — Coolify does, appending a per-deployment suffix — routes to
+    # the name Compose generates. Pinning it here makes that backend
+    # unresolvable and the proxy answers 502.
     restart: unless-stopped
     ports:
       - "3000:3000"
