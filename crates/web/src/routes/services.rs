@@ -67,10 +67,7 @@ pub async fn service_edit(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
     let service = match client.get(GetServiceRequest { id }).await {
         Ok(response) => response.into_inner(),
         Err(status) => return grpc_error(status),
@@ -101,10 +98,7 @@ pub async fn service_unit(
     Path(id): Path<String>,
     _user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
 
     let service = match client.get(GetServiceRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
@@ -310,10 +304,7 @@ pub async fn service_create(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
 
     let result = client
         .create(CreateServiceRequest {
@@ -345,10 +336,7 @@ pub async fn service_update(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
 
     let result = client
         .update(UpdateServiceRequest {
@@ -392,10 +380,7 @@ pub async fn service_delete(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
 
     match client
         .delete(DeleteServiceRequest {
@@ -448,10 +433,7 @@ pub async fn service_unit_action(
         }
     };
 
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
 
     match client
         .unit_action(UnitActionRequest {
@@ -476,13 +458,13 @@ async fn load_service_and_target(
     state: &AppState,
     id: &str,
 ) -> Result<(Service, Target), tonic::Status> {
-    let mut services = state.api.services().await?;
+    let mut services = state.api.services();
     let service = services
         .get(GetServiceRequest { id: id.to_string() })
         .await?
         .into_inner();
 
-    let mut targets = state.api.targets().await?;
+    let mut targets = state.api.targets();
     let target = targets
         .get(GetTargetRequest {
             id: service.target_id.clone(),
@@ -501,16 +483,15 @@ async fn single_status(state: &AppState, service_id: &str) -> UnitStatus {
         ..Default::default()
     };
 
-    match state.api.services().await {
-        Ok(mut client) => client
-            .get_unit_status(GetUnitStatusRequest {
-                service_id: service_id.to_string(),
-            })
-            .await
-            .map(|response| response.into_inner())
-            .unwrap_or(fallback),
-        Err(_) => fallback,
-    }
+    state
+        .api
+        .services()
+        .get_unit_status(GetUnitStatusRequest {
+            service_id: service_id.to_string(),
+        })
+        .await
+        .map(|response| response.into_inner())
+        .unwrap_or(fallback)
 }
 
 /// Live unit status for the services list.
@@ -524,9 +505,7 @@ pub async fn services_stream(
     _user: CurrentUser,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = async_stream::stream! {
-        let Ok(mut client) = state.api.services().await else {
-            return;
-        };
+        let mut client = state.api.services();
         let Ok(response) = client
             .watch_unit_status(ListServicesRequest {
                 page_size: 200,

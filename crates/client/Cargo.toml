@@ -1,0 +1,14 @@
+[package]
+name = "nudo-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "How every nudo client reaches the control plane"
+
+[dependencies]
+nudo-proto.workspace = true
+tonic.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

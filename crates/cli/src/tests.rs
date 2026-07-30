@@ -57,23 +57,28 @@ fn the_guardrail_flags_default_to_off() {
 }
 
 #[test]
-fn a_token_becomes_a_bearer_authorization_header() {
-    let cli = Cli::parse_from(["nudo", "--token", "nudo_secret", "targets", "list"]);
-    let request = authenticated(&cli, ListTargetsRequest::default());
-    assert_eq!(
-        request
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok()),
-        Some("Bearer nudo_secret")
+fn an_unreachable_control_plane_still_says_what_to_check() {
+    // The channel connects lazily now, so this failure arrives as a transport
+    // status reading "transport error". The advice has to survive that.
+    let cli = Cli::parse_from(["nudo", "--endpoint", "http://box:50051", "targets", "list"]);
+    let rendered = explain(&cli, tonic::Status::unavailable("transport error").into());
+
+    assert!(rendered.contains("http://box:50051"), "got: {rendered}");
+    assert!(
+        rendered.contains("is nudo-server running?"),
+        "got: {rendered}"
     );
 }
 
 #[test]
-fn no_authorization_header_is_sent_without_a_token() {
+fn an_error_the_server_meant_for_a_human_is_left_alone() {
     let cli = Cli::parse_from(["nudo", "targets", "list"]);
-    let request = authenticated(&cli, ListTargetsRequest::default());
-    assert!(request.metadata().get("authorization").is_none());
+    let rendered = explain(
+        &cli,
+        tonic::Status::failed_precondition("target hft is latency-critical").into(),
+    );
+
+    assert_eq!(rendered, "target hft is latency-critical");
 }
 
 #[test]

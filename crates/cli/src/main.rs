@@ -14,7 +14,6 @@ use clap::{Parser, Subcommand};
 use format::Output;
 use nudo_proto::*;
 use tokio_stream::StreamExt;
-use tonic::transport::Channel;
 
 #[derive(Parser)]
 #[command(
@@ -475,10 +474,36 @@ async fn main() -> anyhow::Result<()> {
         Err(error) => {
             // A gRPC status carries a message meant for a human; printing the
             // whole Debug form would bury it in transport detail.
-            eprintln!("error: {error:#}");
+            eprintln!("error: {}", explain(&cli, error));
             std::process::exit(1);
         }
     }
+}
+
+/// Renders an error for a human.
+///
+/// A gRPC status carries a message written for an operator, so that message is
+/// what gets printed — `{:#}` on the status renders its code and quoting too,
+/// which is the transport detail worth leaving out.
+///
+/// The one status worth rewriting is an unreachable control plane. Dialing used
+/// to happen before the call and could say so; now the channel connects lazily,
+/// so the failure arrives as a transport status whose message is "transport
+/// error" — true, and useless. Naming it here keeps the advice without putting
+/// a connect step back in front of every command.
+fn explain(cli: &Cli, error: anyhow::Error) -> String {
+    let Some(status) = error.downcast_ref::<tonic::Status>() else {
+        return format!("{error:#}");
+    };
+
+    if status.code() == tonic::Code::Unavailable {
+        return format!(
+            "could not reach the control plane at {} — is nudo-server running? ({})",
+            cli.endpoint,
+            status.message()
+        );
+    }
+    status.message().to_string()
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<()> {
@@ -533,18 +558,15 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
 // Connection
 // ---------------------------------------------------------------------------
 
-/// Dials the control plane.
-async fn channel(cli: &Cli) -> anyhow::Result<Channel> {
-    Channel::from_shared(cli.endpoint.clone())
-        .with_context(|| format!("{} is not a valid endpoint", cli.endpoint))?
-        .connect()
-        .await
-        .with_context(|| {
-            format!(
-                "could not reach the control plane at {} — is nudo-server running?",
-                cli.endpoint
-            )
-        })
+impl Cli {
+    /// A handle to the control plane, carrying the API token.
+    ///
+    /// One per command. Nothing is dialed here — the first call connects, and
+    /// an unreachable control plane surfaces there, where the message can name
+    /// the operation that failed.
+    fn client(&self) -> anyhow::Result<nudo_client::Client> {
+        nudo_client::Client::new(self.endpoint.clone(), self.token.clone())
+    }
 }
 
 /// Builds the mutation envelope every mutating RPC carries.
@@ -577,17 +599,6 @@ fn hostname() -> String {
         })
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Attaches the API token, when one was supplied.
-fn authenticated<T>(cli: &Cli, message: T) -> tonic::Request<T> {
-    let mut request = tonic::Request::new(message);
-    if let Some(token) = &cli.token
-        && let Ok(value) = format!("Bearer {token}").parse()
-    {
-        request.metadata_mut().insert("authorization", value);
-    }
-    request
 }
 
 /// Prints a value as JSON or via a table renderer.

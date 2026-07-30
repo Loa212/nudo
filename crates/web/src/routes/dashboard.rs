@@ -209,7 +209,7 @@ pub async fn upgrade(State(state): State<AppState>, user: CurrentUser) -> Respon
 
 /// Asks the control plane where self-upgrade stands. `None` when unreachable.
 async fn self_upgrade_status(state: &AppState) -> Option<SelfUpgradeStatus> {
-    let mut client = state.api.self_upgrade().await.ok()?;
+    let mut client = state.api.self_upgrade();
     Some(client.get_status(()).await.ok()?.into_inner())
 }
 
@@ -244,16 +244,15 @@ pub async fn upgrade_start(
     }
 
     let mutation = mutation(&user, &MutationFlags::default());
-    let result = match state.api.self_upgrade().await {
-        Ok(mut client) => client
-            .start(StartSelfUpgradeRequest {
-                target_version: form.target_version.clone(),
-                mutation: Some(mutation),
-            })
-            .await
-            .map(|_| ()),
-        Err(status) => Err(status),
-    };
+    let result = state
+        .api
+        .self_upgrade()
+        .start(StartSelfUpgradeRequest {
+            target_version: form.target_version.clone(),
+            mutation: Some(mutation),
+        })
+        .await
+        .map(|_| ());
 
     if let Err(status) = result {
         return grpc_error(status);

@@ -5,7 +5,7 @@ async fn state() -> AppState {
     let secret_key = SecretKey::generate();
     let bus = Bus::default();
     AppState {
-        api: Api::new("http://127.0.0.1:1", None),
+        api: Client::new("http://127.0.0.1:1", None).expect("a valid endpoint"),
         store: store.clone(),
         secret_key: secret_key.clone(),
         engine: Engine {

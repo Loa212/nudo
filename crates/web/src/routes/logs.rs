@@ -20,10 +20,7 @@ pub async fn logs_view(
     Query(query): Query<LogsQuery>,
     _user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.services().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.services();
     let service = match client.get(GetServiceRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
         Err(status) => return grpc_error(status),
@@ -45,9 +42,7 @@ pub async fn logs_view(
 
 /// Reads a bounded batch of log lines.
 async fn read_logs_once(state: &AppState, service_id: &str, tail: u32, grep: &str) -> Vec<LogLine> {
-    let Ok(mut client) = state.api.logs().await else {
-        return Vec::new();
-    };
+    let mut client = state.api.logs();
 
     let Ok(response) = client
         .stream(StreamLogsRequest {
@@ -100,9 +95,7 @@ pub async fn logs_stream(
     let tail = query.lines.unwrap_or(200);
 
     let stream = async_stream::stream! {
-        let Ok(mut client) = state.api.logs().await else {
-            return;
-        };
+        let mut client = state.api.logs();
         let Ok(response) = client
             .stream(StreamLogsRequest {
                 service_id: id.clone(),

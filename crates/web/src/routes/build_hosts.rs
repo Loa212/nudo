@@ -66,10 +66,7 @@ pub async fn build_host_create(
         envelope.allow_latency_critical = true;
     }
 
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     let result = client
         .create(CreateBuildHostRequest {
@@ -98,10 +95,7 @@ pub async fn build_host_detail(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     let host = match client.get(GetBuildHostRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
@@ -124,10 +118,7 @@ pub async fn build_host_check(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     let host = match client.get(GetBuildHostRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
@@ -185,10 +176,7 @@ pub async fn build_host_accept_host_key(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     match client
         .accept_host_key(AcceptBuildHostKeyRequest {
@@ -218,10 +206,7 @@ pub async fn build_host_delete(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     match client
         .delete(DeleteBuildHostRequest {
@@ -259,10 +244,7 @@ pub async fn build_default_set(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.build_hosts().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.build_hosts();
 
     match client
         .set_defaults(SetBuildDefaultsRequest {

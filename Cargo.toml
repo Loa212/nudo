@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/proto",
     "crates/format",
+    "crates/client",
     "crates/server",
     "crates/web",
     "crates/cli",
@@ -21,6 +22,7 @@ repository = "https://github.com/Loa212/nudo"
 # Internal
 nudo-proto = { path = "crates/proto" }
 nudo-format = { path = "crates/format" }
+nudo-client = { path = "crates/client" }
 nudo-server = { path = "crates/server" }
 nudo-web = { path = "crates/web" }
 nudo-bootguard = { path = "crates/bootguard" }

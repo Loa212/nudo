@@ -1,11 +1,8 @@
 use super::*;
 
 pub(super) async fn sources(cli: &Cli) -> anyhow::Result<()> {
-    let mut client = sources_client::SourcesClient::new(channel(cli).await?);
-    let response = client
-        .list(authenticated(cli, ListSourcesRequest {}))
-        .await?
-        .into_inner();
+    let mut client = cli.client()?.sources();
+    let response = client.list(ListSourcesRequest {}).await?.into_inner();
 
     let sources = response.sources;
     emit(cli, &JsonSources::from(&sources), || {

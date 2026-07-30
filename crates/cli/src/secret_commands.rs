@@ -1,18 +1,15 @@
 use super::*;
 
 pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Result<()> {
-    let mut client = secrets_client::SecretsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.secrets();
 
     match command {
         SecretCommand::List { target, service } => {
             let response = client
-                .list(authenticated(
-                    cli,
-                    ListSecretsRequest {
-                        target_id: target.clone().unwrap_or_default(),
-                        service_id: service.clone().unwrap_or_default(),
-                    },
-                ))
+                .list(ListSecretsRequest {
+                    target_id: target.clone().unwrap_or_default(),
+                    service_id: service.clone().unwrap_or_default(),
+                })
                 .await?
                 .into_inner();
 
@@ -38,17 +35,14 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
             let value = read_value(value, if rotating { "rotate" } else { "set" }).await?;
 
             let secret = client
-                .put(authenticated(
-                    cli,
-                    PutSecretRequest {
-                        mutation: Some(mutation(cli)),
-                        name: name.clone(),
-                        value,
-                        scope_target_id: target.clone().unwrap_or_default(),
-                        scope_service_id: service.clone().unwrap_or_default(),
-                        replace: rotating,
-                    },
-                ))
+                .put(PutSecretRequest {
+                    mutation: Some(mutation(cli)),
+                    name: name.clone(),
+                    value,
+                    scope_target_id: target.clone().unwrap_or_default(),
+                    scope_service_id: service.clone().unwrap_or_default(),
+                    replace: rotating,
+                })
                 .await?
                 .into_inner();
 
@@ -64,13 +58,10 @@ pub(super) async fn secrets(cli: &Cli, command: &SecretCommand) -> anyhow::Resul
 
         SecretCommand::Remove { id } => {
             client
-                .delete(authenticated(
-                    cli,
-                    DeleteSecretRequest {
-                        mutation: Some(mutation(cli)),
-                        id: id.clone(),
-                    },
-                ))
+                .delete(DeleteSecretRequest {
+                    mutation: Some(mutation(cli)),
+                    id: id.clone(),
+                })
                 .await?;
             println!("{}removed secret {id}", dry_run_prefix(cli));
         }

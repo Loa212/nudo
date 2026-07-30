@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 nudo-proto.workspace = true
 nudo-format.workspace = true
+nudo-client.workspace = true
 # For the self-upgrade copy: the boot guard's attempt limit is printed on the
 # upgrade page, and quoting the real constant beats a number going stale.
 nudo-bootguard.workspace = true

@@ -29,7 +29,7 @@ use nudo_server::deploy::Engine;
 use nudo_server::events::Bus;
 use nudo_server::store::Store;
 
-use client::Api;
+use nudo_client::Client;
 
 /// The CSRF token used by the two forms that run before any session exists.
 ///
@@ -96,7 +96,7 @@ pub struct WebConfig {
 #[derive(Clone)]
 pub struct AppState {
     /// The gRPC client. Everything the API covers goes through here.
-    pub api: Api,
+    pub api: Client,
     /// Sessions and the webhook receiver's source lookup.
     pub store: Store,
     /// Used by the webhook receiver to open sealed webhook secrets.
@@ -157,7 +157,7 @@ impl AppState {
         ));
 
         Ok(Self {
-            api: Api::new(config.grpc_endpoint.clone(), config.api_token.clone()),
+            api: Client::new(config.grpc_endpoint.clone(), config.api_token.clone())?,
             store,
             secret_key,
             engine,

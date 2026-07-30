@@ -32,22 +32,19 @@ pub(super) async fn deploy(
         );
     }
 
-    let mut client = deployments_client::DeploymentsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.deployments();
 
     let deployment = client
-        .deploy(authenticated(
-            cli,
-            DeployRequest {
-                mutation: Some(mutation(cli)),
-                service_id: service.to_string(),
-                git_ref: git_ref.unwrap_or_default().to_string(),
-                artifact_url: effective_url,
-                skip_health_check,
-                // Rolling back on a failed health check is the behaviour that
-                // makes this safe to run from CI unattended.
-                auto_rollback_on_failure: true,
-            },
-        ))
+        .deploy(DeployRequest {
+            mutation: Some(mutation(cli)),
+            service_id: service.to_string(),
+            git_ref: git_ref.unwrap_or_default().to_string(),
+            artifact_url: effective_url,
+            skip_health_check,
+            // Rolling back on a failed health check is the behaviour that
+            // makes this safe to run from CI unattended.
+            auto_rollback_on_failure: true,
+        })
         .await?
         .into_inner();
 
@@ -182,17 +179,14 @@ pub(super) async fn rollback(
     release: Option<&str>,
     wait: bool,
 ) -> anyhow::Result<()> {
-    let mut client = deployments_client::DeploymentsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.deployments();
 
     let deployment = client
-        .rollback(authenticated(
-            cli,
-            RollbackRequest {
-                mutation: Some(mutation(cli)),
-                service_id: service.to_string(),
-                release_id: release.unwrap_or_default().to_string(),
-            },
-        ))
+        .rollback(RollbackRequest {
+            mutation: Some(mutation(cli)),
+            service_id: service.to_string(),
+            release_id: release.unwrap_or_default().to_string(),
+        })
         .await?
         .into_inner();
 
@@ -220,15 +214,12 @@ pub(super) async fn rollback(
 /// This is the shape CI needs: the process's exit status has to reflect whether
 /// the deploy actually worked, not merely whether it was accepted.
 async fn follow_deployment(cli: &Cli, deployment_id: &str) -> anyhow::Result<()> {
-    let mut client = deployments_client::DeploymentsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.deployments();
 
     let mut stream = client
-        .watch(authenticated(
-            cli,
-            WatchDeploymentRequest {
-                deployment_id: deployment_id.to_string(),
-            },
-        ))
+        .watch(WatchDeploymentRequest {
+            deployment_id: deployment_id.to_string(),
+        })
         .await?
         .into_inner();
 

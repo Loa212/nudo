@@ -7,20 +7,17 @@ pub(super) async fn logs(
     lines: u32,
     grep: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut client = logs_client::LogsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.logs();
 
     let mut stream = client
-        .stream(authenticated(
-            cli,
-            StreamLogsRequest {
-                service_id: service.to_string(),
-                follow,
-                tail_lines: lines,
-                since_cursor: String::new(),
-                since: None,
-                grep: grep.unwrap_or_default().to_string(),
-            },
-        ))
+        .stream(StreamLogsRequest {
+            service_id: service.to_string(),
+            follow,
+            tail_lines: lines,
+            since_cursor: String::new(),
+            since: None,
+            grep: grep.unwrap_or_default().to_string(),
+        })
         .await?
         .into_inner();
 
@@ -49,23 +46,20 @@ pub(super) async fn exec(
     command: &[String],
     timeout: u32,
 ) -> anyhow::Result<()> {
-    let mut client = logs_client::LogsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.logs();
 
     let (program, args) = command
         .split_first()
         .ok_or_else(|| anyhow!("a command is required"))?;
 
     let mut stream = client
-        .run_command(authenticated(
-            cli,
-            RunCommandRequest {
-                mutation: Some(mutation(cli)),
-                target_id: target.to_string(),
-                command: program.clone(),
-                args: args.to_vec(),
-                timeout_seconds: timeout,
-            },
-        ))
+        .run_command(RunCommandRequest {
+            mutation: Some(mutation(cli)),
+            target_id: target.to_string(),
+            command: program.clone(),
+            args: args.to_vec(),
+            timeout_seconds: timeout,
+        })
         .await?
         .into_inner();
 

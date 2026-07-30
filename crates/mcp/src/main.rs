@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         "nudo MCP server ready on stdio"
     );
 
-    let service = NudoTools::new(args.endpoint, args.agent_label)
+    let service = NudoTools::new(args.endpoint, args.agent_label)?
         .serve(rmcp::transport::stdio())
         .await?;
 

@@ -3,20 +3,17 @@ use super::*;
 pub(super) async fn terminal(cli: &Cli, target: &str, command: Option<&str>) -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let mut terminals = terminals_client::TerminalsClient::new(channel(cli).await?);
+    let mut terminals = cli.client()?.terminals();
 
     let (cols, rows) = terminal_size();
     let session = terminals
-        .create_session(authenticated(
-            cli,
-            CreateTerminalSessionRequest {
-                mutation: Some(mutation(cli)),
-                target_id: target.to_string(),
-                initial_command: command.unwrap_or_default().to_string(),
-                cols,
-                rows,
-            },
-        ))
+        .create_session(CreateTerminalSessionRequest {
+            mutation: Some(mutation(cli)),
+            target_id: target.to_string(),
+            initial_command: command.unwrap_or_default().to_string(),
+            cols,
+            rows,
+        })
         .await?
         .into_inner();
 

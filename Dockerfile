@@ -16,6 +16,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proto/Cargo.toml     crates/proto/
 COPY crates/format/Cargo.toml    crates/format/
+COPY crates/client/Cargo.toml    crates/client/
 COPY crates/server/Cargo.toml    crates/server/
 COPY crates/web/Cargo.toml       crates/web/
 COPY crates/cli/Cargo.toml       crates/cli/
@@ -25,14 +26,18 @@ COPY crates/bootguard/Cargo.toml crates/bootguard/
 COPY controlplane.proto ./
 COPY crates/proto/include crates/proto/include
 COPY crates/proto/build.rs crates/proto/
-RUN mkdir -p crates/proto/src crates/format/src crates/server/src crates/web/src crates/cli/src \
-             crates/mcp/src crates/allinone/src crates/bootguard/src \
-    && echo 'fn main() {}' | tee crates/server/src/main.rs \
-         crates/web/src/main.rs crates/cli/src/main.rs \
-         crates/mcp/src/main.rs crates/allinone/src/main.rs \
-         crates/bootguard/src/main.rs > /dev/null \
-    && touch crates/proto/src/lib.rs crates/format/src/lib.rs crates/server/src/lib.rs \
-             crates/web/src/lib.rs crates/mcp/src/lib.rs crates/bootguard/src/lib.rs \
+# Dummy sources, derived from whichever manifests were copied above rather than
+# from a second hand-written list of crates. The lists used to be three — the
+# copies, the mkdir, and the touch — so adding a workspace member built fine
+# locally and then failed here, at `cargo fetch`, with the crate missing.
+# Cargo only needs each member to be loadable at this point; the real sources
+# arrive below.
+RUN for manifest in crates/*/Cargo.toml; do \
+        src="$(dirname "$manifest")/src"; \
+        mkdir -p "$src"; \
+        echo 'fn main() {}' > "$src/main.rs"; \
+        touch "$src/lib.rs"; \
+    done \
     && cargo fetch --locked
 
 # The real sources. The proto and the vendored well-known types the build

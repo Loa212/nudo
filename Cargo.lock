@@ -2301,6 +2301,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "nudo-client",
  "nudo-format",
  "nudo-proto",
  "reqwest",
@@ -2311,6 +2312,16 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "uuid",
+]
+
+[[package]]
+name = "nudo-client"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "nudo-proto",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -2327,6 +2338,7 @@ version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
+ "nudo-client",
  "nudo-format",
  "nudo-proto",
  "rmcp",
@@ -2419,6 +2431,7 @@ dependencies = [
  "http",
  "maud",
  "nudo-bootguard",
+ "nudo-client",
  "nudo-format",
  "nudo-proto",
  "nudo-server",

@@ -58,10 +58,7 @@ pub async fn target_create(
         envelope.allow_latency_critical = true;
     }
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     let result = client
         .create(CreateTargetRequest {
@@ -89,10 +86,7 @@ pub async fn target_detail(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     let target = match client.get(GetTargetRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
@@ -115,10 +109,7 @@ pub async fn target_check(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     let target = match client.get(GetTargetRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
@@ -186,10 +177,7 @@ pub async fn target_accept_host_key(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     match client
         .accept_host_key(AcceptHostKeyRequest {
@@ -226,10 +214,7 @@ pub async fn target_delete(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     match client
         .delete(DeleteTargetRequest {
@@ -283,10 +268,7 @@ pub async fn target_ingress_enable(
         _ => ingress::Mode::Managed,
     };
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     match client
         .enable_ingress(EnableIngressRequest {
@@ -319,10 +301,7 @@ pub async fn target_ingress_disable(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     match client
         .disable_ingress(DisableIngressRequest {
@@ -351,10 +330,7 @@ pub async fn target_ingress_reload(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     // A rejected config is not an error page: the reason is recorded against
     // the target and the card shows it, which is where somebody looking at this
@@ -385,10 +361,7 @@ pub async fn target_ingress_config(
     Path(id): Path<String>,
     _user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.targets();
 
     let response = match client
         .render_ingress(RenderIngressRequest {

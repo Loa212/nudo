@@ -5,19 +5,16 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Result<()> {
-    let mut client = targets_client::TargetsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.targets();
 
     match command {
         TargetCommand::List { selector } => {
             let response = client
-                .list(authenticated(
-                    cli,
-                    ListTargetsRequest {
-                        label_selector: selector.clone().unwrap_or_default(),
-                        page_size: 200,
-                        page_token: String::new(),
-                    },
-                ))
+                .list(ListTargetsRequest {
+                    label_selector: selector.clone().unwrap_or_default(),
+                    page_size: 200,
+                    page_token: String::new(),
+                })
                 .await?
                 .into_inner();
 
@@ -29,7 +26,7 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
 
         TargetCommand::Get { id } => {
             let target = client
-                .get(authenticated(cli, GetTargetRequest { id: id.clone() }))
+                .get(GetTargetRequest { id: id.clone() })
                 .await?
                 .into_inner();
             let list = vec![target];
@@ -48,19 +45,16 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
             labels,
         } => {
             let target = client
-                .create(authenticated(
-                    cli,
-                    CreateTargetRequest {
-                        mutation: Some(mutation(cli)),
-                        name: name.clone(),
-                        host: host.clone(),
-                        port: *port,
-                        user: user.clone(),
-                        ssh_key_id: ssh_key.clone(),
-                        latency_critical: *latency_critical,
-                        labels: parse_labels(labels)?,
-                    },
-                ))
+                .create(CreateTargetRequest {
+                    mutation: Some(mutation(cli)),
+                    name: name.clone(),
+                    host: host.clone(),
+                    port: *port,
+                    user: user.clone(),
+                    ssh_key_id: ssh_key.clone(),
+                    latency_critical: *latency_critical,
+                    labels: parse_labels(labels)?,
+                })
                 .await?
                 .into_inner();
 
@@ -72,20 +66,17 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
 
         TargetCommand::Remove { id } => {
             client
-                .delete(authenticated(
-                    cli,
-                    DeleteTargetRequest {
-                        mutation: Some(mutation(cli)),
-                        id: id.clone(),
-                    },
-                ))
+                .delete(DeleteTargetRequest {
+                    mutation: Some(mutation(cli)),
+                    id: id.clone(),
+                })
                 .await?;
             println!("{}removed target {id}", dry_run_prefix(cli));
         }
 
         TargetCommand::Check { id } => {
             let response = client
-                .check(authenticated(cli, CheckTargetRequest { id: id.clone() }))
+                .check(CheckTargetRequest { id: id.clone() })
                 .await?
                 .into_inner();
 
@@ -115,28 +106,22 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
         TargetCommand::HostKey { id, accept, forget } => {
             let target = match (accept, forget) {
                 (Some(fingerprint), _) => client
-                    .accept_host_key(authenticated(
-                        cli,
-                        AcceptHostKeyRequest {
-                            mutation: Some(mutation(cli)),
-                            id: id.clone(),
-                            fingerprint: fingerprint.trim().to_string(),
-                        },
-                    ))
+                    .accept_host_key(AcceptHostKeyRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                        fingerprint: fingerprint.trim().to_string(),
+                    })
                     .await?
                     .into_inner(),
                 (None, true) => client
-                    .forget_host_key(authenticated(
-                        cli,
-                        ForgetHostKeyRequest {
-                            mutation: Some(mutation(cli)),
-                            id: id.clone(),
-                        },
-                    ))
+                    .forget_host_key(ForgetHostKeyRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                    })
                     .await?
                     .into_inner(),
                 (None, false) => client
-                    .get(authenticated(cli, GetTargetRequest { id: id.clone() }))
+                    .get(GetTargetRequest { id: id.clone() })
                     .await?
                     .into_inner(),
             };
@@ -173,7 +158,7 @@ pub(super) async fn targets(cli: &Cli, command: &TargetCommand) -> anyhow::Resul
 
 async fn ingress(
     cli: &Cli,
-    client: &mut targets_client::TargetsClient<tonic::transport::Channel>,
+    client: &mut nudo_client::TargetsClient,
     command: &IngressCommand,
 ) -> anyhow::Result<()> {
     match command {
@@ -189,16 +174,13 @@ async fn ingress(
             }
 
             let updated = client
-                .enable_ingress(authenticated(
-                    cli,
-                    EnableIngressRequest {
-                        mutation: Some(mutation(cli)),
-                        target_id: target.clone(),
-                        mode: parsed as i32,
-                        admin_port: admin_port.unwrap_or(0),
-                        acme_email: acme_email.clone().unwrap_or_default(),
-                    },
-                ))
+                .enable_ingress(EnableIngressRequest {
+                    mutation: Some(mutation(cli)),
+                    target_id: target.clone(),
+                    mode: parsed as i32,
+                    admin_port: admin_port.unwrap_or(0),
+                    acme_email: acme_email.clone().unwrap_or_default(),
+                })
                 .await?
                 .into_inner();
 
@@ -225,13 +207,10 @@ async fn ingress(
 
         IngressCommand::Disable { target } => {
             let updated = client
-                .disable_ingress(authenticated(
-                    cli,
-                    DisableIngressRequest {
-                        mutation: Some(mutation(cli)),
-                        target_id: target.clone(),
-                    },
-                ))
+                .disable_ingress(DisableIngressRequest {
+                    mutation: Some(mutation(cli)),
+                    target_id: target.clone(),
+                })
                 .await?
                 .into_inner();
             println!(
@@ -243,12 +222,9 @@ async fn ingress(
 
         IngressCommand::Show { target } => {
             let response = client
-                .render_ingress(authenticated(
-                    cli,
-                    RenderIngressRequest {
-                        target_id: target.clone(),
-                    },
-                ))
+                .render_ingress(RenderIngressRequest {
+                    target_id: target.clone(),
+                })
                 .await?
                 .into_inner();
 
@@ -265,13 +241,10 @@ async fn ingress(
 
         IngressCommand::Reload { target } => {
             let response = client
-                .reload_ingress(authenticated(
-                    cli,
-                    ReloadIngressRequest {
-                        mutation: Some(mutation(cli)),
-                        target_id: target.clone(),
-                    },
-                ))
+                .reload_ingress(ReloadIngressRequest {
+                    mutation: Some(mutation(cli)),
+                    target_id: target.clone(),
+                })
                 .await?
                 .into_inner();
 
@@ -298,12 +271,9 @@ async fn ingress(
 
         IngressCommand::Check { target } => {
             let response = client
-                .check_ingress(authenticated(
-                    cli,
-                    CheckIngressRequest {
-                        target_id: target.clone(),
-                    },
-                ))
+                .check_ingress(CheckIngressRequest {
+                    target_id: target.clone(),
+                })
                 .await?
                 .into_inner();
 

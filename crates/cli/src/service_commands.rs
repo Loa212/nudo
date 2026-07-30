@@ -1,19 +1,16 @@
 use super::*;
 
 pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Result<()> {
-    let mut client = services_api_client::ServicesApiClient::new(channel(cli).await?);
+    let mut client = cli.client()?.services();
 
     match command {
         ServiceCommand::List { target } => {
             let response = client
-                .list(authenticated(
-                    cli,
-                    ListServicesRequest {
-                        target_id: target.clone().unwrap_or_default(),
-                        page_size: 200,
-                        page_token: String::new(),
-                    },
-                ))
+                .list(ListServicesRequest {
+                    target_id: target.clone().unwrap_or_default(),
+                    page_size: 200,
+                    page_token: String::new(),
+                })
                 .await?
                 .into_inner();
 
@@ -25,7 +22,7 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
 
         ServiceCommand::Get { id } => {
             let service = client
-                .get(authenticated(cli, GetServiceRequest { id: id.clone() }))
+                .get(GetServiceRequest { id: id.clone() })
                 .await?
                 .into_inner();
             let list = vec![service];
@@ -36,12 +33,9 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
 
         ServiceCommand::Unit { id } => {
             let response = client
-                .render_unit(authenticated(
-                    cli,
-                    RenderUnitRequest {
-                        service_id: id.clone(),
-                    },
-                ))
+                .render_unit(RenderUnitRequest {
+                    service_id: id.clone(),
+                })
                 .await?
                 .into_inner();
             // Printed raw so it can be piped to a file or diffed.
@@ -50,12 +44,9 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
 
         ServiceCommand::Status { id } => {
             let status = client
-                .get_unit_status(authenticated(
-                    cli,
-                    GetUnitStatusRequest {
-                        service_id: id.clone(),
-                    },
-                ))
+                .get_unit_status(GetUnitStatusRequest {
+                    service_id: id.clone(),
+                })
                 .await?
                 .into_inner();
 
@@ -75,16 +66,13 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
         ServiceCommand::Disable { id } => unit_action(cli, &mut client, id, "disable").await?,
 
         ServiceCommand::Deployments { id, limit } => {
-            let mut deployments = deployments_client::DeploymentsClient::new(channel(cli).await?);
+            let mut deployments = cli.client()?.deployments();
             let response = deployments
-                .list(authenticated(
-                    cli,
-                    ListDeploymentsRequest {
-                        service_id: id.clone(),
-                        page_size: *limit,
-                        page_token: String::new(),
-                    },
-                ))
+                .list(ListDeploymentsRequest {
+                    service_id: id.clone(),
+                    page_size: *limit,
+                    page_token: String::new(),
+                })
                 .await?
                 .into_inner();
 
@@ -95,14 +83,11 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
         }
 
         ServiceCommand::Releases { id } => {
-            let mut deployments = deployments_client::DeploymentsClient::new(channel(cli).await?);
+            let mut deployments = cli.client()?.deployments();
             let response = deployments
-                .list_releases(authenticated(
-                    cli,
-                    ListReleasesRequest {
-                        service_id: id.clone(),
-                    },
-                ))
+                .list_releases(ListReleasesRequest {
+                    service_id: id.clone(),
+                })
                 .await?
                 .into_inner();
 
@@ -135,20 +120,17 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
             };
 
             let updated = client
-                .update(authenticated(
-                    cli,
-                    UpdateServiceRequest {
-                        mutation: Some(mutation(cli)),
-                        id: id.clone(),
-                        service: Some(Service {
-                            routes: parsed,
-                            ..Default::default()
-                        }),
-                        // Named explicitly: an empty mask means "apply every
-                        // field", which here would blank the rest of the service.
-                        update_mask: vec!["routes".to_string()],
-                    },
-                ))
+                .update(UpdateServiceRequest {
+                    mutation: Some(mutation(cli)),
+                    id: id.clone(),
+                    service: Some(Service {
+                        routes: parsed,
+                        ..Default::default()
+                    }),
+                    // Named explicitly: an empty mask means "apply every
+                    // field", which here would blank the rest of the service.
+                    update_mask: vec!["routes".to_string()],
+                })
                 .await?
                 .into_inner();
 
@@ -188,7 +170,7 @@ pub(super) async fn services(cli: &Cli, command: &ServiceCommand) -> anyhow::Res
 
 async fn unit_action(
     cli: &Cli,
-    client: &mut services_api_client::ServicesApiClient<Channel>,
+    client: &mut nudo_client::ServicesClient,
     service_id: &str,
     verb: &str,
 ) -> anyhow::Result<()> {
@@ -202,14 +184,11 @@ async fn unit_action(
     };
 
     let status = client
-        .unit_action(authenticated(
-            cli,
-            UnitActionRequest {
-                mutation: Some(mutation(cli)),
-                service_id: service_id.to_string(),
-                action: action as i32,
-            },
-        ))
+        .unit_action(UnitActionRequest {
+            mutation: Some(mutation(cli)),
+            service_id: service_id.to_string(),
+            action: action as i32,
+        })
         .await?
         .into_inner();
 

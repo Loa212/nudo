@@ -60,10 +60,7 @@ pub async fn secret_put(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.secrets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.secrets();
 
     let name = form.name.clone();
     match client
@@ -140,10 +137,7 @@ pub async fn secret_rotate(
         .into_response();
     }
 
-    let mut client = match state.api.secrets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.secrets();
 
     match client
         .put(PutSecretRequest {
@@ -196,10 +190,7 @@ pub async fn ssh_key_put(
         return Redirect::to(&format!("/secrets?error={key}")).into_response();
     }
 
-    let mut client = match state.api.secrets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.secrets();
 
     let name = form.name.clone();
     match client
@@ -264,10 +255,7 @@ pub async fn secret_delete(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.secrets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.secrets();
 
     match client
         .delete(DeleteSecretRequest {

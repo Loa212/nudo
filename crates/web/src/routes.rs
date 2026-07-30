@@ -17,6 +17,7 @@ use nudo_proto::*;
 use tokio_stream::StreamExt;
 
 use crate::auth::{CurrentUser, check_csrf};
+use crate::client::DashboardReads;
 use crate::render::{self, Nav};
 use crate::{AppState, terminal};
 

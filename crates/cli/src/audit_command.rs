@@ -1,18 +1,15 @@
 use super::*;
 
 pub(super) async fn audit(cli: &Cli, subject: Option<&str>, limit: u32) -> anyhow::Result<()> {
-    let mut client = audit_client::AuditClient::new(channel(cli).await?);
+    let mut client = cli.client()?.audit();
 
     let response = client
-        .list(authenticated(
-            cli,
-            ListAuditRequest {
-                subject_id: subject.unwrap_or_default().to_string(),
-                actor_kind: actor::Kind::Unspecified as i32,
-                page_size: limit,
-                page_token: String::new(),
-            },
-        ))
+        .list(ListAuditRequest {
+            subject_id: subject.unwrap_or_default().to_string(),
+            actor_kind: actor::Kind::Unspecified as i32,
+            page_size: limit,
+            page_token: String::new(),
+        })
         .await?
         .into_inner();
 
