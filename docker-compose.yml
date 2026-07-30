@@ -15,10 +15,10 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    # Redundant next to the published port for a plain `docker compose up`, but
-    # a platform that puts its own reverse proxy in front reads `expose` to
-    # learn which port to send traffic to — Coolify does, and without it the
-    # proxy has a route with no backend port and answers 502.
+    # Redundant next to the published port above, and kept only so the port the
+    # dashboard listens on is stated in the file a reader is looking at. A
+    # platform that fronts this with its own proxy does not learn the port from
+    # here — see "Coolify" under Install for what it does read.
     expose:
       - "3000"
     environment:
