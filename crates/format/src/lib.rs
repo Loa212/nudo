@@ -242,8 +242,21 @@ mod tests {
             unit_state_label(&status("active", "exited")),
             "exited cleanly"
         );
+        assert_eq!(unit_state_label(&status("active", "reload")), "active");
+        assert_eq!(
+            unit_state_label(&status("activating", "start-pre")),
+            "starting"
+        );
+        assert_eq!(
+            unit_state_label(&status("deactivating", "stop")),
+            "stopping"
+        );
         assert_eq!(unit_state_label(&status("failed", "failed")), "failed");
+        assert_eq!(unit_state_label(&status("inactive", "dead")), "stopped");
         assert_eq!(unit_state_label(&status("unknown", "")), "unreachable");
+        // A state systemd grows later must read as unknown rather than as one
+        // of the words above.
+        assert_eq!(unit_state_label(&status("something-new", "")), "unknown");
     }
 
     #[test]

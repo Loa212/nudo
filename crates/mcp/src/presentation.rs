@@ -1,20 +1,9 @@
-use nudo_proto::{Service, UnitStatus};
-
-/// A one-line description of where a service's binary comes from.
-pub fn describe_artifact(service: &Service) -> String {
-    nudo_format::artifact_description(service)
-}
-
-/// A word for a unit's state, so an agent does not have to interpret
-/// systemd's two-field vocabulary.
-pub fn describe_unit_state(status: &UnitStatus) -> &'static str {
-    nudo_format::unit_state_label(status)
-}
-
-/// A level name for a journald numeric priority.
-pub fn describe_priority(priority: &str) -> &'static str {
-    nudo_format::journal_priority_label(priority)
-}
+//! How a tool result is worded for an agent.
+//!
+//! Everything an agent reads that is *also* read by the dashboard or the CLI —
+//! unit states, artifact sources, log levels — comes from `nudo_format`, so the
+//! three surfaces cannot describe the same thing differently. What is left here
+//! is the one thing only this crate needs.
 
 /// Renders a command and its arguments for display, quoting anything that
 /// contains whitespace or a shell metacharacter.

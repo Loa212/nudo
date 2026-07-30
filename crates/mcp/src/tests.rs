@@ -212,7 +212,7 @@ fn artifact_sources_are_described_in_one_line() {
     use nudo_proto::{ArtifactSource, GitSource, artifact_source::Kind};
 
     let with = |kind: Kind| {
-        describe_artifact(&Service {
+        nudo_format::artifact_description(&Service {
             artifact: Some(ArtifactSource { kind: Some(kind) }),
             ..Default::default()
         })
@@ -231,13 +231,16 @@ fn artifact_sources_are_described_in_one_line() {
         "git:owner/bot@main"
     );
     assert_eq!(with(Kind::DirectUpload(true)), "upload");
-    assert_eq!(describe_artifact(&Service::default()), "upload");
+    assert_eq!(
+        nudo_format::artifact_description(&Service::default()),
+        "upload"
+    );
 }
 
 #[test]
 fn unit_states_are_described_in_a_single_word() {
     let state = |active: &str, sub: &str| {
-        describe_unit_state(&UnitStatus {
+        nudo_format::unit_state_label(&UnitStatus {
             active_state: active.to_string(),
             sub_state: sub.to_string(),
             ..Default::default()
@@ -254,10 +257,10 @@ fn unit_states_are_described_in_a_single_word() {
 
 #[test]
 fn journald_priorities_are_named() {
-    assert_eq!(describe_priority("3"), "err");
-    assert_eq!(describe_priority("4"), "warning");
-    assert_eq!(describe_priority("6"), "info");
-    assert_eq!(describe_priority(""), "info");
+    assert_eq!(nudo_format::journal_priority_label("3"), "err");
+    assert_eq!(nudo_format::journal_priority_label("4"), "warning");
+    assert_eq!(nudo_format::journal_priority_label("6"), "info");
+    assert_eq!(nudo_format::journal_priority_label(""), "info");
 }
 
 #[test]
