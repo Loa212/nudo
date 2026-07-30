@@ -85,6 +85,45 @@ NUDO_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 > holds the database — without it, everything is lost when the container is
 > replaced.
 
+### Coolify
+
+The compose file above works as-is: point a Coolify application at this
+repository, set the build pack to **Docker Compose**, and it pulls the published
+image rather than building the workspace.
+
+Two settings are not optional, and getting either wrong fails in a way that does
+not look like a configuration problem.
+
+**Put the container port in the domain.** Under *Configuration → General →
+Domains*, write the port you want traffic forwarded to as part of the URL:
+
+```
+https://nudo.example.com:3000
+```
+
+That is not a request to serve port 3000 publicly — Coolify still terminates TLS
+on 443. Coolify parses the port out of the domain string and only then emits the
+Traefik label naming the backend port. Without it, the generated config has a
+router that matches your hostname and no service behind it, so the proxy answers
+**502** while `docker logs` shows a container that started and passed its
+healthcheck. Neither `expose` nor a published `ports` mapping substitutes for
+this, and neither does attaching the container to the proxy network.
+
+**Set `NUDO_BASE_URL` to the public https:// URL**, not the default:
+
+```
+NUDO_BASE_URL=https://nudo.example.com
+```
+
+Coolify offers this to you as `SERVICE_URL_NUDO`. It decides whether the session
+cookie carries `Secure`, so left as `http://localhost:3000` behind HTTPS the
+login page renders, the form posts, and the session silently fails to stick. It
+is also the base for the GitHub webhook URLs, which would otherwise point at
+`localhost`.
+
+Leave the `nudo-state` volume alone — it holds the database and the generated
+key, and Coolify preserves it across deploys.
+
 ### Binaries
 
 Download the archive for your platform from the
