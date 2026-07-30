@@ -1,11 +1,13 @@
 //! Target persistence — the machines we deploy to.
 
 use anyhow::bail;
-use nudo_proto::{HostKey, Ingress, Target, ingress, target};
+use nudo_proto::{Ingress, Target, ingress, target};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::{Store, decode_map, encode_map, from_db_time_opt, new_id, now_string};
+use super::field_mask::Field;
+use super::host_keys::row_to_host_key;
+use super::{SshHost, Store, decode_map, encode_map, from_db_time_opt, new_id, now_string};
 // The SQL strings below are composed only from `const` fragments in this file
 // plus bound parameters; no caller-supplied value is ever interpolated, which is
 // what `AssertSqlSafe` asserts.
@@ -69,7 +71,7 @@ impl Store {
     }
 
     pub async fn get_target(&self, id: &str) -> anyhow::Result<Option<Target>> {
-        let row = sqlx::query(TARGET_SELECT_BY_ID)
+        let row = sqlx::query(AssertSqlSafe(format!("{TARGET_SELECT} WHERE id = ?1")))
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
@@ -138,60 +140,42 @@ impl Store {
         // An empty mask means "everything the message carries", which is what a
         // simple client sending a whole object expects.
         let touch = |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
-        let mut transaction = self.pool().begin().await?;
 
+        // Which columns are written is per-field policy, and it differs: a blank
+        // name or host means "not set" and is skipped, but a blank ssh_key_id
+        // means "unset the key" and is written. Collected rather than executed
+        // so the whole mask lands in one statement.
+        let mut fields = Vec::new();
         if touch("name") && !target.name.trim().is_empty() {
-            sqlx::query("UPDATE targets SET name = ?1 WHERE id = ?2")
-                .bind(target.name.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|e| friendly_target_error(e, target.name.trim()))?;
+            fields.push(Field::text("name", target.name.trim()));
         }
         if touch("host") && !target.host.trim().is_empty() {
-            sqlx::query("UPDATE targets SET host = ?1 WHERE id = ?2")
-                .bind(target.host.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("host", target.host.trim()));
         }
         if touch("port") && target.port != 0 {
-            sqlx::query("UPDATE targets SET port = ?1 WHERE id = ?2")
-                .bind(target.port)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::int("port", target.port as i64));
         }
         if touch("user") && !target.user.trim().is_empty() {
-            sqlx::query("UPDATE targets SET user = ?1 WHERE id = ?2")
-                .bind(target.user.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("user", target.user.trim()));
         }
         if touch("ssh_key_id") {
-            sqlx::query("UPDATE targets SET ssh_key_id = ?1 WHERE id = ?2")
-                .bind(target.ssh_key_id.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("ssh_key_id", target.ssh_key_id.trim()));
         }
         if touch("latency_critical") {
-            sqlx::query("UPDATE targets SET latency_critical = ?1 WHERE id = ?2")
-                .bind(target.latency_critical as i64)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::int(
+                "latency_critical",
+                target.latency_critical as i64,
+            ));
         }
         if touch("labels") {
-            sqlx::query("UPDATE targets SET labels = ?1 WHERE id = ?2")
-                .bind(encode_map(&target.labels))
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::owned("labels", encode_map(&target.labels)));
         }
 
-        transaction.commit().await?;
+        // `name` is the only unique column, so a violation can only be that.
+        self.update_masked("targets", id, &fields)
+            .await
+            .map_err(|e| friendly_target_error(e, target.name.trim()))?;
+
         self.get_target(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("target {id} vanished during update"))
@@ -212,131 +196,9 @@ impl Store {
     pub async fn set_target_status(&self, id: &str, status: target::Status) -> anyhow::Result<()> {
         // `last_seen_at` means "last confirmed reachable", so it is only
         // advanced on success — otherwise it would just track probe attempts.
-        let last_seen = if status == target::Status::Reachable {
-            Some(now_string())
-        } else {
-            None
-        };
-
-        match last_seen {
-            Some(seen) => {
-                sqlx::query("UPDATE targets SET status = ?1, last_seen_at = ?2 WHERE id = ?3")
-                    .bind(status.as_str())
-                    .bind(seen)
-                    .bind(id)
-                    .execute(self.pool())
-                    .await?;
-            }
-            None => {
-                sqlx::query("UPDATE targets SET status = ?1 WHERE id = ?2")
-                    .bind(status.as_str())
-                    .bind(id)
-                    .execute(self.pool())
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Pins a host key, clearing any pending change.
-    ///
-    /// Used for the first-use recording and for accepting a reviewed change;
-    /// both end in the same state, which is why they are one method.
-    pub async fn pin_host_key(&self, id: &str, key: &str, fingerprint: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE targets
-                SET host_key = ?1,
-                    host_key_fingerprint = ?2,
-                    host_key_pinned_at = ?3,
-                    pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?4",
-        )
-        .bind(key)
-        .bind(fingerprint)
-        .bind(now_string())
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Records a key that did not match the pinned one, for review.
-    ///
-    /// Nothing is trusted here — the connection that saw this key was refused.
-    /// The point is that the operator can see *what* the host presented rather
-    /// than only that it differed, and can accept it without touching the
-    /// database.
-    ///
-    /// The first sighting's timestamp is kept when the same key is seen again,
-    /// so "this has been failing since 09:14" survives a probe loop that
-    /// re-sees it every minute.
-    pub async fn record_pending_host_key(
-        &self,
-        id: &str,
-        key: &str,
-        fingerprint: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE targets
-                SET pending_host_key = ?1,
-                    pending_host_key_fingerprint = ?2,
-                    pending_host_key_seen_at =
-                        CASE WHEN pending_host_key = ?1 AND pending_host_key_seen_at IS NOT NULL
-                             THEN pending_host_key_seen_at
-                             ELSE ?3
-                        END
-              WHERE id = ?4",
-        )
-        .bind(key)
-        .bind(fingerprint)
-        .bind(now_string())
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Drops a pending change without accepting it.
-    ///
-    /// Called when a connection presents the pinned key again: whatever was
-    /// offered before is no longer outstanding, and leaving it would keep
-    /// showing a warning about a host that is now presenting exactly what it
-    /// should.
-    pub async fn clear_pending_host_key(&self, id: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE targets
-                SET pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?1 AND pending_host_key <> ''",
-        )
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Forgets a target's pinned key, reopening the first-use window.
-    pub async fn forget_host_key(&self, id: &str) -> anyhow::Result<()> {
-        let result = sqlx::query(
-            "UPDATE targets
-                SET host_key = '',
-                    host_key_fingerprint = '',
-                    host_key_pinned_at = NULL,
-                    pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?1",
-        )
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        if result.rows_affected() == 0 {
-            bail!("no such target: {id}");
-        }
-        Ok(())
+        let last_seen = (status == target::Status::Reachable).then(now_string);
+        self.set_host_status(SshHost::Target, id, status.as_str(), last_seen)
+            .await
     }
 
     /// Turns ingress on for a target, or changes its settings.
@@ -428,19 +290,15 @@ impl Store {
     }
 }
 
+/// Every column [`row_to_target`] reads. The one place the list is written:
+/// each query below appends its own clauses, so a new column cannot be added to
+/// the list read and forgotten in the read by id.
 const TARGET_SELECT: &str = "SELECT id, name, host, port, user, ssh_key_id, latency_critical, \
      labels, status, last_seen_at, created_at, host_key, host_key_fingerprint, \
      host_key_pinned_at, pending_host_key, pending_host_key_fingerprint, \
      pending_host_key_seen_at, ingress_mode, ingress_admin_port, ingress_acme_email, \
      ingress_status, ingress_version, ingress_last_reload_at, ingress_last_error \
      FROM targets";
-
-const TARGET_SELECT_BY_ID: &str = "SELECT id, name, host, port, user, ssh_key_id, \
-     latency_critical, labels, status, last_seen_at, created_at, host_key, \
-     host_key_fingerprint, host_key_pinned_at, pending_host_key, \
-     pending_host_key_fingerprint, pending_host_key_seen_at, ingress_mode, \
-     ingress_admin_port, ingress_acme_email, ingress_status, ingress_version, \
-     ingress_last_reload_at, ingress_last_error FROM targets WHERE id = ?1";
 
 fn row_to_target(row: &SqliteRow) -> Target {
     Target {
@@ -490,34 +348,6 @@ fn row_to_ingress(row: &SqliteRow) -> Option<Ingress> {
                 .as_deref(),
         )),
         last_error: row.get("ingress_last_error"),
-    })
-}
-
-/// The host-key half of a target row.
-///
-/// `None` when nothing is pinned and nothing is pending, so a target that has
-/// never connected reads as having no host key rather than as having an empty
-/// one. Public key material throughout — safe to hand to any client.
-fn row_to_host_key(row: &SqliteRow) -> Option<HostKey> {
-    let key: String = row.get("host_key");
-    let pending: String = row.get("pending_host_key");
-    if key.is_empty() && pending.is_empty() {
-        return None;
-    }
-
-    Some(HostKey {
-        key,
-        fingerprint: row.get("host_key_fingerprint"),
-        pinned_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
-            row.get::<Option<String>, _>("host_key_pinned_at")
-                .as_deref(),
-        )),
-        pending_key: pending,
-        pending_fingerprint: row.get("pending_host_key_fingerprint"),
-        pending_seen_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
-            row.get::<Option<String>, _>("pending_host_key_seen_at")
-                .as_deref(),
-        )),
     })
 }
 
@@ -917,7 +747,7 @@ mod tests {
         let created = store.create_target(&input("pinned")).await.expect("create");
 
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 
@@ -944,12 +774,12 @@ mod tests {
             .await
             .expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
 
@@ -974,12 +804,12 @@ mod tests {
         let store = store().await;
         let created = store.create_target(&input("reseen")).await.expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("first sighting");
         let first = store
@@ -992,7 +822,7 @@ mod tests {
             .pending_seen_at;
 
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("second sighting");
         let second = store
@@ -1014,16 +844,16 @@ mod tests {
         let store = store().await;
         let created = store.create_target(&input("twice")).await.expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("first");
         store
-            .record_pending_host_key(&created.id, KEY_A, "SHA256:ccc")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:ccc")
             .await
             .expect("second");
 
@@ -1042,16 +872,16 @@ mod tests {
         let store = store().await;
         let created = store.create_target(&input("accept")).await.expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
 
         store
-            .pin_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .pin_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("accept");
 
@@ -1078,16 +908,16 @@ mod tests {
             .await
             .expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
 
         store
-            .clear_pending_host_key(&created.id)
+            .clear_pending_host_key(SshHost::Target, &created.id)
             .await
             .expect("clear");
 
@@ -1107,15 +937,18 @@ mod tests {
         let store = store().await;
         let created = store.create_target(&input("forget")).await.expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
         store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
 
-        store.forget_host_key(&created.id).await.expect("forget");
+        store
+            .forget_host_key(SshHost::Target, &created.id)
+            .await
+            .expect("forget");
 
         // Back to the state a newly created target is in, pending change and
         // all — otherwise a stale review would block the fresh pinning.
@@ -1130,7 +963,12 @@ mod tests {
     #[tokio::test]
     async fn forgetting_the_key_of_a_missing_target_fails() {
         let store = store().await;
-        assert!(store.forget_host_key("tgt_nope").await.is_err());
+        assert!(
+            store
+                .forget_host_key(SshHost::Target, "tgt_nope")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1141,7 +979,7 @@ mod tests {
         let store = store().await;
         let created = store.create_target(&input("edited")).await.expect("create");
         store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 

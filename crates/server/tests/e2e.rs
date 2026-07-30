@@ -1107,6 +1107,7 @@ async fn a_host_key_is_pinned_on_first_use_and_a_change_is_refused_until_accepte
     engine
         .store
         .pin_host_key(
+            nudo_server::store::SshHost::Target,
             &target.id,
             &refused.pending_key,
             &refused.pending_fingerprint,
@@ -1191,7 +1192,7 @@ async fn a_build_host_passes_its_own_readiness_checks() {
     let build_host = register_build_host(&engine, &secret_key, &fixture, false).await;
 
     let (ok, checks, warnings) = nudo_server::probe::check_build_host(
-        engine.connect_build_host(&build_host).await,
+        engine.connect(&build_host).await,
         &build_host.workspace_root,
         build_host.latency_critical,
     )
@@ -1234,7 +1235,7 @@ async fn a_latency_critical_build_host_warns_but_still_passes() {
     let build_host = register_build_host(&engine, &secret_key, &fixture, true).await;
 
     let (ok, _checks, warnings) = nudo_server::probe::check_build_host(
-        engine.connect_build_host(&build_host).await,
+        engine.connect(&build_host).await,
         &build_host.workspace_root,
         build_host.latency_critical,
     )
@@ -1743,7 +1744,7 @@ async fn a_build_host_pins_its_host_key_like_a_target_does() {
 
     // First connection pins whatever the host presents.
     engine
-        .connect_build_host(&build_host)
+        .connect(&build_host)
         .await
         .expect("connect")
         .close()
@@ -1777,7 +1778,7 @@ async fn a_build_host_pins_its_host_key_like_a_target_does() {
         .expect("read")
         .expect("exists");
     let error = engine
-        .connect_build_host(&refreshed)
+        .connect(&refreshed)
         .await
         .expect_err("a changed host key must be refused");
     assert!(

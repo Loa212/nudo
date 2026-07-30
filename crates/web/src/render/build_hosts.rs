@@ -165,7 +165,9 @@ pub fn build_host_detail(
                 }
             }
 
-            @if let Some(checks) = checks { (build_host_check_results(checks)) }
+            @if let Some(checks) = checks {
+                (preflight_card(checks.ok, &probes(&checks.checks), &checks.warnings))
+            }
 
             div .card.pad-0 {
                 div .card-head { h2 { "Services building here" } }
@@ -262,42 +264,6 @@ fn build_host_key_change(host: &BuildHost, host_key: &HostKey, csrf: &str) -> Ma
 }
 
 /// The check results, and any warnings alongside them.
-fn build_host_check_results(checks: &CheckBuildHostResponse) -> Markup {
-    html! {
-        div .card {
-            div .row {
-                h2 { "Preflight checks" }
-                @if checks.ok { (badge("all passed", BadgeKind::Ok)) }
-                @else { (badge("problems found", BadgeKind::Bad)) }
-            }
-            @if checks.checks.is_empty() {
-                p .card-note { "The check returned no probes." }
-            } @else {
-                dl .dl style="margin-top:12px" {
-                    @for check in &checks.checks {
-                        dt { (check.name) }
-                        dd {
-                            div .row {
-                                @if check.ok { (badge("ok", BadgeKind::Ok)) }
-                                @else { (badge("failed", BadgeKind::Bad)) }
-                                @if !check.detail.is_empty() {
-                                    span .small.muted { (check.detail) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Below the checks and visually distinct, because a warning must
-            // not read as a failure: these do not affect whether the host is
-            // ready.
-            @for warning in &checks.warnings {
-                p .card-note style="margin-top:12px" { (warning) }
-            }
-        }
-    }
-}
-
 /// Create and edit share a form, keyed on whether there is an existing host.
 pub fn build_host_form(existing: Option<&BuildHost>, secrets: &[Secret], csrf: &str) -> Markup {
     let editing = existing.is_some();

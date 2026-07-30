@@ -11,7 +11,7 @@ use nudo_proto::*;
 use tonic::{Request, Response, Status};
 
 use super::{Context, internal};
-use crate::store::{BuildHostInput, page_offset, page_size};
+use crate::store::{BuildHostInput, SshHost, page_offset, page_size};
 
 pub struct BuildHostsService {
     context: Context,
@@ -241,52 +241,18 @@ impl BuildHosts for BuildHostsService {
         let ssh_target = self
             .context
             .engine
-            .ssh_target_for_build_host(&build_host)
+            .ssh_target_for(&build_host)
             .await
             .map_err(|error| Status::failed_precondition(format!("{error:#}")))?;
 
         // `build-hosts check` is what an operator runs after registering one, so
         // this is the natural place for first-use pinning to happen and be
         // reported. A refused connection is a check result, not an error.
-        let connection = match crate::ssh::SshSession::connect(&ssh_target).await {
-            Ok(session) => {
-                if let crate::ssh::HostKeyOutcome::Pinned { key, fingerprint } = session.host_key()
-                {
-                    if let Err(error) = self
-                        .context
-                        .store
-                        .pin_build_host_key(&build_host.id, key, fingerprint)
-                        .await
-                    {
-                        tracing::warn!(%error, "pinning the build host's key failed");
-                    }
-                } else if let Err(error) = self
-                    .context
-                    .store
-                    .clear_pending_build_host_key(&build_host.id)
-                    .await
-                {
-                    tracing::warn!(%error, "clearing the pending host key failed");
-                }
-                Ok(session)
-            }
-            Err(error) => {
-                if let Some(changed) = error.downcast_ref::<crate::ssh::HostKeyChanged>()
-                    && let Err(error) = self
-                        .context
-                        .store
-                        .record_pending_build_host_key(
-                            &build_host.id,
-                            &changed.key,
-                            &changed.fingerprint,
-                        )
-                        .await
-                {
-                    tracing::warn!(%error, "recording the changed host key failed");
-                }
-                Err(error)
-            }
-        };
+        let connection = self
+            .context
+            .engine
+            .connect_prepared(&build_host, &ssh_target)
+            .await;
 
         let (ok, checks, warnings) = crate::probe::check_build_host(
             connection,
@@ -366,7 +332,8 @@ impl BuildHosts for BuildHostsService {
 
         self.context
             .store
-            .pin_build_host_key(
+            .pin_host_key(
+                SshHost::BuildHost,
                 &request.id,
                 &host_key.pending_key,
                 &host_key.pending_fingerprint,
@@ -407,7 +374,7 @@ impl BuildHosts for BuildHostsService {
 
         self.context
             .store
-            .forget_build_host_key(&request.id)
+            .forget_host_key(SshHost::BuildHost, &request.id)
             .await
             .map_err(super::invalid)?;
 
@@ -709,12 +676,22 @@ mod tests {
 
         context
             .store
-            .pin_build_host_key(&created.id, "ssh-ed25519 OLD", "SHA256:old")
+            .pin_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 OLD",
+                "SHA256:old",
+            )
             .await
             .expect("pin");
         context
             .store
-            .record_pending_build_host_key(&created.id, "ssh-ed25519 NEW", "SHA256:new")
+            .record_pending_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 NEW",
+                "SHA256:new",
+            )
             .await
             .expect("pending");
 

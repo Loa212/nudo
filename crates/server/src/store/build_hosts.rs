@@ -6,14 +6,19 @@
 //! host has no release root, no unit and nothing deployed to it. Keeping them
 //! apart is what makes "a build host is never deployed to" structural instead
 //! of a rule someone has to remember.
+//!
+//! The one thing the two tables genuinely share — the pinned host key — is in
+//! [`super::host_keys`] rather than copied here.
 
 use anyhow::bail;
-use nudo_proto::{BuildHost, HostKey, build_host};
+use nudo_proto::{BuildHost, build_host};
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
+use super::field_mask::Field;
+use super::host_keys::row_to_host_key;
 use super::targets::{matches_selector, parse_label_selector};
-use super::{Store, decode_map, encode_map, from_db_time_opt, new_id, now_string};
+use super::{SshHost, Store, decode_map, encode_map, from_db_time_opt, new_id, now_string};
 // As in `targets`, the SQL below is composed only from `const` fragments in
 // this file plus bound parameters; no caller-supplied value is interpolated.
 use sqlx::AssertSqlSafe;
@@ -82,7 +87,7 @@ impl Store {
     }
 
     pub async fn get_build_host(&self, id: &str) -> anyhow::Result<Option<BuildHost>> {
-        let row = sqlx::query(BUILD_HOST_SELECT_BY_ID)
+        let row = sqlx::query(AssertSqlSafe(format!("{BUILD_HOST_SELECT} WHERE id = ?1")))
             .bind(id)
             .fetch_optional(self.pool())
             .await?;
@@ -148,69 +153,48 @@ impl Store {
 
         // An empty mask means "everything the message carries".
         let touch = |field: &str| update_mask.is_empty() || update_mask.iter().any(|m| m == field);
-        let mut transaction = self.pool().begin().await?;
 
+        // As for targets: which columns a blank value writes is per-field
+        // policy, collected here and written in one statement.
+        let mut fields = Vec::new();
         if touch("name") && !build_host.name.trim().is_empty() {
-            sqlx::query("UPDATE build_hosts SET name = ?1 WHERE id = ?2")
-                .bind(build_host.name.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(|e| friendly_build_host_error(e, build_host.name.trim()))?;
+            fields.push(Field::text("name", build_host.name.trim()));
         }
         if touch("host") && !build_host.host.trim().is_empty() {
-            sqlx::query("UPDATE build_hosts SET host = ?1 WHERE id = ?2")
-                .bind(build_host.host.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("host", build_host.host.trim()));
         }
         if touch("port") && build_host.port != 0 {
-            sqlx::query("UPDATE build_hosts SET port = ?1 WHERE id = ?2")
-                .bind(build_host.port)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::int("port", build_host.port as i64));
         }
         if touch("user") && !build_host.user.trim().is_empty() {
-            sqlx::query("UPDATE build_hosts SET user = ?1 WHERE id = ?2")
-                .bind(build_host.user.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("user", build_host.user.trim()));
         }
         if touch("ssh_key_id") {
-            sqlx::query("UPDATE build_hosts SET ssh_key_id = ?1 WHERE id = ?2")
-                .bind(build_host.ssh_key_id.trim())
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::text("ssh_key_id", build_host.ssh_key_id.trim()));
         }
         if touch("workspace_root") {
             // Blanking the field resets to the default rather than leaving a
             // build host with nowhere to work.
-            sqlx::query("UPDATE build_hosts SET workspace_root = ?1 WHERE id = ?2")
-                .bind(normalize_workspace_root(&build_host.workspace_root))
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::owned(
+                "workspace_root",
+                normalize_workspace_root(&build_host.workspace_root),
+            ));
         }
         if touch("latency_critical") {
-            sqlx::query("UPDATE build_hosts SET latency_critical = ?1 WHERE id = ?2")
-                .bind(build_host.latency_critical as i64)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::int(
+                "latency_critical",
+                build_host.latency_critical as i64,
+            ));
         }
         if touch("labels") {
-            sqlx::query("UPDATE build_hosts SET labels = ?1 WHERE id = ?2")
-                .bind(encode_map(&build_host.labels))
-                .bind(id)
-                .execute(&mut *transaction)
-                .await?;
+            fields.push(Field::owned("labels", encode_map(&build_host.labels)));
         }
 
-        transaction.commit().await?;
+        // `name` is the only unique column, so a violation can only be that.
+        self.update_masked("build_hosts", id, &fields)
+            .await
+            .map_err(|e| friendly_build_host_error(e, build_host.name.trim()))?;
+
         self.get_build_host(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("build host {id} vanished during update"))
@@ -250,122 +234,9 @@ impl Store {
     ) -> anyhow::Result<()> {
         // As for targets, `last_seen_at` means "last confirmed reachable" and
         // is only advanced on success.
-        let last_seen = if status == build_host::Status::Reachable {
-            Some(now_string())
-        } else {
-            None
-        };
-
-        match last_seen {
-            Some(seen) => {
-                sqlx::query("UPDATE build_hosts SET status = ?1, last_seen_at = ?2 WHERE id = ?3")
-                    .bind(status.as_str())
-                    .bind(seen)
-                    .bind(id)
-                    .execute(self.pool())
-                    .await?;
-            }
-            None => {
-                sqlx::query("UPDATE build_hosts SET status = ?1 WHERE id = ?2")
-                    .bind(status.as_str())
-                    .bind(id)
-                    .execute(self.pool())
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Pins a build host's key, clearing any pending change.
-    pub async fn pin_build_host_key(
-        &self,
-        id: &str,
-        key: &str,
-        fingerprint: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE build_hosts
-                SET host_key = ?1,
-                    host_key_fingerprint = ?2,
-                    host_key_pinned_at = ?3,
-                    pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?4",
-        )
-        .bind(key)
-        .bind(fingerprint)
-        .bind(now_string())
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Records a key that did not match the pinned one, for review.
-    ///
-    /// The first sighting's timestamp survives a repeat, so "failing since
-    /// 09:14" is not reset by a probe loop.
-    pub async fn record_pending_build_host_key(
-        &self,
-        id: &str,
-        key: &str,
-        fingerprint: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE build_hosts
-                SET pending_host_key = ?1,
-                    pending_host_key_fingerprint = ?2,
-                    pending_host_key_seen_at =
-                        CASE WHEN pending_host_key = ?1 AND pending_host_key_seen_at IS NOT NULL
-                             THEN pending_host_key_seen_at
-                             ELSE ?3
-                        END
-              WHERE id = ?4",
-        )
-        .bind(key)
-        .bind(fingerprint)
-        .bind(now_string())
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Drops a pending change without accepting it.
-    pub async fn clear_pending_build_host_key(&self, id: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE build_hosts
-                SET pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?1 AND pending_host_key <> ''",
-        )
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    /// Forgets a build host's pinned key, reopening the first-use window.
-    pub async fn forget_build_host_key(&self, id: &str) -> anyhow::Result<()> {
-        let result = sqlx::query(
-            "UPDATE build_hosts
-                SET host_key = '',
-                    host_key_fingerprint = '',
-                    host_key_pinned_at = NULL,
-                    pending_host_key = '',
-                    pending_host_key_fingerprint = '',
-                    pending_host_key_seen_at = NULL
-              WHERE id = ?1",
-        )
-        .bind(id)
-        .execute(self.pool())
-        .await?;
-        if result.rows_affected() == 0 {
-            bail!("no such build host: {id}");
-        }
-        Ok(())
+        let last_seen = (status == build_host::Status::Reachable).then(now_string);
+        self.set_host_status(SshHost::BuildHost, id, status.as_str(), last_seen)
+            .await
     }
 
     // ---- instance default ----
@@ -409,22 +280,13 @@ impl Store {
     }
 }
 
-/// Every column [`row_to_build_host`] reads, asserted against both selects.
-#[cfg(test)]
-const BUILD_HOST_COLUMNS: &str = "id, name, host, port, user, ssh_key_id, workspace_root, \
-     latency_critical, labels, status, last_seen_at, created_at, host_key, \
-     host_key_fingerprint, host_key_pinned_at, pending_host_key, \
-     pending_host_key_fingerprint, pending_host_key_seen_at";
-
+/// Every column [`row_to_build_host`] reads. The one place the list is written:
+/// each query below appends its own clauses, so a new column cannot be added to
+/// the list read and forgotten in the read by id.
 const BUILD_HOST_SELECT: &str = "SELECT id, name, host, port, user, ssh_key_id, workspace_root, \
      latency_critical, labels, status, last_seen_at, created_at, host_key, \
      host_key_fingerprint, host_key_pinned_at, pending_host_key, \
      pending_host_key_fingerprint, pending_host_key_seen_at FROM build_hosts";
-
-const BUILD_HOST_SELECT_BY_ID: &str = "SELECT id, name, host, port, user, ssh_key_id, \
-     workspace_root, latency_critical, labels, status, last_seen_at, created_at, \
-     host_key, host_key_fingerprint, host_key_pinned_at, pending_host_key, \
-     pending_host_key_fingerprint, pending_host_key_seen_at FROM build_hosts WHERE id = ?1";
 
 fn row_to_build_host(row: &SqliteRow) -> BuildHost {
     BuildHost {
@@ -446,33 +308,6 @@ fn row_to_build_host(row: &SqliteRow) -> BuildHost {
         )),
         host_key: row_to_host_key(row),
     }
-}
-
-/// The host-key half of a build-host row.
-///
-/// `None` when nothing is pinned and nothing is pending, so a host that has
-/// never connected reads as having no host key rather than an empty one.
-fn row_to_host_key(row: &SqliteRow) -> Option<HostKey> {
-    let key: String = row.get("host_key");
-    let pending: String = row.get("pending_host_key");
-    if key.is_empty() && pending.is_empty() {
-        return None;
-    }
-
-    Some(HostKey {
-        key,
-        fingerprint: row.get("host_key_fingerprint"),
-        pinned_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
-            row.get::<Option<String>, _>("host_key_pinned_at")
-                .as_deref(),
-        )),
-        pending_key: pending,
-        pending_fingerprint: row.get("pending_host_key_fingerprint"),
-        pending_seen_at: nudo_proto::to_timestamp_opt(from_db_time_opt(
-            row.get::<Option<String>, _>("pending_host_key_seen_at")
-                .as_deref(),
-        )),
-    })
 }
 
 /// Cleans a workspace root, falling back to the default.
@@ -808,7 +643,12 @@ mod tests {
             .expect("create");
 
         store
-            .pin_build_host_key(&created.id, "ssh-ed25519 AAAA", "SHA256:abc")
+            .pin_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 AAAA",
+                "SHA256:abc",
+            )
             .await
             .expect("pin");
         let pinned = store
@@ -823,7 +663,7 @@ mod tests {
         assert!(pinned.pending_key.is_empty());
 
         store
-            .forget_build_host_key(&created.id)
+            .forget_host_key(SshHost::BuildHost, &created.id)
             .await
             .expect("forget");
         assert!(
@@ -846,12 +686,22 @@ mod tests {
             .await
             .expect("create");
         store
-            .pin_build_host_key(&created.id, "ssh-ed25519 PINNED", "SHA256:pinned")
+            .pin_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 PINNED",
+                "SHA256:pinned",
+            )
             .await
             .expect("pin");
 
         store
-            .record_pending_build_host_key(&created.id, "ssh-ed25519 NEW", "SHA256:new")
+            .record_pending_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 NEW",
+                "SHA256:new",
+            )
             .await
             .expect("record");
 
@@ -869,7 +719,7 @@ mod tests {
 
         // A host presenting the pinned key again clears the pending change.
         store
-            .clear_pending_build_host_key(&created.id)
+            .clear_pending_host_key(SshHost::BuildHost, &created.id)
             .await
             .expect("clear");
         let cleared = store
@@ -894,7 +744,12 @@ mod tests {
             .expect("create");
 
         store
-            .record_pending_build_host_key(&created.id, "ssh-ed25519 NEW", "SHA256:new")
+            .record_pending_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 NEW",
+                "SHA256:new",
+            )
             .await
             .expect("first");
         let first = store
@@ -907,7 +762,12 @@ mod tests {
             .pending_seen_at;
 
         store
-            .record_pending_build_host_key(&created.id, "ssh-ed25519 NEW", "SHA256:new")
+            .record_pending_host_key(
+                SshHost::BuildHost,
+                &created.id,
+                "ssh-ed25519 NEW",
+                "SHA256:new",
+            )
             .await
             .expect("again");
         let second = store
@@ -1012,21 +872,5 @@ mod tests {
             other => panic!("expected a git source, got {other:?}"),
         };
         assert_eq!(git.build_host_id, "bh_gpu");
-    }
-
-    #[test]
-    fn the_select_lists_every_column_the_row_mapper_reads() {
-        // A column added to one and not the other is a runtime failure in a
-        // query rather than a compile error, so it is asserted here.
-        for column in BUILD_HOST_COLUMNS.split(',').map(str::trim) {
-            assert!(
-                BUILD_HOST_SELECT.contains(column),
-                "{column} is missing from the list select"
-            );
-            assert!(
-                BUILD_HOST_SELECT_BY_ID.contains(column),
-                "{column} is missing from the by-id select"
-            );
-        }
     }
 }

@@ -188,7 +188,7 @@ impl Engine {
             "building on a remote build host"
         );
 
-        let session = self.connect_build_host(build_host).await?;
+        let session = self.connect(build_host).await?;
         let workspace = crate::build_host::workspace_for(build_host, deployment_id);
 
         // Created before the build so a failure to create one is reported as
