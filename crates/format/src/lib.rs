@@ -260,6 +260,22 @@ mod tests {
     }
 
     #[test]
+    fn journald_priorities_are_labelled() {
+        assert_eq!(journal_priority_label("0"), "emerg");
+        assert_eq!(journal_priority_label("1"), "alert");
+        assert_eq!(journal_priority_label("2"), "crit");
+        assert_eq!(journal_priority_label("3"), "err");
+        assert_eq!(journal_priority_label("4"), "warning");
+        assert_eq!(journal_priority_label("5"), "notice");
+        assert_eq!(journal_priority_label("6"), "info");
+        assert_eq!(journal_priority_label("7"), "debug");
+        // An unexpected or missing priority reads as info rather than crashing:
+        // a log line nobody can classify is still a log line worth showing.
+        assert_eq!(journal_priority_label(""), "info");
+        assert_eq!(journal_priority_label("99"), "info");
+    }
+
+    #[test]
     fn artifact_views_cover_every_source_kind() {
         let with = |kind: artifact_source::Kind| Service {
             artifact: Some(nudo_proto::ArtifactSource { kind: Some(kind) }),
