@@ -10,13 +10,17 @@ services:
     # This compose file is the installation path: use the image built by the
     # release workflow instead of recompiling the Rust workspace on the host.
     pull_policy: always
-    # No container_name on purpose: a reverse proxy that names its own
-    # containers — Coolify does, appending a per-deployment suffix — routes to
-    # the name Compose generates. Pinning it here makes that backend
-    # unresolvable and the proxy answers 502.
+    # No container_name: nothing here refers to the container by name, and a
+    # platform that manages its own naming overrides the key regardless.
     restart: unless-stopped
     ports:
       - "3000:3000"
+    # Redundant next to the published port for a plain `docker compose up`, but
+    # a platform that puts its own reverse proxy in front reads `expose` to
+    # learn which port to send traffic to — Coolify does, and without it the
+    # proxy has a route with no backend port and answers 502.
+    expose:
+      - "3000"
     environment:
       # The key for the secret store. Generate once with
       # `openssl rand -hex 32` and keep it: losing it makes every stored
