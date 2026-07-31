@@ -203,12 +203,11 @@ pub async fn tail_into_buffer(
     result
 }
 
-/// Maps a journald numeric priority to a level name for display.
-pub fn priority_label(priority: &str) -> &'static str {
-    nudo_format::journal_priority_label(priority)
-}
-
-/// Whether a priority is at or above warning, for the log viewer's level filter.
+/// Whether a priority is at or above warning.
+///
+/// Nothing calls this yet: the dashboard's log viewer colours a line by
+/// severity with its own three-way mapping, and this is the two-way question
+/// a level filter would ask.
 pub fn is_problem(priority: &str) -> bool {
     matches!(priority.trim(), "0" | "1" | "2" | "3" | "4")
 }
@@ -372,18 +371,6 @@ mod tests {
         let event =
             parse_line(r#"{"MESSAGE":"x","__REALTIME_TIMESTAMP":"not-a-number"}"#).expect("parse");
         assert!(event.at <= chrono::Utc::now());
-    }
-
-    #[test]
-    fn journald_priorities_are_labelled() {
-        assert_eq!(priority_label("0"), "emerg");
-        assert_eq!(priority_label("3"), "err");
-        assert_eq!(priority_label("4"), "warning");
-        assert_eq!(priority_label("6"), "info");
-        assert_eq!(priority_label("7"), "debug");
-        // An unexpected or missing priority reads as info rather than crashing.
-        assert_eq!(priority_label(""), "info");
-        assert_eq!(priority_label("99"), "info");
     }
 
     #[test]

@@ -17,7 +17,7 @@ use anyhow::anyhow;
 
 use crate::crypto::SecretKey;
 use crate::events::Bus;
-use crate::store::{DeployTrigger, NewDeployment, Store};
+use crate::store::{DeployTrigger, NewDeployment, SshHost, Store};
 
 mod artifact;
 mod execution;
@@ -31,6 +31,63 @@ pub struct Engine {
     pub bus: Bus,
     pub secret_key: SecretKey,
     pub config: Arc<crate::Config>,
+}
+
+/// The parts of a host the SSH layer needs, borrowed from either kind of row.
+///
+/// A target and a build host are different tables and different messages, and
+/// they stay that way — a build host is never deployed to. But *connecting* to
+/// one is the same operation on the same five fields, host-key verification
+/// included: a build host is handed repository credentials, so its identity
+/// matters at least as much as a deploy target's. Borrowing both into one shape
+/// is what lets [`Engine::connect`] be written once instead of once per table,
+/// which is what keeps trust-on-first-use from drifting between them.
+#[derive(Debug, Clone, Copy)]
+pub struct SshHostRef<'a> {
+    pub kind: SshHost,
+    pub id: &'a str,
+    pub name: &'a str,
+    pub host: &'a str,
+    pub port: u32,
+    pub user: &'a str,
+    pub ssh_key_id: &'a str,
+    /// The pinned key, or empty when nothing is pinned yet.
+    pub pinned_key: &'a str,
+}
+
+impl<'a> From<&'a nudo_proto::Target> for SshHostRef<'a> {
+    fn from(target: &'a nudo_proto::Target) -> Self {
+        Self {
+            kind: SshHost::Target,
+            id: &target.id,
+            name: &target.name,
+            host: &target.host,
+            port: target.port,
+            user: &target.user,
+            ssh_key_id: &target.ssh_key_id,
+            pinned_key: pinned_key(&target.host_key),
+        }
+    }
+}
+
+impl<'a> From<&'a nudo_proto::BuildHost> for SshHostRef<'a> {
+    fn from(build_host: &'a nudo_proto::BuildHost) -> Self {
+        Self {
+            kind: SshHost::BuildHost,
+            id: &build_host.id,
+            name: &build_host.name,
+            host: &build_host.host,
+            port: build_host.port,
+            user: &build_host.user,
+            ssh_key_id: &build_host.ssh_key_id,
+            pinned_key: pinned_key(&build_host.host_key),
+        }
+    }
+}
+
+/// The pinned key out of a host-key record, or empty when nothing is pinned.
+fn pinned_key(host_key: &Option<nudo_proto::HostKey>) -> &str {
+    host_key.as_ref().map_or("", |key| key.key.as_str())
 }
 
 /// What a deploy should ship.

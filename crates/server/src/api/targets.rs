@@ -5,7 +5,7 @@ use nudo_proto::*;
 use tonic::{Request, Response, Status};
 
 use super::{Context, internal};
-use crate::store::{TargetInput, page_offset, page_size};
+use crate::store::{SshHost, TargetInput, page_offset, page_size};
 
 pub struct TargetsService {
     context: Context,
@@ -223,7 +223,7 @@ impl Targets for TargetsService {
         let connection = self
             .context
             .engine
-            .connect_ssh(&target.id, &ssh_target)
+            .connect_prepared(&target, &ssh_target)
             .await;
 
         // Probe the conventional release root; a service's own root is checked
@@ -310,6 +310,7 @@ impl Targets for TargetsService {
         self.context
             .store
             .pin_host_key(
+                SshHost::Target,
                 &request.id,
                 &host_key.pending_key,
                 &host_key.pending_fingerprint,
@@ -366,7 +367,7 @@ impl Targets for TargetsService {
 
         self.context
             .store
-            .forget_host_key(&request.id)
+            .forget_host_key(SshHost::Target, &request.id)
             .await
             .map_err(super::invalid)?;
 
@@ -636,7 +637,7 @@ impl TargetsService {
 
         self.context
             .engine
-            .connect_ssh(&target.id, &ssh_target)
+            .connect_prepared(target, &ssh_target)
             .await
             .map_err(|error| Status::failed_precondition(format!("{error:#}")))
     }
@@ -1144,13 +1145,13 @@ mod tests {
         service
             .context
             .store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
         service
             .context
             .store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
         service
@@ -1257,7 +1258,7 @@ mod tests {
         service
             .context
             .store
-            .pin_host_key(&created.id, KEY_A, "SHA256:aaa")
+            .pin_host_key(SshHost::Target, &created.id, KEY_A, "SHA256:aaa")
             .await
             .expect("pin");
 
@@ -1293,7 +1294,7 @@ mod tests {
         service
             .context
             .store
-            .record_pending_host_key(&created.id, KEY_B, "SHA256:bbb")
+            .record_pending_host_key(SshHost::Target, &created.id, KEY_B, "SHA256:bbb")
             .await
             .expect("record");
 

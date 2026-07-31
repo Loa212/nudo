@@ -153,12 +153,6 @@ pub fn unknown_status(service_id: &str) -> UnitStatus {
     }
 }
 
-/// Human-readable badge text for a unit state, shared by the dashboard and the
-/// CLI so the two never disagree about what "degraded" means.
-pub fn status_label(status: &UnitStatus) -> &'static str {
-    nudo_format::unit_state_label(status)
-}
-
 /// Whether a state should read as healthy in the UI.
 pub fn is_healthy(status: &UnitStatus) -> bool {
     status.active_state == "active" && status.sub_state != "dead"
@@ -284,26 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn states_are_labelled_for_display() {
-        let label = |active: &str, sub: &str| {
-            status_label(&UnitStatus {
-                active_state: active.to_string(),
-                sub_state: sub.to_string(),
-                ..Default::default()
-            })
-        };
-
-        assert_eq!(label("active", "running"), "running");
-        assert_eq!(label("active", "exited"), "exited cleanly");
-        assert_eq!(label("activating", "start-pre"), "starting");
-        assert_eq!(label("deactivating", "stop"), "stopping");
-        assert_eq!(label("failed", "failed"), "failed");
-        assert_eq!(label("inactive", "dead"), "stopped");
-        assert_eq!(label("unknown", ""), "unreachable");
-        assert_eq!(label("something-new", ""), "unknown");
-    }
-
-    #[test]
     fn only_an_active_unit_reads_as_healthy() {
         let healthy = |active: &str, sub: &str| {
             is_healthy(&UnitStatus {
@@ -325,7 +299,7 @@ mod tests {
         // The dashboard must be able to show the row rather than dropping it.
         let status = unknown_status("svc_9");
         assert_eq!(status.service_id, "svc_9");
-        assert_eq!(status_label(&status), "unreachable");
+        assert_eq!(nudo_format::unit_state_label(&status), "unreachable");
         assert!(!is_healthy(&status));
     }
 

@@ -4,7 +4,7 @@ use nudo_proto::Service;
 use crate::ssh::{HostKeyChanged, HostKeyOutcome, SshSession, SshTarget, quote};
 use crate::systemd::{self, BINARY_NAME, ReleasePaths};
 
-use super::Engine;
+use super::{Engine, SshHostRef};
 
 impl Engine {
     /// Points the symlink back at the previous release and restarts.
@@ -150,74 +150,77 @@ impl Engine {
     ///
     /// The key never leaves the server, and a client cannot influence any of
     /// these fields.
-    pub async fn ssh_target_for(&self, target: &nudo_proto::Target) -> anyhow::Result<SshTarget> {
-        if target.ssh_key_id.trim().is_empty() {
+    pub async fn ssh_target_for<'a>(
+        &self,
+        host: impl Into<SshHostRef<'a>>,
+    ) -> anyhow::Result<SshTarget> {
+        let host = host.into();
+        let kind = host.kind.subject();
+
+        if host.ssh_key_id.trim().is_empty() {
             bail!(
-                "target {} has no SSH key: create a secret holding the private key \
-                 and set it as the target's ssh_key_id",
-                target.name
+                "{kind} {} has no SSH key: create a secret holding the private key \
+                 and set it as the {kind}'s ssh_key_id",
+                host.name
             );
         }
 
         let private_key = self
             .store
-            .reveal_secret(&self.secret_key, target.ssh_key_id.trim())
+            .reveal_secret(&self.secret_key, host.ssh_key_id.trim())
             .await?
             .ok_or_else(|| {
                 anyhow!(
-                    "target {}'s SSH key (secret {}) does not exist",
-                    target.name,
-                    target.ssh_key_id
+                    "{kind} {}'s SSH key (secret {}) does not exist",
+                    host.name,
+                    host.ssh_key_id
                 )
             })?;
 
         Ok(SshTarget {
-            host: target.host.clone(),
-            port: if target.port == 0 {
-                22
-            } else {
-                target.port as u16
-            },
-            user: if target.user.trim().is_empty() {
+            host: host.host.to_string(),
+            port: if host.port == 0 { 22 } else { host.port as u16 },
+            user: if host.user.trim().is_empty() {
                 "root".to_string()
             } else {
-                target.user.clone()
+                host.user.to_string()
             },
             private_key,
             passphrase: None,
-            host_key: target
-                .host_key
-                .as_ref()
-                .map(|k| k.key.clone())
-                .unwrap_or_default(),
+            host_key: host.pinned_key.to_string(),
         })
     }
 
-    /// Connects to a target and persists what the connection learned about its
+    /// Connects to a host and persists what the connection learned about its
     /// host key.
     ///
-    /// Every path that reaches a target goes through here rather than calling
-    /// [`SshSession::connect`] directly, so first-use pinning happens wherever
-    /// the first connection happens — a deploy, a probe, a terminal — and not
-    /// only where someone remembered to record it.
-    pub async fn connect(&self, target: &nudo_proto::Target) -> anyhow::Result<SshSession> {
-        let ssh_target = self.ssh_target_for(target).await?;
-        self.connect_ssh(&target.id, &ssh_target).await
+    /// Every path that reaches a target or a build host goes through here
+    /// rather than calling [`SshSession::connect`] directly, so first-use
+    /// pinning happens wherever the first connection happens — a deploy, a
+    /// probe, a terminal, a build — and not only where someone remembered to
+    /// record it.
+    pub async fn connect<'a>(&self, host: impl Into<SshHostRef<'a>>) -> anyhow::Result<SshSession> {
+        let host = host.into();
+        let ssh_target = self.ssh_target_for(host).await?;
+        self.connect_prepared(host, &ssh_target).await
     }
 
     /// Connects to already-assembled SSH details, recording the host-key
-    /// outcome against `target_id`.
+    /// outcome against `host`.
     ///
     /// Split from [`Engine::connect`] for the callers that have an [`SshTarget`]
-    /// in hand already — the preflight check builds one to probe with.
-    pub async fn connect_ssh(
+    /// in hand already — the preflight check builds one to probe with, so that
+    /// a missing key is reported as a precondition failure rather than as an
+    /// unreachable host.
+    pub async fn connect_prepared<'a>(
         &self,
-        target_id: &str,
+        host: impl Into<SshHostRef<'a>>,
         ssh_target: &SshTarget,
     ) -> anyhow::Result<SshSession> {
+        let host = host.into();
         match SshSession::connect(ssh_target).await {
             Ok(session) => {
-                self.record_host_key(target_id, session.host_key()).await;
+                self.record_host_key(host, session.host_key()).await;
                 Ok(session)
             }
             Err(error) => {
@@ -225,17 +228,23 @@ impl Engine {
                 // it can be accepted from the dashboard or the CLI.
                 if let Some(changed) = error.downcast_ref::<HostKeyChanged>() {
                     tracing::warn!(
-                        target = %target_id,
+                        host = %host.id,
+                        kind = %host.kind.subject(),
                         expected = %changed.expected_fingerprint,
                         presented = %changed.fingerprint,
                         "refused a connection: the ssh host key has changed"
                     );
                     if let Err(error) = self
                         .store
-                        .record_pending_host_key(target_id, &changed.key, &changed.fingerprint)
+                        .record_pending_host_key(
+                            host.kind,
+                            host.id,
+                            &changed.key,
+                            &changed.fingerprint,
+                        )
                         .await
                     {
-                        tracing::warn!(%error, target = %target_id, "recording the changed host key failed");
+                        tracing::warn!(%error, host = %host.id, "recording the changed host key failed");
                     }
                 }
                 Err(error)
@@ -248,149 +257,31 @@ impl Engine {
     /// Failures are logged rather than propagated: the connection has already
     /// been made and verified, and failing the operation because the bookkeeping
     /// write failed would be worse than re-pinning on the next connection.
-    async fn record_host_key(&self, target_id: &str, outcome: &HostKeyOutcome) {
+    async fn record_host_key(&self, host: SshHostRef<'_>, outcome: &HostKeyOutcome) {
         let result = match outcome {
             HostKeyOutcome::Pinned { key, fingerprint } => {
                 tracing::info!(
-                    target = %target_id,
+                    host = %host.id,
+                    kind = %host.kind.subject(),
                     %fingerprint,
-                    "pinned this target's ssh host key on first use"
+                    "pinned this host's ssh host key on first use"
                 );
-                self.store.pin_host_key(target_id, key, fingerprint).await
+                self.store
+                    .pin_host_key(host.kind, host.id, key, fingerprint)
+                    .await
             }
             // A host presenting the key it should clears any change that was
             // waiting to be reviewed — there is nothing left to review.
-            HostKeyOutcome::Matched { .. } => self.store.clear_pending_host_key(target_id).await,
+            HostKeyOutcome::Matched { .. } => {
+                self.store.clear_pending_host_key(host.kind, host.id).await
+            }
             // Unreachable: a change fails the connect, so there is no session to
-            // ask. Handled on the error path in `connect_ssh`.
+            // ask. Handled on the error path in `connect_prepared`.
             HostKeyOutcome::Changed { .. } => Ok(()),
         };
 
         if let Err(error) = result {
-            tracing::warn!(%error, target = %target_id, "recording the host key failed");
-        }
-    }
-
-    /// Assembles the SSH connection details for a build host.
-    ///
-    /// The same shape as [`Engine::ssh_target_for`], against the build-host
-    /// table. A build host is handed repository credentials, so its identity is
-    /// verified on exactly the same terms as a deploy target's.
-    pub async fn ssh_target_for_build_host(
-        &self,
-        build_host: &nudo_proto::BuildHost,
-    ) -> anyhow::Result<SshTarget> {
-        if build_host.ssh_key_id.trim().is_empty() {
-            bail!(
-                "build host {} has no SSH key: create a secret holding the private key \
-                 and set it as the build host's ssh_key_id",
-                build_host.name
-            );
-        }
-
-        let private_key = self
-            .store
-            .reveal_secret(&self.secret_key, build_host.ssh_key_id.trim())
-            .await?
-            .ok_or_else(|| {
-                anyhow!(
-                    "build host {}'s SSH key (secret {}) does not exist",
-                    build_host.name,
-                    build_host.ssh_key_id
-                )
-            })?;
-
-        Ok(SshTarget {
-            host: build_host.host.clone(),
-            port: if build_host.port == 0 {
-                22
-            } else {
-                build_host.port as u16
-            },
-            user: if build_host.user.trim().is_empty() {
-                "root".to_string()
-            } else {
-                build_host.user.clone()
-            },
-            private_key,
-            passphrase: None,
-            host_key: build_host
-                .host_key
-                .as_ref()
-                .map(|k| k.key.clone())
-                .unwrap_or_default(),
-        })
-    }
-
-    /// Connects to a build host, persisting what the connection learned about
-    /// its host key.
-    ///
-    /// The build-host counterpart of [`Engine::connect`]: every path that
-    /// reaches a build host goes through here, so first-use pinning happens
-    /// wherever the first connection happens rather than only where someone
-    /// remembered to record it.
-    pub async fn connect_build_host(
-        &self,
-        build_host: &nudo_proto::BuildHost,
-    ) -> anyhow::Result<SshSession> {
-        let ssh_target = self.ssh_target_for_build_host(build_host).await?;
-
-        match SshSession::connect(&ssh_target).await {
-            Ok(session) => {
-                let result = match session.host_key() {
-                    HostKeyOutcome::Pinned { key, fingerprint } => {
-                        tracing::info!(
-                            build_host = %build_host.id,
-                            %fingerprint,
-                            "pinned this build host's ssh host key on first use"
-                        );
-                        self.store
-                            .pin_build_host_key(&build_host.id, key, fingerprint)
-                            .await
-                    }
-                    HostKeyOutcome::Matched { .. } => {
-                        self.store
-                            .clear_pending_build_host_key(&build_host.id)
-                            .await
-                    }
-                    // Unreachable: a change fails the connect.
-                    HostKeyOutcome::Changed { .. } => Ok(()),
-                };
-                if let Err(error) = result {
-                    tracing::warn!(
-                        %error,
-                        build_host = %build_host.id,
-                        "recording the build host's host key failed"
-                    );
-                }
-                Ok(session)
-            }
-            Err(error) => {
-                if let Some(changed) = error.downcast_ref::<HostKeyChanged>() {
-                    tracing::warn!(
-                        build_host = %build_host.id,
-                        expected = %changed.expected_fingerprint,
-                        presented = %changed.fingerprint,
-                        "refused a connection: the build host's ssh host key has changed"
-                    );
-                    if let Err(error) = self
-                        .store
-                        .record_pending_build_host_key(
-                            &build_host.id,
-                            &changed.key,
-                            &changed.fingerprint,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            %error,
-                            build_host = %build_host.id,
-                            "recording the changed host key failed"
-                        );
-                    }
-                }
-                Err(error)
-            }
+            tracing::warn!(%error, host = %host.id, "recording the host key failed");
         }
     }
 }

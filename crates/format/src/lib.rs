@@ -242,8 +242,37 @@ mod tests {
             unit_state_label(&status("active", "exited")),
             "exited cleanly"
         );
+        assert_eq!(unit_state_label(&status("active", "reload")), "active");
+        assert_eq!(
+            unit_state_label(&status("activating", "start-pre")),
+            "starting"
+        );
+        assert_eq!(
+            unit_state_label(&status("deactivating", "stop")),
+            "stopping"
+        );
         assert_eq!(unit_state_label(&status("failed", "failed")), "failed");
+        assert_eq!(unit_state_label(&status("inactive", "dead")), "stopped");
         assert_eq!(unit_state_label(&status("unknown", "")), "unreachable");
+        // A state systemd grows later must read as unknown rather than as one
+        // of the words above.
+        assert_eq!(unit_state_label(&status("something-new", "")), "unknown");
+    }
+
+    #[test]
+    fn journald_priorities_are_labelled() {
+        assert_eq!(journal_priority_label("0"), "emerg");
+        assert_eq!(journal_priority_label("1"), "alert");
+        assert_eq!(journal_priority_label("2"), "crit");
+        assert_eq!(journal_priority_label("3"), "err");
+        assert_eq!(journal_priority_label("4"), "warning");
+        assert_eq!(journal_priority_label("5"), "notice");
+        assert_eq!(journal_priority_label("6"), "info");
+        assert_eq!(journal_priority_label("7"), "debug");
+        // An unexpected or missing priority reads as info rather than crashing:
+        // a log line nobody can classify is still a log line worth showing.
+        assert_eq!(journal_priority_label(""), "info");
+        assert_eq!(journal_priority_label("99"), "info");
     }
 
     #[test]

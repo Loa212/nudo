@@ -19,8 +19,12 @@ pub async fn deployments_list(
     _user: CurrentUser,
 ) -> Response {
     let service_filter = query.service.unwrap_or_default();
-    let deployments = state.api.list_deployments(&service_filter, 50).await;
-    let services = state.api.list_services("").await;
+    // Independent reads: the list is rendered against the service names, but
+    // neither read needs the other to be issued.
+    let (deployments, services) = tokio::join!(
+        state.api.list_deployments(&service_filter, 50),
+        state.api.list_services(""),
+    );
     page(
         "Deployments",
         Nav::Deployments,

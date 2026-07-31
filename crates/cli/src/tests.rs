@@ -106,8 +106,14 @@ fn unit_states_get_a_badge_and_a_label() {
     assert_eq!(format_status_badge(&status("inactive", "dead")), "[--]");
     assert_eq!(format_status_badge(&status("unknown", "")), "[??]");
 
-    assert_eq!(units_label(&status("active", "running")), "running");
-    assert_eq!(units_label(&status("unknown", "")), "unreachable");
+    assert_eq!(
+        nudo_format::unit_state_label(&status("active", "running")),
+        "running"
+    );
+    assert_eq!(
+        nudo_format::unit_state_label(&status("unknown", "")),
+        "unreachable"
+    );
 }
 
 #[test]

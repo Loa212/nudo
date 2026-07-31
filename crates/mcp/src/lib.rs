@@ -235,7 +235,7 @@ impl NudoTools {
             .map(|service| {
                 let target = targets.get(&service.target_id);
                 ServiceSummary {
-                    source: describe_artifact(&service),
+                    source: nudo_format::artifact_description(&service),
                     target_name: target
                         .map(|t| t.name.clone())
                         .unwrap_or_else(|| "(unknown)".to_string()),
@@ -276,7 +276,7 @@ impl NudoTools {
             .into_inner();
 
         Ok(Json(UnitStatusSummary {
-            state: describe_unit_state(&status).to_string(),
+            state: nudo_format::unit_state_label(&status).to_string(),
             healthy: status.active_state == "active" && status.sub_state != "dead",
             enabled_at_boot: status.enabled,
             running_since: status
@@ -445,7 +445,7 @@ impl NudoTools {
                         .and_then(nudo_proto::from_timestamp)
                         .map(|t| t.to_rfc3339())
                         .unwrap_or_default(),
-                    level: describe_priority(&line.priority).to_string(),
+                    level: nudo_format::journal_priority_label(&line.priority).to_string(),
                     message: line.message,
                 }),
                 _ => break,

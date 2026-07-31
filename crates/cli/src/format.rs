@@ -250,7 +250,7 @@ pub fn unit_status_line(status: &UnitStatus) -> String {
     let mut line = format!(
         "{}  {}",
         crate::format_status_badge(status),
-        crate::units_label(status)
+        nudo_format::unit_state_label(status)
     );
 
     if status.pid > 0 {

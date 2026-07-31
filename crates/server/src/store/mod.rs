@@ -10,6 +10,8 @@ mod audit;
 mod auth;
 mod build_hosts;
 mod deployments;
+mod field_mask;
+mod host_keys;
 mod idempotency;
 mod key_verifier;
 mod secrets;
@@ -23,6 +25,7 @@ pub use audit::*;
 pub use auth::*;
 pub use build_hosts::*;
 pub use deployments::*;
+pub use host_keys::SshHost;
 // `secrets` and `services` only add `impl Store` methods, which are in scope
 // through `Store` itself; there are no types of their own to re-export.
 pub use sources::*;

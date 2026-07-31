@@ -28,7 +28,8 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 use nudo_proto::{
     AuditEntry, BuildHost, CheckBuildHostResponse, CheckTargetResponse, Deployment, HostKey,
     LogLine, Release, RenderIngressResponse, Route, Secret, Service, Source, Target, UnitStatus,
-    build_host, deployment, ingress, route, source, target,
+    build_host, check_build_host_response, check_target_response, deployment, ingress, route,
+    source, target,
 };
 
 // ---------------------------------------------------------------------------
@@ -477,6 +478,95 @@ fn target_badges(target: &Target) -> Markup {
     html! {
         (target_badge(target.status))
         @if target.latency_critical { (latency_critical_badge()) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Preflight checks
+// ---------------------------------------------------------------------------
+
+/// One probe in a preflight check, from whichever response carried it.
+///
+/// `CheckTargetResponse` and `CheckBuildHostResponse` each declare their own
+/// nested `Check` message, so they are two Rust types holding the same three
+/// fields. Borrowing either into one shape is what lets [`preflight_card`] be a
+/// single card rather than one per host kind — an operator reading a check
+/// result should not be able to tell which screen they are on.
+pub struct Probe<'a> {
+    pub name: &'a str,
+    pub ok: bool,
+    pub detail: &'a str,
+}
+
+impl<'a> From<&'a check_target_response::Check> for Probe<'a> {
+    fn from(check: &'a check_target_response::Check) -> Self {
+        Self {
+            name: &check.name,
+            ok: check.ok,
+            detail: &check.detail,
+        }
+    }
+}
+
+impl<'a> From<&'a check_build_host_response::Check> for Probe<'a> {
+    fn from(check: &'a check_build_host_response::Check) -> Self {
+        Self {
+            name: &check.name,
+            ok: check.ok,
+            detail: &check.detail,
+        }
+    }
+}
+
+/// Borrows a response's probes into the shape [`preflight_card`] takes.
+pub fn probes<'a, C>(checks: &'a [C]) -> Vec<Probe<'a>>
+where
+    Probe<'a>: From<&'a C>,
+{
+    checks.iter().map(Probe::from).collect()
+}
+
+/// The result of the last preflight check, one row per probe.
+///
+/// `warnings` sit below the probes and visually distinct, because a warning
+/// must not read as a failure: they do not affect whether the host is ready.
+/// A response that carries none shows none.
+pub fn preflight_card(ok: bool, probes: &[Probe<'_>], warnings: &[String]) -> Markup {
+    html! {
+        div .card {
+            div .row {
+                h2 { "Preflight checks" }
+                @if ok {
+                    (badge("all passed", BadgeKind::Ok))
+                } @else {
+                    (badge("problems found", BadgeKind::Bad))
+                }
+            }
+            @if probes.is_empty() {
+                p .card-note { "The check returned no probes." }
+            } @else {
+                dl .dl style="margin-top:12px" {
+                    @for probe in probes {
+                        dt { (probe.name) }
+                        dd {
+                            div .row {
+                                @if probe.ok {
+                                    (badge("ok", BadgeKind::Ok))
+                                } @else {
+                                    (badge("failed", BadgeKind::Bad))
+                                }
+                                @if !probe.detail.is_empty() {
+                                    span .small.muted { (probe.detail) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @for warning in warnings {
+                p .card-note style="margin-top:12px" { (warning) }
+            }
+        }
     }
 }
 

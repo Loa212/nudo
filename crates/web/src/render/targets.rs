@@ -138,7 +138,8 @@ pub fn target_detail(
             }
 
             @if let Some(checks) = checks {
-                (check_results(checks))
+                // A target check carries no warnings; a build host's does.
+                (preflight_card(checks.ok, &probes(&checks.checks), &[]))
             }
 
             (ingress_card(target, &owned, csrf))
@@ -475,43 +476,6 @@ fn host_key_change(target: &Target, host_key: &HostKey, csrf: &str) -> Markup {
                             host_key.pending_fingerprint, target.name
                         )) {
                         "Accept this key"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The result of the last preflight check, one row per probe.
-fn check_results(checks: &CheckTargetResponse) -> Markup {
-    html! {
-        div .card {
-            div .row {
-                h2 { "Preflight checks" }
-                @if checks.ok {
-                    (badge("all passed", BadgeKind::Ok))
-                } @else {
-                    (badge("problems found", BadgeKind::Bad))
-                }
-            }
-            @if checks.checks.is_empty() {
-                p .card-note { "The check returned no probes." }
-            } @else {
-                dl .dl style="margin-top:12px" {
-                    @for check in &checks.checks {
-                        dt { (check.name) }
-                        dd {
-                            div .row {
-                                @if check.ok {
-                                    (badge("ok", BadgeKind::Ok))
-                                } @else {
-                                    (badge("failed", BadgeKind::Bad))
-                                }
-                                @if !check.detail.is_empty() {
-                                    span .small.muted { (check.detail) }
-                                }
-                            }
-                        }
                     }
                 }
             }

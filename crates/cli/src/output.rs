@@ -21,15 +21,6 @@ pub fn format_status_badge(status: &UnitStatus) -> &'static str {
     }
 }
 
-/// Human-readable label for a unit's state.
-///
-/// Duplicated from the server's `units::status_label` rather than shared,
-/// because the CLI is a pure gRPC client and does not depend on the server
-/// crate.
-pub fn units_label(status: &UnitStatus) -> &'static str {
-    nudo_format::unit_state_label(status)
-}
-
 // ---------------------------------------------------------------------------
 // JSON shapes
 // ---------------------------------------------------------------------------
@@ -329,7 +320,7 @@ impl From<&UnitStatus> for JsonUnitStatus {
             service_id: status.service_id.clone(),
             active_state: status.active_state.clone(),
             sub_state: status.sub_state.clone(),
-            label: units_label(status).to_string(),
+            label: nudo_format::unit_state_label(status).to_string(),
             enabled: status.enabled,
             pid: status.pid,
             memory_bytes: status.memory_bytes,

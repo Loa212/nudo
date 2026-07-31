@@ -434,7 +434,7 @@ impl ServicesApiService {
         let session = self
             .context
             .engine
-            .connect_ssh(&target.id, &ssh_target)
+            .connect_prepared(target, &ssh_target)
             .await?;
 
         let outcome = crate::ingress::reconcile::reload(&session, target, &services).await;
