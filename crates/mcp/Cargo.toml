@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 nudo-proto.workspace = true
+nudo-client.workspace = true
 nudo-format.workspace = true
 
 tonic.workspace = true

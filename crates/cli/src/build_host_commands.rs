@@ -3,19 +3,16 @@ use super::*;
 use crate::target_commands::parse_labels;
 
 pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow::Result<()> {
-    let mut client = build_hosts_client::BuildHostsClient::new(channel(cli).await?);
+    let mut client = cli.client()?.build_hosts();
 
     match command {
         BuildHostCommand::List { selector } => {
             let response = client
-                .list(authenticated(
-                    cli,
-                    ListBuildHostsRequest {
-                        label_selector: selector.clone().unwrap_or_default(),
-                        page_size: 200,
-                        page_token: String::new(),
-                    },
-                ))
+                .list(ListBuildHostsRequest {
+                    label_selector: selector.clone().unwrap_or_default(),
+                    page_size: 200,
+                    page_token: String::new(),
+                })
                 .await?
                 .into_inner();
 
@@ -27,7 +24,7 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
 
         BuildHostCommand::Get { id } => {
             let host = client
-                .get(authenticated(cli, GetBuildHostRequest { id: id.clone() }))
+                .get(GetBuildHostRequest { id: id.clone() })
                 .await?
                 .into_inner();
 
@@ -48,20 +45,17 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
             labels,
         } => {
             let created = client
-                .create(authenticated(
-                    cli,
-                    CreateBuildHostRequest {
-                        mutation: Some(mutation(cli)),
-                        name: name.clone(),
-                        host: host.clone(),
-                        port: *port,
-                        user: user.clone(),
-                        ssh_key_id: ssh_key.clone(),
-                        workspace_root: workspace_root.clone().unwrap_or_default(),
-                        latency_critical: *latency_critical,
-                        labels: parse_labels(labels)?,
-                    },
-                ))
+                .create(CreateBuildHostRequest {
+                    mutation: Some(mutation(cli)),
+                    name: name.clone(),
+                    host: host.clone(),
+                    port: *port,
+                    user: user.clone(),
+                    ssh_key_id: ssh_key.clone(),
+                    workspace_root: workspace_root.clone().unwrap_or_default(),
+                    latency_critical: *latency_critical,
+                    labels: parse_labels(labels)?,
+                })
                 .await?
                 .into_inner();
 
@@ -73,20 +67,17 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
 
         BuildHostCommand::Remove { id } => {
             client
-                .delete(authenticated(
-                    cli,
-                    DeleteBuildHostRequest {
-                        mutation: Some(mutation(cli)),
-                        id: id.clone(),
-                    },
-                ))
+                .delete(DeleteBuildHostRequest {
+                    mutation: Some(mutation(cli)),
+                    id: id.clone(),
+                })
                 .await?;
             println!("{}removed build host {id}", dry_run_prefix(cli));
         }
 
         BuildHostCommand::Check { id } => {
             let response = client
-                .check(authenticated(cli, CheckBuildHostRequest { id: id.clone() }))
+                .check(CheckBuildHostRequest { id: id.clone() })
                 .await?
                 .into_inner();
 
@@ -125,28 +116,22 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
         BuildHostCommand::HostKey { id, accept, forget } => {
             let host = match (accept, forget) {
                 (Some(fingerprint), _) => client
-                    .accept_host_key(authenticated(
-                        cli,
-                        AcceptBuildHostKeyRequest {
-                            mutation: Some(mutation(cli)),
-                            id: id.clone(),
-                            fingerprint: fingerprint.trim().to_string(),
-                        },
-                    ))
+                    .accept_host_key(AcceptBuildHostKeyRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                        fingerprint: fingerprint.trim().to_string(),
+                    })
                     .await?
                     .into_inner(),
                 (None, true) => client
-                    .forget_host_key(authenticated(
-                        cli,
-                        ForgetBuildHostKeyRequest {
-                            mutation: Some(mutation(cli)),
-                            id: id.clone(),
-                        },
-                    ))
+                    .forget_host_key(ForgetBuildHostKeyRequest {
+                        mutation: Some(mutation(cli)),
+                        id: id.clone(),
+                    })
                     .await?
                     .into_inner(),
                 (None, false) => client
-                    .get(authenticated(cli, GetBuildHostRequest { id: id.clone() }))
+                    .get(GetBuildHostRequest { id: id.clone() })
                     .await?
                     .into_inner(),
             };
@@ -175,7 +160,7 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
             // `--show`, or no argument at all, reads rather than writes.
             if *show || (id.is_none() && !*local) {
                 let defaults = client
-                    .get_defaults(authenticated(cli, GetBuildDefaultsRequest {}))
+                    .get_defaults(GetBuildDefaultsRequest {})
                     .await?
                     .into_inner();
                 print_default(cli, &defaults.build_host_id);
@@ -189,13 +174,10 @@ pub(super) async fn build_hosts(cli: &Cli, command: &BuildHostCommand) -> anyhow
             };
 
             let defaults = client
-                .set_defaults(authenticated(
-                    cli,
-                    SetBuildDefaultsRequest {
-                        mutation: Some(mutation(cli)),
-                        build_host_id,
-                    },
-                ))
+                .set_defaults(SetBuildDefaultsRequest {
+                    mutation: Some(mutation(cli)),
+                    build_host_id,
+                })
                 .await?
                 .into_inner();
 

@@ -21,7 +21,6 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{ErrorData, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use tokio_stream::StreamExt;
-use tonic::transport::Channel;
 
 /// How many log lines a single `stream_logs` call will return.
 ///
@@ -36,7 +35,8 @@ const DEFAULT_COMMAND_TIMEOUT: u32 = 60;
 /// The MCP server's shared state.
 #[derive(Clone)]
 pub struct NudoTools {
-    endpoint: String,
+    /// One lazily-connected channel, shared by every tool call in the session.
+    client: nudo_client::Client,
     /// Identifies this agent session in the audit log.
     session_id: String,
     /// The label an operator sees in the audit log.
@@ -59,13 +59,19 @@ pub use presentation::*;
 
 #[tool_router]
 impl NudoTools {
-    pub fn new(endpoint: impl Into<String>, agent_label: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
+    /// Fails only on an endpoint that is not a URL, so a misconfigured server
+    /// refuses to start rather than failing identically on every tool call.
+    pub fn new(
+        endpoint: impl Into<String>,
+        agent_label: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            // No API token: the MCP server has no option to carry one yet.
+            client: nudo_client::Client::new(endpoint, None)?,
             session_id: session_id(),
             agent_label: agent_label.into(),
             tool_router: Self::tool_router(),
-        }
+        })
     }
 
     /// Lists the machines this control plane deploys to.
@@ -85,7 +91,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<ListTargetsParams>,
     ) -> Result<Json<TargetList>, ErrorData> {
-        let mut client = self.targets().await?;
+        let mut client = self.client.targets();
 
         let response = client
             .list(ListTargetsRequest {
@@ -139,7 +145,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<ListBuildHostsParams>,
     ) -> Result<Json<BuildHostList>, ErrorData> {
-        let mut client = self.build_hosts().await?;
+        let mut client = self.client.build_hosts();
 
         let response = client
             .list(ListBuildHostsRequest {
@@ -197,7 +203,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<ListServicesParams>,
     ) -> Result<Json<ServiceList>, ErrorData> {
-        let mut services_client = self.services().await?;
+        let mut services_client = self.client.services();
         let response = services_client
             .list(ListServicesRequest {
                 target_id: params.target_id.unwrap_or_default(),
@@ -211,7 +217,7 @@ impl NudoTools {
         // Resolved once so each summary can name its target and mirror the
         // latency-critical flag, saving the agent a second call.
         let targets: std::collections::HashMap<String, Target> = {
-            let mut client = self.targets().await?;
+            let mut client = self.client.targets();
             client
                 .list(ListTargetsRequest {
                     page_size: 200,
@@ -265,7 +271,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<ServiceParams>,
     ) -> Result<Json<UnitStatusSummary>, ErrorData> {
-        let mut client = self.services().await?;
+        let mut client = self.client.services();
 
         let status = client
             .get_unit_status(GetUnitStatusRequest {
@@ -307,7 +313,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<DeployParams>,
     ) -> Result<Json<DeployResult>, ErrorData> {
-        let mut client = self.deployments().await?;
+        let mut client = self.client.deployments();
 
         let response = client
             .deploy(DeployRequest {
@@ -362,7 +368,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<RollbackParams>,
     ) -> Result<Json<DeployResult>, ErrorData> {
-        let mut client = self.deployments().await?;
+        let mut client = self.client.deployments();
 
         let response = client
             .rollback(RollbackRequest {
@@ -411,7 +417,7 @@ impl NudoTools {
         Parameters(params): Parameters<StreamLogsParams>,
     ) -> Result<Json<LogsResult>, ErrorData> {
         let requested = params.lines.unwrap_or(100).min(MAX_LOG_LINES);
-        let mut client = self.logs().await?;
+        let mut client = self.client.logs();
 
         let response = client
             .stream(StreamLogsRequest {
@@ -475,7 +481,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<RunCommandParams>,
     ) -> Result<Json<CommandResult>, ErrorData> {
-        let mut client = self.logs().await?;
+        let mut client = self.client.logs();
 
         let response = client
             .run_command(RunCommandRequest {
@@ -536,7 +542,7 @@ impl NudoTools {
         &self,
         Parameters(params): Parameters<ListDeploymentsParams>,
     ) -> Result<Json<DeploymentList>, ErrorData> {
-        let mut client = self.deployments().await?;
+        let mut client = self.client.deployments();
 
         let response = client
             .list(ListDeploymentsRequest {
@@ -632,54 +638,6 @@ impl NudoTools {
             idempotency_key: String::new(),
         }
     }
-
-    async fn channel(&self) -> Result<Channel, ErrorData> {
-        Channel::from_shared(self.endpoint.clone())
-            .map_err(|error| {
-                ErrorData::internal_error(format!("bad gRPC endpoint: {error}"), None)
-            })?
-            .connect()
-            .await
-            .map_err(|error| {
-                ErrorData::internal_error(
-                    format!(
-                        "the nudo control plane at {} is not reachable: {error}",
-                        self.endpoint
-                    ),
-                    None,
-                )
-            })
-    }
-
-    async fn targets(&self) -> Result<targets_client::TargetsClient<Channel>, ErrorData> {
-        Ok(targets_client::TargetsClient::new(self.channel().await?))
-    }
-
-    async fn build_hosts(
-        &self,
-    ) -> Result<build_hosts_client::BuildHostsClient<Channel>, ErrorData> {
-        Ok(build_hosts_client::BuildHostsClient::new(
-            self.channel().await?,
-        ))
-    }
-
-    async fn services(&self) -> Result<services_api_client::ServicesApiClient<Channel>, ErrorData> {
-        Ok(services_api_client::ServicesApiClient::new(
-            self.channel().await?,
-        ))
-    }
-
-    async fn deployments(
-        &self,
-    ) -> Result<deployments_client::DeploymentsClient<Channel>, ErrorData> {
-        Ok(deployments_client::DeploymentsClient::new(
-            self.channel().await?,
-        ))
-    }
-
-    async fn logs(&self) -> Result<logs_client::LogsClient<Channel>, ErrorData> {
-        Ok(logs_client::LogsClient::new(self.channel().await?))
-    }
 }
 
 /// Turns a gRPC status into an MCP error the agent can act on.
@@ -698,6 +656,17 @@ fn status_to_error(status: tonic::Status) -> ErrorData {
         tonic::Code::FailedPrecondition => {
             ErrorData::invalid_params(status.message().to_string(), None)
         }
+        // An unreachable control plane used to be reported by the dial, which
+        // named it. Now the failure arrives here as a transport status whose
+        // message is "transport error", which tells an agent nothing — so this
+        // is where it gets named again.
+        tonic::Code::Unavailable => ErrorData::internal_error(
+            format!(
+                "the nudo control plane is not reachable: {}",
+                status.message()
+            ),
+            None,
+        ),
         _ => ErrorData::internal_error(status.message().to_string(), None),
     }
 }

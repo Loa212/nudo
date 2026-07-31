@@ -53,10 +53,7 @@ pub async fn deploy(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.deployments().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.deployments();
 
     let result = client
         .deploy(DeployRequest {
@@ -103,10 +100,7 @@ pub async fn rollback(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.deployments().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.deployments();
 
     let result = client
         .rollback(RollbackRequest {
@@ -134,26 +128,22 @@ pub async fn deployment_detail(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.deployments().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.deployments();
 
     let deployment = match client.get(GetDeploymentRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
         Err(status) => return grpc_error(status),
     };
 
-    let service = match state.api.services().await {
-        Ok(mut services) => services
-            .get(GetServiceRequest {
-                id: deployment.service_id.clone(),
-            })
-            .await
-            .map(|response| response.into_inner())
-            .unwrap_or_default(),
-        Err(_) => Service::default(),
-    };
+    let service = state
+        .api
+        .services()
+        .get(GetServiceRequest {
+            id: deployment.service_id.clone(),
+        })
+        .await
+        .map(|response| response.into_inner())
+        .unwrap_or_default();
 
     let status =
         deployment::Status::try_from(deployment.status).unwrap_or(deployment::Status::Unspecified);
@@ -184,10 +174,7 @@ pub async fn deployment_cancel(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.deployments().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.deployments();
 
     match client
         .cancel(CancelDeploymentRequest {
@@ -211,9 +198,7 @@ async fn collect_deployment_lines(
     state: &AppState,
     deployment_id: &str,
 ) -> Vec<(chrono::DateTime<chrono::Utc>, bool, String)> {
-    let Ok(mut client) = state.api.deployments().await else {
-        return Vec::new();
-    };
+    let mut client = state.api.deployments();
 
     let Ok(response) = client
         .watch(WatchDeploymentRequest {
@@ -271,9 +256,7 @@ pub async fn deployment_stream(
     _user: CurrentUser,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = async_stream::stream! {
-        let Ok(mut client) = state.api.deployments().await else {
-            return;
-        };
+        let mut client = state.api.deployments();
         let Ok(response) = client
             .watch(WatchDeploymentRequest { deployment_id: id.clone() })
             .await

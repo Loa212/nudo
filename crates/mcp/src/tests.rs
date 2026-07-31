@@ -1,7 +1,7 @@
 use super::*;
 
 fn tools() -> NudoTools {
-    NudoTools::new("http://127.0.0.1:50051", "claude (mcp)")
+    NudoTools::new("http://127.0.0.1:50051", "claude (mcp)").expect("a valid endpoint")
 }
 
 #[test]
@@ -149,8 +149,9 @@ fn read_only_tools_have_no_dry_run_or_guardrail_field() {
     assert!(!schema.to_string().contains("dry_run"));
 }
 
-#[test]
-fn the_mutation_envelope_attributes_the_call_to_the_agent() {
+// Building the tools opens a lazy channel, which registers with the reactor.
+#[tokio::test]
+async fn the_mutation_envelope_attributes_the_call_to_the_agent() {
     // An operator has to be able to see in the audit log that an agent did
     // this, and which session.
     let tools = tools();
@@ -162,8 +163,9 @@ fn the_mutation_envelope_attributes_the_call_to_the_agent() {
     assert!(actor.id.starts_with("mcp-"));
 }
 
-#[test]
-fn the_envelope_carries_the_dry_run_and_guardrail_flags_through() {
+// Building the tools opens a lazy channel, which registers with the reactor.
+#[tokio::test]
+async fn the_envelope_carries_the_dry_run_and_guardrail_flags_through() {
     let tools = tools();
 
     let dry = tools.mutation(true, false);
@@ -175,8 +177,9 @@ fn the_envelope_carries_the_dry_run_and_guardrail_flags_through() {
     assert!(live.allow_latency_critical);
 }
 
-#[test]
-fn the_server_instructions_tell_an_agent_the_order_to_work_in() {
+// Building the tools opens a lazy channel, which registers with the reactor.
+#[tokio::test]
+async fn the_server_instructions_tell_an_agent_the_order_to_work_in() {
     let info = tools().get_info();
     let instructions = info.instructions.expect("instructions");
 
@@ -338,7 +341,7 @@ fn the_log_cap_is_enforced_by_the_tool_rather_than_trusted_to_the_caller() {
 
 #[tokio::test]
 async fn an_unreachable_control_plane_is_reported_rather_than_hanging() {
-    let tools = NudoTools::new("http://127.0.0.1:1", "test");
+    let tools = NudoTools::new("http://127.0.0.1:1", "test").expect("a valid endpoint");
     // `Json<T>` has no Debug, so expect_err cannot be used here.
     let error = match tools
         .list_targets(Parameters(ListTargetsParams {

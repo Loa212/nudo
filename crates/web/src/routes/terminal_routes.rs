@@ -10,19 +10,13 @@ pub async fn terminal_page(
     Path(id): Path<String>,
     user: CurrentUser,
 ) -> Response {
-    let mut targets = match state.api.targets().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut targets = state.api.targets();
     let target = match targets.get(GetTargetRequest { id: id.clone() }).await {
         Ok(response) => response.into_inner(),
         Err(status) => return grpc_error(status),
     };
 
-    let mut client = match state.api.terminals().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.terminals();
 
     let session = match client
         .create_session(CreateTerminalSessionRequest {

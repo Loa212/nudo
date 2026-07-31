@@ -15,10 +15,7 @@ pub async fn audit_list(
     Query(query): Query<AuditQuery>,
     _user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.audit().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.audit();
 
     let entries = client
         .list(ListAuditRequest {

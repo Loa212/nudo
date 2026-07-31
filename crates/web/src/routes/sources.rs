@@ -35,10 +35,7 @@ pub async fn source_github_create(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.sources().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.sources();
 
     let response = match client
         .create_github_app_manifest(CreateGithubAppManifestRequest {
@@ -73,10 +70,7 @@ pub async fn source_github_callback(
     // by someone who is not signed in. The single-use state is the second check.
     _user: CurrentUser,
 ) -> Response {
-    let mut client = match state.api.sources().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.sources();
 
     match client
         .exchange_github_manifest_code(ExchangeGithubManifestCodeRequest {
@@ -119,10 +113,7 @@ pub async fn source_delete(
         return rejection.into_response();
     }
 
-    let mut client = match state.api.sources().await {
-        Ok(client) => client,
-        Err(status) => return grpc_error(status),
-    };
+    let mut client = state.api.sources();
 
     match client
         .delete(DeleteSourceRequest {
