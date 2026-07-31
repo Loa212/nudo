@@ -5,11 +5,12 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 pub async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> Response {
-    // Nothing in this group needs anything from another, and each gRPC read
-    // opens its own connection to the control plane, so issuing them in series
-    // made the landing page wait out four round trips to learn things it could
-    // have asked for at once. Grouping them also says which reads are
-    // independent, which statement order alone could not.
+    // Nothing in this group needs anything from another, so issuing them in
+    // series made the landing page wait out four round trips to learn things it
+    // could have asked for at once. They share one connection now, which is
+    // what makes asking at once cheap: the reads multiplex rather than
+    // contending. Grouping them also says which reads are independent, which
+    // statement order alone could not.
     //
     // Both banners read state the control plane has already collected, so the
     // dashboard renders at the same speed whether or not either is shown.
